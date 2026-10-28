@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +18,21 @@ import {
 } from './ci-changes.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const workflow = (name) => readFileSync(path.join(root, '.github', 'workflows', name), 'utf8');
+const workflow = (name) => readFileSync(path.join(root, '.github', 'workflows', name), 'utf8').replace(/\r\n/g, '\n');
+
+function declaredEvents(text) {
+  const lines = text.split(/\r?\n/);
+  const onLine = lines.findIndex((line) => line === 'on:');
+  assert.notEqual(onLine, -1, 'workflow must declare its trigger events');
+  const events = [];
+  for (const line of lines.slice(onLine + 1)) {
+    if (!line.trim() || line.trimStart().startsWith('#')) continue;
+    if (!/^\s/.test(line)) break;
+    const event = line.match(/^  ([a-z_]+):/);
+    if (event) events.push(event[1]);
+  }
+  return events;
+}
 
 test('qc-ui source, docs and root markdown are safe', () => {
   for (const file of [
@@ -144,37 +159,23 @@ test('iOS and macOS build workflows are manual-only without stale path filters',
   }
 });
 
-test('macOS builds do not trigger on legal records and run every lane on the local Apple Silicon runner', () => {
+test('manual macOS builds run every lane on the local Apple Silicon runner', () => {
   const text = workflow('macos-build.yml');
-  for (const entry of ['THIRD_PARTY-NOTICES.md', 'legal/**', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'LICENSES/**']) {
-    assert.equal(
-      text.split('\n').some((line) => line.trim() === `- ${entry}`),
-      false,
-      `macos-build.yml still lists ${entry}`,
-    );
-  }
-  // x86_64 is cross-built on the local Apple Silicon MacMini and its binaries
-  // run under Rosetta 2. Pull requests run native ARM64 tests and the x86_64 package;
-  // master and manual builds run both lanes for both architectures.
   assert.match(text, /^ {4}runs-on: qc-remote-macmini$/m);
   assert.doesNotMatch(text, /macos-\d+-intel/);
   const matrix = text.match(/^ {8}include: \$\{\{ fromJSON\(github\.event_name == 'pull_request' && '(.*?)' \|\| '(.*?)'\) \}\}$/m);
-  assert.ok(matrix, 'the lane matrix must depend on the event');
+  assert.ok(matrix, 'the workflow must keep the complete non-PR matrix for manual dispatch');
   const lanes = (json) => JSON.parse(json).map((entry) => `${entry.lane} ${entry.target}`).sort();
-  assert.deepEqual(lanes(matrix[1]), ['package x86_64-apple-darwin', 'tests aarch64-apple-darwin']);
   assert.deepEqual(lanes(matrix[2]), [
     'package aarch64-apple-darwin',
     'package x86_64-apple-darwin',
     'tests aarch64-apple-darwin',
     'tests x86_64-apple-darwin',
   ]);
-  // Rosetta must be present rather than silently skipping x86_64 execution,
-  // and the bundle must be checked for the target architecture.
   assert.match(text, /arch -x86_64 \/usr\/bin\/true/);
   assert.match(text, /QC_MACOS_TARGET: \$\{\{ matrix\.target \}\}/);
   assert.match(text, /lipo -archs/);
 });
-
 test('macOS build caches are only saved by successful runs', () => {
   // rust-cache never re-saves a key that restored as a full match, so a cache
   // saved by a failed run stays incomplete until Cargo.lock changes.
@@ -234,6 +235,28 @@ test('Linux checks use the local runner and release requires the hosted AppArmor
   assert.match(probe, /sudo apt-get install/);
 });
 
+test('manual CI dispatch includes native, TypeScript and cloud jobs', () => {
+  const ci = workflow('ci.yml');
+  const classification = execFileSync(process.execPath, ['scripts/ci-changes.mjs'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_OUTPUT: '' },
+  });
+  assert.match(classification, /native=true typescript=true cloud=true/);
+  const jobsText = ci.slice(ci.indexOf('\njobs:\n') + 7);
+  const bodyOf = (name) => {
+    const start = jobsText.indexOf(`\n  ${name}:\n`);
+    assert.notEqual(start, -1, `${name} is missing`);
+    const rest = jobsText.slice(start + 1);
+    const next = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
+    return next === -1 ? rest : rest.slice(0, next + 1);
+  };
+  for (const name of ['rust', 'rust-msrv', 'quadcortex-linux', 'android', 'rust-windows-app-static', 'rust-windows-app-tests']) {
+    assert.match(bodyOf(name), /needs\.changes\.outputs\.native != 'false'/, `${name} must include the manual native classification`);
+  }
+  assert.match(bodyOf('typescript'), /github\.event_name == 'workflow_dispatch'/);
+  assert.match(bodyOf('cloud-relay'), /github\.event_name == 'workflow_dispatch'/);
+});
 test('CI result aggregates every other CI job so one required context cannot deadlock', () => {
   const ci = workflow('ci.yml');
   const jobsText = ci.slice(ci.indexOf('\njobs:\n') + 7);
