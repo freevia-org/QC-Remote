@@ -263,6 +263,29 @@ test("USB attachment connects automatically and reports synchronization separate
   assert.doesNotMatch(appSource, /qcReadyLabel\(connection\)/, "Android does not repeat the verbose desktop readiness label");
 });
 
+test("Android USB failures stay on the physical target with a visible error", () => {
+  const attempt = appSource.match(/const attemptUsbConnection = async \(announce = false\) => \{([\s\S]*?)\n  \};\n\n  useEffect\(/)?.[1];
+  assert.ok(attempt, "the connection attempt body is present");
+  assert.match(attempt, /transitionConnection\("error"/);
+  assert.match(attempt, /setUsbProgress\(\{ requestId, phase: "error"/);
+  const syncFailure = attempt.match(/if \(!ready && attempt\.current\(\)\) \{([\s\S]*?)\n        \} else if/ )?.[1];
+  assert.ok(syncFailure, "the physical USB synchronization failure branch is present");
+  assert.doesNotMatch(syncFailure, /startDemoDeviceRef\.current\(/,
+    "a failed physical connection must not silently select Demo and hide the USB result");
+  assert.match(attempt, /if \(iosPlatform && fromDemo && attempt\.current\(\)[\s\S]{0,160}startDemoDeviceRef\.current\(primary\)/,
+    "the Android-only behavior change preserves the existing iOS Demo recovery");
+  const connectionListener = appSource.match(/QcUsbNative\.addListener\("qcConnection", \(\{ state \}\) => \{([\s\S]*?)\n      \}\),/)?.[1];
+  assert.ok(connectionListener, "the native connection listener is present");
+  assert.match(connectionListener, /if \(iosPlatform && observationPolicy\.mode !== "on-demand"\)[\s\S]*startDemoDeviceRef\.current/,
+    "iOS retains its paired-host disconnect behavior");
+  assert.doesNotMatch(connectionListener, /if \(observationPolicy\.mode !== "on-demand"\) void startDemoDeviceRef\.current/,
+    "an Android USB detach must remain disconnected instead of switching to Demo");
+  assert.match(appSource, /if \(iosPlatform && observationPolicy\.mode !== "on-demand"\) \{\s*void startDemoDeviceRef\.current\(error instanceof Error \? error\.message : "Paired-host discovery failed\."\)/,
+    "USB discovery exceptions do not silently select Demo on Android");
+  assert.match(appSource, /usbProgress\.phase === "error"[^}]*\? "Retry connect"/,
+    "the visible connection panel keeps a retry action after failure");
+});
+
 test("reset session tears down the Android epoch and waits for a new authoritative seed", () => {
   assert.match(generatedGatewaySource, /case "device\.resetSession": return "RECONNECT"/);
   assert.match(javaSource, /"device\.resetSession"\.equals\(method\) \? "Communication session reset"/);
