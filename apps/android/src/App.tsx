@@ -561,10 +561,10 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
         const ready = await applyNativeObservation(() => appOperationMounted.current && attempt.current());
         usbSessionReady.current = ready;
         if (!ready && attempt.current()) {
-          setHardwareConnected(false); transitionConnection("absent");
+          setHardwareConnected(false);
+          transitionConnection("error", "USB opened, but the Quad Cortex state did not synchronize.");
           setUsbProgress({ requestId, phase: "error", message: "USB connected, but the Quad Cortex did not provide a complete current-state read. The device is not ready; check the cable and retry.", errorCode: "STATE_NOT_SYNCHRONIZED" });
           if (announce) setNotice("USB connected, but device state could not be synchronized. Check the connection and retry.");
-          void startDemoDeviceRef.current("No synchronized physical Quad Cortex was available.");
         } else if (attempt.current()) {
           setUsbProgress({ requestId, phase: "ready", message: "Quad Cortex connected over USB. Current preset and device state are synchronized." });
           if (announce) setNotice("Quad Cortex connected and synchronized over USB.");
@@ -606,7 +606,12 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       transitionConnection(awaitingPermission ? "absent" : "error", primary);
       setUsbProgress({ requestId, phase: awaitingPermission ? "permission" : "error", message: primary, ...(errorCode ? { errorCode } : {}) });
       if (announce) setNotice(primary);
-      if (fromDemo && attempt.current() && observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current(primary);
+      // iOS remote-host recovery retains its existing Demo fallback. Android
+      // manual USB failures stay on the selected physical target and keep the
+      // error visible instead of silently switching the screen to Demo.
+      if (iosPlatform && fromDemo && attempt.current() && observationPolicy.mode !== "on-demand") {
+        void startDemoDeviceRef.current(primary);
+      }
     } finally {
       const released = connectAttemptLatch.current.release(latchOwner);
       if (released && usbRetryRequested.current && !usbSessionReady.current
@@ -643,7 +648,9 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
             activeUsbProgressRequest.current = null;
             setUsbProgress({ phase: "disconnected", message: iosPlatform ? "The paired host connection ended. Check that QC Remote is running on the host, then reconnect." : "USB connection ended. Check the cable and power, then tap Connect to retry." });
             transitionConnection("absent");
-            if (observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current("The Quad Cortex was disconnected.");
+            if (iosPlatform && observationPolicy.mode !== "on-demand") {
+              void startDemoDeviceRef.current("The paired QC Remote host disconnected.");
+            }
           }
         }
       }),
@@ -725,7 +732,9 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
         const detail = error instanceof Error ? error.message : "USB discovery failed unexpectedly.";
         setUsbProgress({ phase: "error", message: `Could not check the USB connection: ${detail}`, errorCode: "USB_SCAN_FAILED" });
         transitionConnection("error", detail);
-        if (observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current(error instanceof Error ? error.message : "USB discovery failed.");
+        if (iosPlatform && observationPolicy.mode !== "on-demand") {
+          void startDemoDeviceRef.current(error instanceof Error ? error.message : "Paired-host discovery failed.");
+        }
       }
     });
     return () => {
