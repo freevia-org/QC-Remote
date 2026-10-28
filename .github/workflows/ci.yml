@@ -1,16 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches: [master]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# A new push to a pull request supersedes the run in flight. Pushes to master
-# are never cancelled: they queue (one pending run at most) so every merge
-# finishes the run that refreshes the Rust build caches below.
+# A new run for the same ref supersedes only an active pull request run. Manual
+# dispatches are not cancelled, so an explicitly requested validation completes.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -224,7 +221,7 @@ jobs:
   # that guards the legal records the native jobs only embed as bytes.
   third-party-notices:
     name: Third-party notices drift check
-    if: github.event_name == 'pull_request'
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -260,7 +257,7 @@ jobs:
   typescript:
     name: TypeScript packages and apps
     needs: changes
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.typescript != 'false') }}
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.typescript != 'false'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -326,11 +323,9 @@ jobs:
         run: |
           node --test scripts/verify-public-history.test.mjs
           node scripts/verify-public-history.mjs --base "$QC_BASE_SHA" --head "$QC_HEAD_SHA" --identity "$QC_IDENTITY"
-      # The `DCO sign-off` job itself lives in dco.yml (a pull_request_target
-      # workflow, so a pull request cannot edit or skip it). These tests cover
-      # its checker and pin that workflow's safety properties; here they run on
-      # the pull request's own copy, so they are an early signal, not the
-      # enforcement.
+      # The DCO check is manually dispatched from master with a PR number.
+      # These tests validate the checker and the safe metadata-only workflow;
+      # this copy runs from the manually selected ref as an early signal.
       - name: DCO checker and workflow safety tests
         run: node --test scripts/verify-dco.test.mjs scripts/verify-workflows.test.mjs
       # The change classifier that decides which jobs run, and the workflow
@@ -343,7 +338,7 @@ jobs:
   cloud-relay:
     name: Cloud relay (dry-run deploy)
     needs: changes
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.cloud != 'false') }}
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.cloud != 'false'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # services/qc-remote-cloud is an npm workspace of the root package.json and

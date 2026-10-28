@@ -24,9 +24,9 @@
 # Security updates are not limited by these settings.
 #
 # Dependabot commits carry no DCO sign-off. CONTRIBUTING.md asks for sign-off
-# from outside contributors; the `DCO sign-off` job (.github/workflows/dco.yml)
-# is skipped for pull requests opened by a Bot account (and for maintainers),
-# and maintainers handle those.
+# from outside contributors; maintainers manually dispatch the DCO workflow
+# for outside PRs. Bot and maintainer PR authors are exempt based on GitHub API
+# metadata, and maintainers handle those PRs.
 version: 2
 updates:
   - package-ecosystem: npm

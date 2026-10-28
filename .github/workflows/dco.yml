@@ -1,110 +1,38 @@
 name: DCO
 
-# CONTRIBUTING.md asks for a Developer Certificate of Origin sign-off on every
-# commit of an outside contribution; maintainers are exempt (see "Who is checked"). The `DCO sign-off` job below checks that
-# every commit the pull request adds (base..head), merge commits included,
-# carries a `Signed-off-by: Name <email>` trailer matching its author's name and
-# email. A merge commit can hold conflict-resolution edits that exist nowhere
-# else, so it is not exempt: contributors sign it (`git merge --signoff`) or
-# rebase; GitHub's web "Update branch" merge commit has no sign-off and fails.
-# It cannot tell whether the name is a real one; that stays a review matter.
-# Commits already in the base branch are never examined.
-#
-# Why this is its own workflow on `pull_request_target`: GitHub runs a
-# `pull_request` workflow from the pull request's merge commit, so a pull
-# request can edit that YAML (turn a job's `if:` false, delete the job) and
-# obtain a skipped or absent required check. A `pull_request_target` workflow is
-# read from the BASE branch, so a pull request cannot alter this file or the
-# checker it runs. Only this workflow uses that trigger, and it must stay safe
-# under it (https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target):
-#   * The checkout is the base branch (the default for this trigger). There is no
-#     `ref:` and no `repository:`, so no pull request code is ever checked out,
-#     built or executed. scripts/verify-dco.mjs comes from the base checkout.
-#   * The pull request head is fetched as DATA only (`git fetch` of
-#     refs/pull/N/head, which GitHub keeps on the base repository for fork pull
-#     requests too); the checker reads its commit metadata with `git log`.
-#   * No secrets, caches or artifacts, and the token is read-only
-#     (`contents: read`). Every github.event value reaches the shell through
-#     `env:` and is validated and quoted there; none is interpolated into a
-#     script. scripts/verify-workflows.test.mjs pins all of this.
-#
-# The job is named exactly `DCO sign-off`: that is the required status check.
-#
-# Who is checked: outside contributors. The `DCO sign-off` job is skipped, and
-# so exempts the project's own people, when GitHub itself reports either
-#   * the pull request author is a Bot account
-#     (github.event.pull_request.user.type), or
-#   * the author's association with the repository is OWNER, MEMBER or
-#     COLLABORATOR (github.event.pull_request.author_association).
-# Both are fields of the authenticated event payload that GitHub sets, not
-# anything the pull request or its commits can write. CONTRIBUTOR,
-# FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, NONE and MANNEQUIN are all still checked.
-# Commit author fields are user-controlled (anyone can set an address like
-# x[bot]@users.noreply.github.com or a maintainer's name), so scripts/verify-dco.mjs
-# exempts nobody and no name, login, actor or commit content is ever used to
-# exempt. The exemption is this one job-level `if:`, and
-# scripts/verify-workflows.test.mjs pins its exact shape.
-# A skipped job reports as successful and counts as passing for a required
-# status check, so a maintainer or Dependabot PR is not blocked by the required
-# `DCO sign-off` check. Because this file is read from the base branch, a pull
-# request cannot add or widen that skip for itself.
-# Limits, stated plainly:
-#   * Anyone later added as a collaborator becomes exempt from then on. GitHub
-#     describes COLLABORATOR as an invited collaborator and the check does not
-#     look at the permission level, so add collaborators deliberately.
-#   * Membership that GitHub does not report as MEMBER is checked, not exempted
-#     (the safe direction). GitHub may not report every organisation member as
-#     MEMBER (we have not verified when); such a person signs off like anyone
-#     else.
-#   * A human-authored commit pushed onto a maintainer's or bot's pull request
-#     branch needs write access to that branch, which only a maintainer has, so
-#     it is accepted.
-#   * `author_association` is read when the event fires; a later change of
-#     association applies from the next event on that pull request.
-
-# Trigger types: `opened`, `synchronize` and `reopened` cover new and updated
-# head commits. `edited` is needed because retargeting a pull request to another
-# base branch changes base..head without any new commit; it also fires on title
-# and body edits, which only cost a re-run of this short job.
-
+# Run the DCO check only when a maintainer explicitly requests it. This job
+# checks PR metadata from GitHub and fetches the PR head as Git data; it never
+# checks out or executes pull-request code.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open pull request number targeting master
+        required: true
+        type: string
 
 permissions:
   contents: read
+  pull-requests: read
 
-# Only pull_request_target events reach this workflow, so every run belongs to a
-# pull request: a newer event for the same pull request supersedes the run in flight.
 concurrency:
-  group: dco-${{ github.event.pull_request.number }}
+  group: dco-manual-${{ inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
   dco:
     name: DCO sign-off
-    if: github.event.pull_request.user.type != 'Bot' && !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # Base branch, full history (base..head needs the base side's ancestry).
-      # The default token is kept for the fetch below: it is read-only, the
-      # repository is public, and no pull request code runs in this job to read
-      # it; an authenticated fetch also avoids anonymous rate limits.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: true
       - name: Check Signed-off-by on every commit the pull request adds
         env:
-          QC_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          QC_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          QC_PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          [[ "$QC_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected base sha" >&2; exit 2; }
-          [[ "$QC_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected head sha" >&2; exit 2; }
-          [[ "$QC_PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "unexpected pull request number" >&2; exit 2; }
-          # Objects only: nothing from the pull request is checked out.
-          git fetch --no-tags --no-recurse-submodules origin "+refs/pull/${QC_PR_NUMBER}/head:refs/remotes/pull/${QC_PR_NUMBER}/head"
-          git cat-file -e "${QC_HEAD_SHA}^{commit}" || { echo "head ${QC_HEAD_SHA} is not on refs/pull/${QC_PR_NUMBER}/head (pushed again since this run started?)" >&2; exit 2; }
-          node scripts/verify-dco.mjs --base "$QC_BASE_SHA" --head "$QC_HEAD_SHA"
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          QC_PR_NUMBER: ${{ inputs.pr_number }}
+        run: node scripts/verify-dco-dispatch.mjs

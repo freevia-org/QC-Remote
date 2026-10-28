@@ -8,22 +8,12 @@
 //
 // This script exempts nobody. In particular:
 //   * Bots and maintainers are not exempted here. Nothing in a commit (author
-//     name, author email, committer) is authenticated: anyone can set
-//     `git config user.email 'x[bot]@users.noreply.github.com'` or a
-//     maintainer's name, so a commit-based exemption would let any contributor
-//     skip the check. The exemption lives in .github/workflows/dco.yml instead,
-//     where the `DCO sign-off` job is skipped when GitHub itself reports that
-//     the pull request was opened by a Bot account
-//     (github.event.pull_request.user.type) or that the author's association is
-//     OWNER, MEMBER or COLLABORATOR
-//     (github.event.pull_request.author_association). That workflow runs on
-//     `pull_request_target`, so GitHub reads it from the base branch and a pull
-//     request cannot edit, skip or widen it, and this script is run from the
-//     base checkout, never from the pull request. Limits: anyone later added as
-//     a collaborator becomes exempt; membership that GitHub does not report as
-//     MEMBER is checked rather than exempted (the safe direction); and a human
-//     commit pushed onto a maintainer's or bot's branch needs write access to
-//     that branch, which is accepted.
+//     name, author email, committer) is authenticated, so commit-based exemptions
+//     would let any contributor skip the check. The manual workflow reads the
+//     PR author and association through GitHub's API, from the protected master
+//     branch, then fetches the PR head as objects only. It never checks out or
+//     executes pull-request code. Maintainers and bots are exempt based only on
+//     those authenticated API fields.
 //   * Merge commits are not exempted. A conflict resolution exists only inside
 //     the merge commit and ends up in the squashed tree, so an unsigned merge
 //     could carry unsigned changes. A contributor who merges the base into the
