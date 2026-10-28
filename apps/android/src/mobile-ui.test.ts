@@ -198,9 +198,14 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
 
 test("a failed USB attempt clears the synthetic opening screen before showing its error", () => {
   const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-  const failurePath = appSource.slice(appSource.indexOf("    } catch (error) {", appSource.indexOf("const attemptUsbConnection")), appSource.indexOf("    } finally {", appSource.indexOf("const attemptUsbConnection")));
-  assert.match(failurePath, /if \(isConnectingPlaceholder\(snapshotRef\.current\)\) setSnapshot\(IDLE_PLACEHOLDER_SNAPSHOT\)/);
-  assert.ok(failurePath.indexOf("setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT)") < failurePath.indexOf("transitionConnection(awaitingPermission"), "the placeholder is cleared before the final disconnected/error state is published");
+  const attemptStart = appSource.indexOf("const attemptUsbConnection");
+  const catchPath = appSource.slice(appSource.indexOf("    } catch (error) {", attemptStart), appSource.indexOf("    } finally {", attemptStart));
+  const unsynchronizedPath = appSource.slice(appSource.indexOf("        if (!ready && attempt.current()) {", attemptStart), appSource.indexOf("        } else if (attempt.current()) {", attemptStart));
+  const clearsOnlySyntheticOpening = /if \(isConnectingPlaceholder\(snapshotRef\.current\)\) setSnapshot\(IDLE_PLACEHOLDER_SNAPSHOT\)/;
+  assert.match(catchPath, clearsOnlySyntheticOpening, "a thrown USB connection failure clears its synthetic opening snapshot");
+  assert.ok(catchPath.indexOf("setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT)") < catchPath.indexOf("transitionConnection(awaitingPermission"), "the thrown failure clears the placeholder before publishing its final state");
+  assert.match(unsynchronizedPath, clearsOnlySyntheticOpening, "a fulfilled connection with no synchronized state also clears its synthetic opening snapshot");
+  assert.ok(unsynchronizedPath.indexOf("setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT)") < unsynchronizedPath.indexOf("transitionConnection(\"error\""), "the unsynchronized result clears the placeholder before publishing its error");
 });
 
 test("tapping a live Grid block opens the shared parameter editor and commits over USB", () => {

@@ -563,6 +563,10 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
         const ready = await applyNativeObservation(() => appOperationMounted.current && attempt.current());
         usbSessionReady.current = ready;
         if (!ready && attempt.current()) {
+          // A transport can open successfully but fail its authoritative state
+          // read. Clear only the synthetic opening frame; keep any real
+          // last-known snapshot visible behind the unsynchronized error.
+          if (isConnectingPlaceholder(snapshotRef.current)) setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT);
           setHardwareConnected(false);
           transitionConnection("error", "USB opened, but the Quad Cortex state did not synchronize.");
           setUsbProgress({ requestId, phase: "error", message: "USB connected, but the Quad Cortex did not provide a complete current-state read. The device is not ready; check the cable and retry.", errorCode: "STATE_NOT_SYNCHRONIZED" });
