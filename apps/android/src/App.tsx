@@ -605,6 +605,10 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
             : errorCode === "USB_PERMISSION_DENIED"
               ? "USB permission was denied. Tap Connect and allow QC Remote to access the Quad Cortex."
               : detail;
+      // A failed connection must not leave the synthetic "Opening…" device
+      // screen visible behind the error. Keep a last-known real snapshot, but
+      // replace a connecting placeholder with the neutral disconnected view.
+      if (isConnectingPlaceholder(snapshotRef.current)) setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT);
       transitionConnection(awaitingPermission ? "absent" : "error", primary);
       setUsbProgress({ requestId, phase: awaitingPermission ? "permission" : "error", message: primary, ...(errorCode ? { errorCode } : {}) });
       if (announce) setNotice(primary);
