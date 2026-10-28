@@ -34,6 +34,7 @@ public final class QcAutomaticReconnectTest {
         String active = between(source, "    private boolean readerIsActive(", "    private boolean isDeviceStillAttached(");
         String terminal = between(source, "    private synchronized void terminalTransportFailed(", "    @RequiresApi(");
         String publication = between(source, "    private synchronized boolean publishConnectionAttempt(", "    private void resolveConnected(");
+        String failureMessage = between(source, "    private static String connectionFailureMessage(Throwable error)", "    /** Refuse an outstanding prompt.");
         String disconnect = between(source, "    public void disconnect(PluginCall call)", "    @PluginMethod\n    public void diagnostics(");
         Object compiler = Class.forName("javax.tools.ToolProvider").getMethod("getSystemJavaCompiler").invoke(null);
         assertNotNull("host JDK compiler", compiler);
@@ -41,7 +42,7 @@ public final class QcAutomaticReconnectTest {
         boolean complete = false;
         try {
             Path java = output.resolve("ReconnectHarness.java");
-            Files.write(java, (PREFIX + scheduling + disconnect + reader + active + terminal + publication + SUFFIX).getBytes(StandardCharsets.UTF_8));
+            Files.write(java, (PREFIX + scheduling + disconnect + reader + active + terminal + publication + failureMessage + SUFFIX).getBytes(StandardCharsets.UTF_8));
             try (java.io.ByteArrayOutputStream diagnostics = new java.io.ByteArrayOutputStream()) {
                 String[] args = {"-d", output.toString(), "-proc:none", java.toString()};
                 int status = (Integer) Class.forName("javax.tools.Tool").getMethod("run", java.io.InputStream.class, java.io.OutputStream.class, java.io.OutputStream.class, String[].class)
@@ -71,6 +72,7 @@ public final class QcAutomaticReconnectTest {
     @Test public void currentSuspensionResyncReopensOnce() throws Exception { scenario("currentSuspensionResync"); }
     @Test public void retiredReaderCannotConsumeSuccessorResync() throws Exception { scenario("retiredSuspensionReader"); }
     @Test public void queuedSuspensionResyncCannotOverrideNewIntent() throws Exception { scenario("queuedSuspensionRetirement"); }
+    @Test public void moduleStatisticsStartupFailureHasActionableConnectionStatus() throws Exception { scenario("moduleStatisticsFailureMessage"); }
 
     @AfterClass public static void cleanup() throws Exception {
         try { if (loader != null) loader.close(); }
@@ -89,6 +91,7 @@ public final class QcAutomaticReconnectTest {
 import java.util.*; import java.util.concurrent.*; import java.util.concurrent.atomic.AtomicLong;
 public final class ReconnectHarness {
  final AtomicLong automaticReconnectGeneration = new AtomicLong();
+ String activeConnectionProgressRequestId; int connectionProgressAttempt;
  final Decoder stateDecoder = new Decoder(); final Guard relayAdmissionGuard = new Guard();
  final Scheduler keepalive = new Scheduler(); final Manager manager = new Manager();
  Flight flight; boolean connecting, present = true, reading = true, ready, synchronizedSession; int opens, closes; String lastError;
@@ -105,6 +108,9 @@ public final class ReconnectHarness {
  void closeConnection() { closes++; stateDecoder.due = false; reading = false; connection = null; connectionGeneration.incrementAndGet(); }
  void closeConnection(Object ignored, boolean graceful) { closeConnection(); }
  void check(boolean value, String message) { if (!value) throw new AssertionError(message); }
+ void publishConnectionProgress(String requestId, String phase, String message, String errorCode) {}
+ Throwable unwrapCompletion(Throwable error) { return error; }
+ static final class RelayException extends RuntimeException { final String code = "TEST"; }
 """;
     private static final String SUFFIX = """
  public void explicitPublicationAfterDisconnect() throws Exception {
@@ -149,6 +155,11 @@ public final class ReconnectHarness {
  public void queuedDisconnect() {
   scheduleAutomaticReconnect("lost"); disconnect(new PluginCall()); keepalive.next();
   check(stateDecoder.arms == 1 && opens == 0 && keepalive.tasks.isEmpty(), "old timer rearmed after Disconnect");
+ }
+ public void moduleStatisticsFailureMessage() {
+  String message = connectionFailureMessage(new RuntimeException("QC lifecycle failed: Protocol(ModuleStatisticsDataError)"));
+  check(message.contains("USB opened") && message.contains("startup statistics") && message.contains("synchronization stopped"), "module-statistics failure was not explained in the connection status");
+  check(message.contains("tap Retry") && message.contains("share Diagnostics"), "module-statistics status omitted next steps");
  }
  public void failedOpenAfterDisconnect() {
   scheduleAutomaticReconnect("lost"); keepalive.next(); check(opens == 1, "valid retry not opened");
