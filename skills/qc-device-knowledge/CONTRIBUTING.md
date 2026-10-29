@@ -68,12 +68,11 @@ on the pull request author as reported by GitHub, not on commit contents.
 Anyone later added as a collaborator becomes exempt from then on, and
 membership that GitHub does not report as `MEMBER` is checked rather than
 exempted. A commit pushed by someone else onto a maintainer's or bot's pull
-request branch needs write access to that branch, which is accepted. The workflow
-is defined in `.github/workflows/dco.yml` and runs from `master`; it reads PR
-metadata through GitHub's API and fetches the head as Git objects only, so it
-never runs code from the pull request. It can only check that the trailer is
-there and names the author; whether the name is real is for the maintainers to
-judge. The requirement applies from the first
+request branch needs write access to that branch, which is accepted. The workflow is defined in `.github/workflows/dco.yml` and runs from `master`; it
+reads PR metadata through GitHub's API and fetches the head as Git objects only,
+so it never runs code from the pull request. It can only check that the trailer
+is there and names the author; whether the name is real is for the maintainers
+to judge. The requirement applies from the first
 outside contribution onward and is not retroactive: the commits the publisher,
 Freevia EOOD, made before that, including the initial public release, carry no
 sign-off and are released by the copyright holder directly.

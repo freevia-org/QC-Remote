@@ -6327,7 +6327,7 @@
     {
       "ecosystem": "cargo",
       "name": "zip",
-      "version": "9.0.4",
+      "version": "9.0.5",
       "license": "MIT",
       "sourceUrl": "https://github.com/zip-rs/zip2",
       "licenseTextHashes": [
@@ -10245,7 +10245,7 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:zip@9.0.4"
+        "cargo:zip@9.0.5"
       ]
     },
     {

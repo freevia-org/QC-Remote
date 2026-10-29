@@ -75,12 +75,9 @@ export const forbiddenPaths = [
 // Add an entry here only for an address that is already public.
 export const allowedPublisherEmails = ['info@freevia.org'];
 
-// GitHub's first squash merge after public-history enforcement was enabled
-// appended a duplicate, privacy-preserving Co-authored-by trailer even though
-// the reviewed source commit did not contain one. That commit was published
-// before squash merges were disabled at the repository level. Keep the strict
-// rule for every other commit and document this single immutable exception so
-// the whole-history audit can continue to protect all later history.
+// A small set of already-published commits has a privacy-preserving
+// Co-authored-by trailer added by GitHub or Dependabot. They are recorded by
+// full immutable SHA and finding; the strict rule remains for all new commits.
 export const publishedIdentityExceptions = new Map([
   [
     '2badc68ea4d30f53fc98ae9e000c70df109d0970',
@@ -88,6 +85,10 @@ export const publishedIdentityExceptions = new Map([
   ],
   [
     'db44c774a284c0f189e23cbdfd0ff9265b7ae400',
+    new Set(['commit message contains a Co-authored-by trailer']),
+  ],
+  [
+    'b5cc7ff4c6192c6211cce1a455350c28bea88b4d',
     new Set(['commit message contains a Co-authored-by trailer']),
   ],
 ]);
