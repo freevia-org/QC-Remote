@@ -53,6 +53,11 @@ public class QcUsbPlugin extends Plugin {
     private static final int MIDI_WRITE_TIMEOUT_MS = 250;
     private static final int MAINTENANCE_POLL_MS = 1000;
     private static final int HID_INPUT_REQUEST_DEPTH = 32;
+    // Automatic recovery is useful for a transient cable or reader interruption,
+    // but repeatedly opening and closing a device that cannot synchronize is not.
+    // After this many failed opens, leave an actionable error and wait for an
+    // explicit retry instead of cycling indefinitely.
+    private static final int AUTOMATIC_RECONNECT_ATTEMPT_LIMIT = 5;
     private static final String USB_PERMISSION = "org.freevia.qcremote.USB_PERMISSION";
 
     private UsbManager manager;
@@ -723,13 +728,19 @@ public class QcUsbPlugin extends Plugin {
                         Throwable cause = unwrapCompletion(error);
                         String message = cause.getMessage() == null
                             ? "USB recovery did not complete." : connectionFailureMessage(cause);
-                        publishConnectionProgress(requestId, "error",
-                            "USB recovery attempt " + attempt + " failed: " + message + " The app will retry while the QC remains connected.",
-                            cause instanceof RelayException ? ((RelayException) cause).code : "USB_CONNECT_FAILED");
+                        boolean exhausted = attempt >= AUTOMATIC_RECONNECT_ATTEMPT_LIMIT;
+                        publishConnectionProgress(requestId, "error", exhausted
+                            ? "Automatic USB recovery stopped after " + attempt + " attempts: " + message
+                                + " Check the cable and power, then tap Retry."
+                            : "USB recovery attempt " + attempt + " failed: " + message
+                                + " The app will retry while the QC remains connected.",
+                            exhausted ? "USB_RECOVERY_EXHAUSTED"
+                                : cause instanceof RelayException ? ((RelayException) cause).code : "USB_CONNECT_FAILED");
                         android.util.Log.w(
                             "QcUsbPlugin", "Automatic QC USB reconnect failed: " + error.getMessage());
-                        scheduleAutomaticReconnect(detail, recoveryGeneration);
+                        if (!exhausted) scheduleAutomaticReconnect(detail, recoveryGeneration);
                     } else if (isReady() && stateDecoder.sessionSynchronized() && currentSetlist != null) {
+                        connectionProgressAttempt = 0;
                         publishConnectionProgress(requestId, "ready",
                             "Quad Cortex reconnected and synchronized over USB.", null);
                     }
