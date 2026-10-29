@@ -97,6 +97,12 @@ export const publishedIdentityExceptions = new Map([
     '462997bbd6d06f67aeff811d44ef50ec98e71a58',
     new Set(['commit message contains a Co-authored-by trailer']),
   ],
+  [
+    // The already-published Windows runner migration has this GitHub merge
+    // trailer. Exempt only its immutable SHA and this exact finding.
+    'd399647b035d0da34c32e972fa15bc05dc6dbd64',
+    new Set(['commit message contains a Co-authored-by trailer']),
+  ],
 ]);
 
 export function isPublishedIdentityException(commit, finding) {
