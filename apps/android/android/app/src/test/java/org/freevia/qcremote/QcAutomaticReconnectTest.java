@@ -29,6 +29,11 @@ public final class QcAutomaticReconnectTest {
         }
         assertNotNull("this checkout's production source", plugin);
         String source = new String(Files.readAllBytes(plugin), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        assertTrue("automatic retries stop at a small fixed limit",
+            source.contains("private static final int AUTOMATIC_RECONNECT_ATTEMPT_LIMIT = 5;"));
+        String explicitConnect = between(source, "    public void connect(PluginCall call)", "    private void awaitReconnectForConnect(");
+        assertTrue("a person-initiated retry starts a fresh recovery budget",
+            explicitConnect.contains("connectionProgressAttempt = 0;"));
         String scheduling = between(source, "    private void scheduleAutomaticReconnect(String detail)", "    private void resolvePendingReady()");
         String reader = between(source, "    private synchronized void recoverUnexpectedReaderExit(", "    private void consumeInputReport(");
         String active = between(source, "    private boolean readerIsActive(", "    private boolean isDeviceStillAttached(");
@@ -67,6 +72,7 @@ public final class QcAutomaticReconnectTest {
     @Test public void failedOldOpenCannotRearmAfterDisconnect() throws Exception { scenario("failedOpenAfterDisconnect"); }
     @Test public void currentRecoveryKeepsRetryingWhileDeviceIsAbsent() throws Exception { scenario("absentDeviceRetry"); }
     @Test public void openTransportWithoutSemanticSeedKeepsRetrying() throws Exception { scenario("unsynchronizedTransportRetry"); }
+    @Test public void repeatedAutomaticRecoveryFailuresStopUntilExplicitRetry() throws Exception { scenario("automaticRecoveryStopsAfterRepeatedFailuresUntilExplicitRetry"); }
     @Test public void terminalReaderRecoveryCannotOverrideDisconnect() throws Exception { scenario("readerDisconnectRace"); }
     @Test public void replacementIntentAndTerminalOwnerRetireOldTimers() throws Exception { scenario("replacementAndShutdown"); }
     @Test public void currentSuspensionResyncReopensOnce() throws Exception { scenario("currentSuspensionResync"); }
@@ -90,8 +96,9 @@ public final class QcAutomaticReconnectTest {
     private static final String PREFIX = """
 import java.util.*; import java.util.concurrent.*; import java.util.concurrent.atomic.AtomicLong;
 public final class ReconnectHarness {
+ static final int AUTOMATIC_RECONNECT_ATTEMPT_LIMIT = 5;
  final AtomicLong automaticReconnectGeneration = new AtomicLong();
- String activeConnectionProgressRequestId; int connectionProgressAttempt;
+ String activeConnectionProgressRequestId; int connectionProgressAttempt; String lastProgressPhase, lastProgressMessage, lastProgressError;
  final Decoder stateDecoder = new Decoder(); final Guard relayAdmissionGuard = new Guard();
  final Scheduler keepalive = new Scheduler(); final Manager manager = new Manager();
  Flight flight; boolean connecting, present = true, reading = true, ready, synchronizedSession; int opens, closes; String lastError;
@@ -108,7 +115,7 @@ public final class ReconnectHarness {
  void closeConnection() { closes++; stateDecoder.due = false; reading = false; connection = null; connectionGeneration.incrementAndGet(); }
  void closeConnection(Object ignored, boolean graceful) { closeConnection(); }
  void check(boolean value, String message) { if (!value) throw new AssertionError(message); }
- void publishConnectionProgress(String requestId, String phase, String message, String errorCode) {}
+ void publishConnectionProgress(String requestId, String phase, String message, String errorCode) { lastProgressPhase = phase; lastProgressMessage = message; lastProgressError = errorCode; }
  Throwable unwrapCompletion(Throwable error) { return error; }
  static final class RelayException extends RuntimeException { final String code = "TEST"; }
 """;
@@ -179,6 +186,24 @@ public final class ReconnectHarness {
    synchronizedSession = true; currentSetlist = new Object(); keepalive.next();
    check(opens == 1 && keepalive.tasks.isEmpty(), "fully synchronized session did not stop retrying");
   }
+ public void automaticRecoveryStopsAfterRepeatedFailuresUntilExplicitRetry() {
+  scheduleAutomaticReconnect("startup sync failed");
+  for (int attempt = 1; attempt <= 5; attempt++) {
+   keepalive.next();
+   check(opens == attempt, "automatic recovery did not make exactly one attempt " + attempt);
+   openResult.completeExceptionally(new Exception("startup synchronization failed"));
+   if (attempt < 5) check(keepalive.tasks.size() == 1, "retry stopped before the configured limit");
+   else check(keepalive.tasks.isEmpty(), "automatic recovery kept cycling after the configured limit");
+  }
+  check("error".equals(lastProgressPhase) && "USB_RECOVERY_EXHAUSTED".equals(lastProgressError),
+   "exhausted recovery did not publish a terminal actionable error");
+  check(lastProgressMessage.contains("stopped after 5 attempts") && lastProgressMessage.contains("tap Retry"),
+   "exhausted recovery did not explain how to continue");
+  connectionProgressAttempt = 0; // the explicit Connect path resets this before opening
+  automaticReconnectGeneration.incrementAndGet();
+  scheduleAutomaticReconnect("person tapped Retry"); keepalive.next();
+  check(opens == 6 && connectionProgressAttempt == 1, "explicit Retry did not start a fresh recovery budget");
+ }
  public void replacementAndShutdown() {
   scheduleAutomaticReconnect("lost"); automaticReconnectGeneration.incrementAndGet(); keepalive.next();
   check(stateDecoder.arms == 1 && opens == 0, "old timer borrowed replacement intent");
