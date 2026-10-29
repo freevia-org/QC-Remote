@@ -195,6 +195,7 @@ test('published identity exceptions are exact and cannot weaken later history', 
     '2badc68ea4d30f53fc98ae9e000c70df109d0970',
     'db44c774a284c0f189e23cbdfd0ff9265b7ae400',
     'b5cc7ff4c6192c6211cce1a455350c28bea88b4d',
+    '462997bbd6d06f67aeff811d44ef50ec98e71a58',
   ];
   const trailerFinding = 'commit message contains a Co-authored-by trailer';
   assert.equal(publishedIdentityExceptions.size, publishedCommits.length);
