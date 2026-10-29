@@ -51,10 +51,15 @@ jobs:
     # cold target directory. Nothing waits on the master run.
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: windows-latest
+    runs-on: qc-remote-i5-windows
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up MSVC build environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+          vsversion: '2022'
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy, rustfmt
@@ -78,10 +83,15 @@ jobs:
     name: quadcortex on its declared Rust minimum (1.87)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: windows-latest
+    runs-on: qc-remote-i5-windows
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up MSVC build environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+          vsversion: '2022'
       # Same pinned action as the stable jobs; the `toolchain` input overrides
       # the branch's default of stable.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
@@ -104,10 +114,15 @@ jobs:
     name: Windows app static checks (fmt, check, clippy, broker build)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: windows-latest
+    runs-on: qc-remote-i5-windows
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up MSVC build environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+          vsversion: '2022'
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           # apps/windows/src-tauri/rust-toolchain.toml pins profile = "minimal",
@@ -152,10 +167,15 @@ jobs:
     name: Windows app native tests
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: windows-latest
+    runs-on: qc-remote-i5-windows
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up MSVC build environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+          vsversion: '2022'
       # No clippy or rustfmt here: this job only builds and runs the tests.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
