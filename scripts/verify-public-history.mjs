@@ -91,6 +91,10 @@ export const publishedIdentityExceptions = new Map([
     'b5cc7ff4c6192c6211cce1a455350c28bea88b4d',
     new Set(['commit message contains a Co-authored-by trailer']),
   ],
+  [
+    '462997bbd6d06f67aeff811d44ef50ec98e71a58',
+    new Set(['commit message contains a Co-authored-by trailer']),
+  ],
 ]);
 
 export function isPublishedIdentityException(commit, finding) {
