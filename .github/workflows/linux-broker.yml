@@ -184,7 +184,7 @@ jobs:
   linux-preview-release:
     name: Build Ubuntu preview release draft
     if: github.event_name == 'workflow_dispatch' && inputs.build_linux_draft
-    runs-on: ubuntu-24.04
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 60
     permissions:
       contents: write
