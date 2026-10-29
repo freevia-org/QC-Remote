@@ -2096,6 +2096,7 @@ export function App() {
 
   useEffect(() => {
     if (autoConnectStarted.current) return;
+    if (corpusFixtureEnabled) return;
     autoConnectStarted.current = true;
     // Startup follows real broker state. No simulated provider is registered
     // until the user explicitly selects Demo.
