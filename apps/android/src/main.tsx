@@ -1,7 +1,9 @@
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { StatusBar, Style } from "@capacitor/status-bar";
 import { Capacitor } from "@capacitor/core";
+import { App as NativeApp } from "@capacitor/app";
+import appPackage from "../package.json";
 import { App } from "./App";
 import { QC_BRAND, QC_COLORS, QC_NATIVE_THEME } from "@qc-remote/theme";
 import "@qc-remote/theme/theme.css";
@@ -15,4 +17,16 @@ if (Capacitor.isNativePlatform()) {
   void StatusBar.setBackgroundColor({ color: QC_COLORS.app.canvas });
 }
 
-createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
+function AndroidApp() {
+  const [packageInfo, setPackageInfo] = useState<{ version: string; build: string }>();
+  useEffect(() => {
+    if (Capacitor.isNativePlatform()) {
+      void NativeApp.getInfo()
+        .then(({ version, build }) => setPackageInfo({ version, build }))
+        .catch(() => {});
+    }
+  }, []);
+  return <App appVersion={packageInfo?.version ?? appPackage.version} appBuildNumber={packageInfo?.build} />;
+}
+
+createRoot(document.getElementById("root")!).render(<StrictMode><AndroidApp /></StrictMode>);

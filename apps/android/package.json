@@ -16,6 +16,7 @@
     "android:build:debug": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/build-android-debug.ps1"
   },
   "dependencies": {
+    "@capacitor/app": "^8.0.0",
     "@capacitor/android": "^8.5.3",
     "@capacitor/core": "^8.5.3",
     "@capacitor/status-bar": "^8.0.4",

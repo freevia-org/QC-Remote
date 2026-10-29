@@ -21,8 +21,12 @@ if (Capacitor.isNativePlatform()) void StatusBar.setStyle({ style: Style.Dark })
 
 function ObservedApp({ remote }: { remote: boolean }) {
   const [appVersion, setAppVersion] = React.useState(appPackage.version);
+  const [appBuildNumber, setAppBuildNumber] = React.useState<string>();
   React.useEffect(() => {
-    if (Capacitor.isNativePlatform()) void NativeApp.getInfo().then(info => setAppVersion(info.version)).catch(() => {});
+    if (Capacitor.isNativePlatform()) void NativeApp.getInfo().then(info => {
+      setAppVersion(info.version);
+      setAppBuildNumber(info.build);
+    }).catch(() => {});
   }, []);
   const [lastObservedAt, setLastObservedAt] = React.useState(remoteObservation);
   React.useEffect(() => {
@@ -32,7 +36,7 @@ function ObservedApp({ remote }: { remote: boolean }) {
   }, []);
   return <DeviceObservationProvider value={remote
     ? { mode: "on-demand", lastObservedAt, refresh: refreshRemoteObservation, readTarget: refreshRemoteTargetObservation, connection: remoteConnection, clearTarget: clearRemoteTarget }
-    : { mode: "live" }}><App appVersion={appVersion} /></DeviceObservationProvider>;
+    : { mode: "live" }}><App appVersion={appVersion} appBuildNumber={appBuildNumber} /></DeviceObservationProvider>;
 }
 
 function IosApp() {
