@@ -13,9 +13,8 @@ concurrency:
 jobs:
   build:
     name: Build unsigned iOS app and iPad DriverKit extension
-    # The device target is cross-compiled; use the Intel pool to avoid arm64
-    # runner acquisition failures during hosted-capacity shortages.
-    runs-on: macos-26-intel
+    # The iOS device target is cross-compiled; use the online Apple Silicon MacMini runner.
+    runs-on: qc-remote-macmini
     timeout-minutes: 45
     steps:
       - name: Check out source
