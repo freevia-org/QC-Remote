@@ -34,6 +34,14 @@ function declaredEvents(text) {
   return events;
 }
 
+test('all workflow files run only on explicit manual dispatch', () => {
+  const files = readdirSync(path.join(root, '.github', 'workflows')).filter((name) => /\.ya?ml$/.test(name));
+  assert.ok(files.length > 0, 'workflow files must exist');
+  for (const name of files) {
+    assert.deepEqual(declaredEvents(workflow(name)), ['workflow_dispatch'], `${name} must not run automatically`);
+  }
+});
+
 test('qc-ui source, docs and root markdown are safe', () => {
   for (const file of [
     'packages/typescript/qc-ui/src/display/Foo.tsx',
