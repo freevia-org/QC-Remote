@@ -208,6 +208,25 @@ test("a failed USB attempt clears the synthetic opening screen before showing it
   assert.ok(unsynchronizedPath.indexOf("setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT)") < unsynchronizedPath.indexOf("transitionConnection(\"error\""), "the unsynchronized result clears the placeholder before publishing its error");
 });
 
+test("Demo stays local while the connection screen reports background USB recovery", () => {
+  const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const panelStart = appSource.indexOf("const openUsbStatusPanel");
+  const panelEnd = appSource.indexOf("const openRemoteStatusPanel", panelStart);
+  const panel = appSource.slice(panelStart, panelEnd);
+  const summary = appSource.match(/<div className="mobile-connection-summary"><span>[\s\S]*?<\/div>/)?.[0] ?? "";
+
+  assert.match(appSource, /const usbProgressVisible = usbProgressActive \|\| usbProgress\.phase === "error" \|\| usbProgress\.phase === "permission" \|\| usbProgress\.phase === "disconnected"/,
+    "active recovery, terminal USB states, and disconnects take precedence over the idle Demo label");
+  assert.match(summary, /\{usbConnectionSummary\}/,
+    "the main connection row shows USB progress without implying the physical target is active");
+  assert.match(appSource, /const usbConnectionSummary = demoActive[\s\S]*`Demo remains active · \$\{usbStatusText\}`/,
+    "the active recovery message is shown alongside the unchanged Demo target");
+  assert.match(panel, /if \(demoActive\)[\s\S]*?await usbDiagnostics\(\)/,
+    "opening USB details reads the native USB state while Demo is selected");
+  assert.match(panel, /Demo commands stay on this phone and do not reach the Quad Cortex/,
+    "USB diagnostics keep the Demo command-safety boundary explicit");
+});
+
 test("tapping a live Grid block opens the shared parameter editor and commits over USB", () => {
   const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
   const displayModel = readFileSync(new URL("../../../packages/typescript/qc-ui/src/qc-device-display.tsx", import.meta.url), "utf8");
