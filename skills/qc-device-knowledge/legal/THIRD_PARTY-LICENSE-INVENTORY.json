@@ -38,7 +38,7 @@
     {
       "ecosystem": "cargo",
       "name": "aes",
-      "version": "0.9.3",
+      "version": "0.9.2",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/RustCrypto/block-ciphers",
       "licenseTextHashes": [
@@ -12101,7 +12101,7 @@
         "LICENSE-APACHE"
       ],
       "components": [
-        "cargo:aes@0.9.3",
+        "cargo:aes@0.9.2",
         "cargo:block-buffer@0.10.4",
         "cargo:block-buffer@0.12.1",
         "cargo:chacha20@0.10.2",
@@ -12373,7 +12373,7 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:aes@0.9.3"
+        "cargo:aes@0.9.2"
       ]
     },
     {
