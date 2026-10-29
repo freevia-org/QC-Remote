@@ -7158,7 +7158,7 @@ THE SOFTWARE.
 ================================================================================
 SHA-256: 6ac8711fb340c62ce0a4ecd463342d3fa0e8e70de697c863a2e1c0c53006003c
 Source file names: LICENSE
-Applies to: cargo:zip@9.0.4
+Applies to: cargo:zip@9.0.5
 --------------------------------------------------------------------------------
 The MIT License (MIT)
 
