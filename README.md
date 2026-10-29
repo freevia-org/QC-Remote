@@ -1,8 +1,7 @@
 # QC Remote
 
-Control a Quad Cortex from a Windows PC, Linux desktop, Android phone, or Apple
-mobile device, or let
-a compatible AI app inspect the rig, make changes, and verify the result through
+Control a Quad Cortex with QC Remote's desktop or Android builds, or let a
+compatible AI app inspect the rig, make changes, and verify the result through
 guarded MCP tools. QC Remote is free, open-source software from Freevia.
 
 [Website](https://freevia.org/qcremote/) ·
@@ -22,7 +21,7 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 
 | Platform | Current release | Primary download | Other channel |
 | --- | --- | --- | --- |
-| Windows 10/11, x64 | 1.0.4 | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.4/QC-Remote-Windows-1.0.4-x64-setup.exe) | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5); 1.0.4 update is not yet available there |
+| Windows 10/11, x64 | 1.0.4 | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.4/QC-Remote-Windows-1.0.4-x64-setup.exe) | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5); published package points to the 1.0.4 x64 installer |
 | Ubuntu 24.04, x86_64 | 1.0.4 Linux preview | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.4-linux/qc-remote_1.0.4_amd64.deb) | CI build provenance included |
 | Android 7.0+, USB host/OTG | 1.0.4 | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.4/QC-Remote-Android-1.0.4-release.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote); versionCode 58 is in production at 100% rollout |
 | macOS, Apple Silicon | 1.0.3 signed release | [Signed and notarized ZIP](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3/QC-Remote-macOS-1.0.3-arm64.zip) | The 1.0.4 release has no signed Apple Silicon package |
@@ -41,8 +40,9 @@ contains the Windows installer and Android APK/AAB. Google Play version 1.0.4
 (versionCode 58) is in production at 100% rollout. The [Linux 1.0.4 preview](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.4-linux)
 and [unsigned Intel macOS 1.0.4 preview](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.4-macos-preview.1)
 are separate prereleases. The signed Apple Silicon macOS download remains 1.0.3.
-The Microsoft Store 1.0.4 update is not yet available there; Partner Center still
-shows package validation as incomplete. iOS 1.0.4 has not been submitted to Apple;
+Partner Center identifies the 1.0.4 x64 installer as the published Microsoft
+Store package; the public listing offers a download but does not show a version
+label. iOS 1.0.4 has not been submitted to Apple;
 the submitted 1.0.3 build 5 was rejected and is not publicly available. The GitHub Android APK uses the
 upload signing key and cannot replace a Play-installed app in place; use Play
 for an update that preserves that installation.
