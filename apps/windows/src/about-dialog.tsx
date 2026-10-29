@@ -16,6 +16,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { QC_BRAND, QC_LEGAL } from "@qc-remote/theme";
 import { ABOUT_TABS, LEGAL_DOCUMENTS, repositoryRoot, type AboutTab, type HelpWindowKind, type LegalDocument } from "./about-content";
+import { desktopPlatform } from "./host-platform";
 
 const DOCUMENT_UNAVAILABLE = "This document ships with installed builds and is not available in this development session.";
 
@@ -208,7 +209,7 @@ export function AboutWindowContent({ appVersion, openExternal, openHelpWindow, l
         <div className="dialog-actions">
           <button type="button" onClick={() => void report(() => openHelpWindow("guide"))}>User guide</button>
           <button type="button" onClick={() => void report(() => openHelpWindow("feedback"))}>Report an issue</button>
-          <button type="button" className="primary" onClick={() => void report(() => openExternal(QC_BRAND.sourceRepositoryUrl))}>Source code on GitHub</button>
+          {desktopPlatform !== "Windows" && <button type="button" className="primary" onClick={() => void report(() => openExternal(QC_BRAND.sourceRepositoryUrl))}>Source code on GitHub</button>}
         </div>
       </>}
 
