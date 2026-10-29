@@ -17,6 +17,8 @@ function discoverFiles() {
 }
 
 test("public dependency audit names every public Cargo and Gradle lock and cloud workspace", () => {
+  assert.match(workflow, /^on:\r?\n  workflow_dispatch:\r?\n/m, "security scans require explicit dispatch");
+  assert.doesNotMatch(workflow, /^  (?:push|pull_request|pull_request_target|schedule):/m, "security scans must not run automatically");
   const files = discoverFiles();
   const cargoLocks = files.filter((path) => path === "Cargo.lock" || path.endsWith("/Cargo.lock"));
   const expectedRustDirectories = cargoLocks.map((path) => path === "Cargo.lock" ? "." : path.slice(0, -"/Cargo.lock".length)).sort();
@@ -28,17 +30,13 @@ test("public dependency audit names every public Cargo and Gradle lock and cloud
   const gradleLocks = files.filter((path) => path.endsWith("/gradle.lockfile"));
   assert.deepEqual(gradleLocks, ["apps/android/android/app/gradle.lockfile"], "expected exactly the Android app Gradle lock");
   assert.ok(workflow.includes("--lockfile=apps/android/android/app/gradle.lockfile"), "OSV scan omits the Android Gradle lock");
-  assert.match(workflow, /- "\*\*\/Cargo\.lock"/, "Cargo lock changes must trigger the audit");
-  assert.match(workflow, /- "\*\*\/gradle\.lockfile"/, "Gradle lock changes must trigger the audit");
-  assert.match(workflow, /- "\*\*\/\*\.gradle"/, "Gradle build-file changes must trigger the audit");
-  assert.match(workflow, /- "\*\*\/\*\.gradle\.kts"/, "Gradle Kotlin build-file changes must trigger the audit");
-  assert.match(workflow, /- "package-lock\.json"/, "npm lock changes must trigger the audit");
+  assert.match(workflow, /npm ci --ignore-scripts/, "the manual audit must install the root locked dependencies");
   assert.match(workflow, /npm audit --workspace @qc-remote\/cloud --omit=dev --audit-level=moderate/);
   assert.match(workflow, /npm audit --workspace @qc-remote\/cloud --audit-level=high/);
   assert.match(workflow, /cache-dependency-path:\s*package-lock\.json/);
   assert.match(workflow, /actions\/checkout@[0-9a-f]{40}/);
   assert.match(workflow, /osv-scanner-reusable\.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36/);
-  assert.match(workflow, /upload-sarif: false/, "fork PR scans must not require a write-scoped SARIF upload");
+  assert.match(workflow, /upload-sarif: false/, "the audit must not upload SARIF results");
   assert.match(workflow, /--lockfile=apps\/android\/android\/app\/gradle\.lockfile/);
   assert.match(workflow, /rustsec\/audit-check@[0-9a-f]{40}/);
   assert.doesNotMatch(workflow, /E:\\\\QC-Remote-GitHub|\.vendor\/qc-remote-public|services\/qc-remote-cloud\//,
