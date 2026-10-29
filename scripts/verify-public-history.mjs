@@ -88,6 +88,8 @@ export const publishedIdentityExceptions = new Map([
     new Set(['commit message contains a Co-authored-by trailer']),
   ],
   [
+    // GitHub's Dependabot merge appended this trailer to an already-published
+    // dependency update. Keep the exception bound to this exact base commit.
     'b5cc7ff4c6192c6211cce1a455350c28bea88b4d',
     new Set(['commit message contains a Co-authored-by trailer']),
   ],
