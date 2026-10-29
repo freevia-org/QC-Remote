@@ -180,7 +180,8 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
   const remotePresentation = qcRelayPresentation(relayWorkflow.status, Boolean(browserRelayPairing));
   const usbIndicatorPhase = qcConnectionIndicatorPhase(mobileIndicatorConnection(connection), hardwareConnected && !demoActive, null, { actionRequired: usbWritesQuarantined });
   const usbProgressActive = usbProgressIsActive(usbProgress.phase);
-  const usbStatusText = usbProgress.phase === "error" || usbProgress.phase === "permission" || usbProgress.phase === "disconnected"
+  const usbProgressVisible = usbProgressActive || usbProgress.phase === "error" || usbProgress.phase === "permission" || usbProgress.phase === "disconnected";
+  const usbStatusText = usbProgressVisible
     ? usbProgress.message
     : hostDemoActive ? "Paired-host demo ready" : usbIndicatorPhase === "ready"
     ? "Quad Cortex ready"
@@ -191,6 +192,12 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       : usbIndicatorPhase === "error"
         ? "Quad Cortex connection error"
         : "Quad Cortex disconnected";
+  const usbConnectionSummary = demoActive
+    ? usbProgressVisible ? `Demo remains active · ${usbStatusText}` : "Demo device ready"
+    : usbStatusText;
+  const usbConnectionDotPhase = demoActive
+    ? usbProgressActive ? "syncing" : usbProgress.phase === "error" ? "error" : usbProgress.phase === "permission" ? "action-required" : "demo"
+    : usbIndicatorPhase;
   const [workflowPanel, setWorkflowPanel] = useState<"usb" | "remote" | "about" | "display" | "privacy" | "legal" | "notices" | null>(null);
   const [usbPanelDetail, setUsbPanelDetail] = useState(iosPlatform ? "Checking remote host status…" : "Checking direct USB status…");
   const [lastStartupFailure, setLastStartupFailure] = useState<AndroidStartupFailure | null>(null);
@@ -1029,9 +1036,13 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
   const openUsbStatusPanel = async () => {
     setWorkflowPanel("usb");
     if (demoActive) {
-      setUsbPanelDetail(hardwareConnected
-        ? "The Quad Cortex remains connected in the background. Demo commands never reach it."
-        : "No Quad Cortex is connected. Demo commands are saved on this phone only.");
+      try {
+        const status = await usbDiagnostics();
+        setUsbPanelDetail(`${status} Demo remains active; Demo commands stay on this phone and do not reach the Quad Cortex.`);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "USB status could not be read.";
+        setUsbPanelDetail(`${detail} Demo remains active; Demo commands stay on this phone and do not reach the Quad Cortex.`);
+      }
       return;
     }
     try { setUsbPanelDetail(await usbDiagnostics()); }
@@ -1328,7 +1339,7 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
             <button type="button" className="demo-device-tab" aria-pressed={demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => { if (!demoActive) void startDemoDevice(); }}>LOCAL DEMO{demoPending && <small>Opening…</small>}</button>
           </div>
           <div className={`mobile-usb-progress phase-${usbProgress.phase}`} role="status" aria-live="polite"><span><i className={`panel-status-dot phase-${usbProgress.phase === "ready" ? "ready" : usbProgress.phase === "error" ? "error" : usbProgress.phase === "permission" ? "action-required" : usbProgress.phase === "disconnected" || usbProgress.phase === "idle" ? "idle" : "syncing"}`} /><strong>{usbProgressLabels[usbProgress.phase]}</strong></span><p>{usbProgress.message}</p>{usbProgressActive && <div className="mobile-usb-progress-track" role="progressbar" aria-label={usbProgressLabels[usbProgress.phase]} aria-valuetext={usbProgress.message}><span /></div>}</div>
-          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${demoActive ? "demo" : usbIndicatorPhase}`} />{demoActive ? "Demo device ready" : usbStatusText}</span>{!demoActive && <button type="button" disabled={!native || usbBusy} onClick={() => { void openUsbStatusPanel(); void connectUsb(); }}>{hardwareConnected ? "Reconnect" : iosPlatform ? "Refresh host" : usbProgress.phase === "error" || usbProgress.phase === "disconnected" ? "Retry connect" : "Connect"}</button>}{demoActive && !hardwareConnected && <button type="button" disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void resumeHardwareDevice()}>{iosPlatform ? "Connect to host" : "Connect Quad Cortex"}</button>}</div>
+          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${usbConnectionDotPhase}`} />{usbConnectionSummary}</span>{!demoActive && <button type="button" disabled={!native || usbBusy} onClick={() => { void openUsbStatusPanel(); void connectUsb(); }}>{hardwareConnected ? "Reconnect" : iosPlatform ? "Refresh host" : usbProgress.phase === "error" || usbProgress.phase === "disconnected" ? "Retry connect" : "Connect"}</button>}{demoActive && !hardwareConnected && <button type="button" disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void resumeHardwareDevice()}>{iosPlatform ? "Connect to host" : "Connect Quad Cortex"}</button>}</div>
           <dl className="mobile-connection-details">
             <div><dt>Connection</dt><dd>{demoActive ? "Local simulation · no hardware changes" : connection.detail || (hardwareConnected ? (iosPlatform ? "The Quad Cortex is connected through your paired QC Remote host." : "The Quad Cortex is connected directly over USB.") : usbProgress.message || (iosPlatform ? "Sign in to reach the Quad Cortex through a paired QC Remote host." : "No Quad Cortex is connected directly over USB."))}</dd></div>
             <div><dt>Current preset</dt><dd>{demoActive ? `${snapshot.presetLocation} · ${snapshot.presetName}` : hardwareConnected ? `${snapshot.presetLocation} · ${snapshot.presetName}` : "Not synchronized"}</dd></div>
