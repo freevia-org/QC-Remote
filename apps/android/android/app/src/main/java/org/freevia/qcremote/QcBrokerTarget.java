@@ -2,6 +2,7 @@ package org.freevia.qcremote;
 
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.LongPredicate;
 import org.json.JSONObject;
 
 /** Broker-issued identity, deliberately distinct from the WebView registration. */
@@ -51,10 +52,48 @@ final class QcBrokerTarget {
     }
 
     static final class Registry {
+        private String selectedSource = "physical";
+        private long intentRevision;
         private String owner;
         private long revision;
         private long generation;
         private QcBrokerTarget selected;
+
+        synchronized String selectedSource() { return selectedSource; }
+        synchronized boolean demoSelected() { return "demo".equals(selectedSource); }
+        synchronized long intentRevision() { return intentRevision; }
+
+        /** Restore a durable user choice, or apply it after its durable commit. */
+        synchronized void restoreIntent(String source, long revision) {
+            if (!("demo".equals(source) || "physical".equals(source))
+                    || revision < 0 || revision > 9007199254740991L)
+                throw new IllegalArgumentException("The broker selection is invalid.");
+            selectedSource = source;
+            intentRevision = revision;
+            clear();
+        }
+
+        synchronized long commitIntent(String source, LongPredicate persist) {
+            if (!("demo".equals(source) || "physical".equals(source)))
+                throw new IllegalArgumentException("The broker selection is invalid.");
+            long revision = intentRevision + 1;
+            if (revision > 9007199254740991L)
+                throw new IllegalStateException("The broker selection could not be saved.");
+            // Closing a physical route is immediate. A failed durable save must
+            // not leave fresh requests eligible for the old physical target.
+            if ("demo".equals(source)) restoreIntent(source, revision);
+            if (!persist.test(revision))
+                throw new IllegalStateException("The broker selection could not be saved.");
+            if (!"demo".equals(source)) restoreIntent(source, revision);
+            return revision;
+        }
+
+        /** Availability can retire an identity; it never changes the user's choice. */
+        synchronized QcBrokerTarget selectAvailable(boolean physicalReady, String physicalOwner, long physicalRevision,
+                boolean demoReady, String demoOwner, long demoRevision) {
+            if (demoSelected()) return select(demoReady ? "demo" : null, demoOwner, demoRevision);
+            return select(physicalReady ? "physical" : null, physicalOwner, physicalRevision);
+        }
 
         synchronized QcBrokerTarget select(String source, String owner, long revision) {
             if (source == null) { clear(); return null; }

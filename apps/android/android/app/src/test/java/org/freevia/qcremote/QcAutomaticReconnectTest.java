@@ -34,7 +34,8 @@ public final class QcAutomaticReconnectTest {
         String explicitConnect = between(source, "    public void connect(PluginCall call)", "    private void awaitReconnectForConnect(");
         assertTrue("a person-initiated retry starts a fresh recovery budget",
             explicitConnect.contains("connectionProgressAttempt = 0;"));
-        String scheduling = between(source, "    private void scheduleAutomaticReconnect(String detail)", "    private void resolvePendingReady()");
+        String scheduling = between(source, "    private void scheduleAutomaticReconnect(String detail)", "    private void resolvePendingReady()")
+            .replace("QcUsbPlugin.this", "ReconnectHarness.this");
         String reader = between(source, "    private synchronized void recoverUnexpectedReaderExit(", "    private void consumeInputReport(");
         String active = between(source, "    private boolean readerIsActive(", "    private boolean isDeviceStillAttached(");
         String terminal = between(source, "    private synchronized void terminalTransportFailed(", "    @RequiresApi(");
@@ -73,6 +74,10 @@ public final class QcAutomaticReconnectTest {
     @Test public void currentRecoveryKeepsRetryingWhileDeviceIsAbsent() throws Exception { scenario("absentDeviceRetry"); }
     @Test public void openTransportWithoutSemanticSeedKeepsRetrying() throws Exception { scenario("unsynchronizedTransportRetry"); }
     @Test public void repeatedAutomaticRecoveryFailuresStopUntilExplicitRetry() throws Exception { scenario("automaticRecoveryStopsAfterRepeatedFailuresUntilExplicitRetry"); }
+    @Test public void lifecycleAndTimeoutChainsShareOneFiveOpenBudget() throws Exception { scenario("duplicateRecoveryProducersShareBudget"); }
+    @Test public void requestIdChangesCannotResetTheAutomaticOpenBudget() throws Exception { scenario("requestIdsCannotResetRecoveryBudget"); }
+    @Test public void readyKeepsCompletedAttemptAndResetsOnlyTheNextRecoveryBudget() throws Exception { scenario("readyRetainsAttemptAndRefreshesBudget"); }
+    @Test public void suspensionCannotBypassExhaustedAutomaticRecovery() throws Exception { scenario("suspensionSharesExhaustedBudget"); }
     @Test public void terminalReaderRecoveryCannotOverrideDisconnect() throws Exception { scenario("readerDisconnectRace"); }
     @Test public void replacementIntentAndTerminalOwnerRetireOldTimers() throws Exception { scenario("replacementAndShutdown"); }
     @Test public void currentSuspensionResyncReopensOnce() throws Exception { scenario("currentSuspensionResync"); }
@@ -98,7 +103,9 @@ import java.util.*; import java.util.concurrent.*; import java.util.concurrent.a
 public final class ReconnectHarness {
  static final int AUTOMATIC_RECONNECT_ATTEMPT_LIMIT = 5;
  final AtomicLong automaticReconnectGeneration = new AtomicLong();
- String activeConnectionProgressRequestId; int connectionProgressAttempt; String lastProgressPhase, lastProgressMessage, lastProgressError;
+ long automaticReconnectBudgetGeneration = -1, automaticReconnectScheduledGeneration = -1, automaticReconnectActiveGeneration = -1, automaticReconnectScheduleSerial;
+ int automaticReconnectAttemptCount;
+ String activeConnectionProgressRequestId; int connectionProgressAttempt, lastProgressAttempt; String lastProgressPhase, lastProgressMessage, lastProgressError;
  final Decoder stateDecoder = new Decoder(); final Guard relayAdmissionGuard = new Guard();
  final Scheduler keepalive = new Scheduler(); final Manager manager = new Manager();
  Flight flight; boolean connecting, present = true, reading = true, ready, synchronizedSession; int opens, closes; String lastError;
@@ -115,7 +122,8 @@ public final class ReconnectHarness {
  void closeConnection() { closes++; stateDecoder.due = false; reading = false; connection = null; connectionGeneration.incrementAndGet(); }
  void closeConnection(Object ignored, boolean graceful) { closeConnection(); }
  void check(boolean value, String message) { if (!value) throw new AssertionError(message); }
- void publishConnectionProgress(String requestId, String phase, String message, String errorCode) { lastProgressPhase = phase; lastProgressMessage = message; lastProgressError = errorCode; }
+ void publishConnectionProgress(String requestId, String phase, String message, String errorCode) { publishConnectionProgress(requestId, connectionProgressAttempt, phase, message, errorCode); }
+ void publishConnectionProgress(String requestId, int attempt, String phase, String message, String errorCode) { lastProgressPhase = phase; lastProgressMessage = message; lastProgressError = errorCode; lastProgressAttempt = attempt; }
  Throwable unwrapCompletion(Throwable error) { return error; }
  static final class RelayException extends RuntimeException { final String code = "TEST"; }
 """;
@@ -204,6 +212,56 @@ public final class ReconnectHarness {
   scheduleAutomaticReconnect("person tapped Retry"); keepalive.next();
   check(opens == 6 && connectionProgressAttempt == 1, "explicit Retry did not start a fresh recovery budget");
  }
+ public void duplicateRecoveryProducersShareBudget() {
+  scheduleAutomaticReconnect("lifecycle failed");
+  Runnable retiredTimer = keepalive.tasks.peekFirst();
+  scheduleAutomaticReconnect("second lifecycle failure");
+  check(keepalive.tasks.size() == 1, "duplicate lifecycle drain queued another timer");
+  for (int attempt = 1; attempt <= 5; attempt++) {
+   keepalive.next();
+   check(opens == attempt, "recovery open count advanced twice");
+   scheduleAutomaticReconnect("lifecycle error while ready future is pending");
+   check(keepalive.tasks.isEmpty(), "lifecycle drain created a competing timer during recovery");
+   openResult.completeExceptionally(new Exception("READY timeout"));
+   scheduleAutomaticReconnect("late lifecycle error after READY timeout");
+   check(keepalive.tasks.size() == (attempt < 5 ? 1 : 0), "timeout and lifecycle chains escaped the shared budget");
+  }
+  retiredTimer.run();
+  while (!keepalive.tasks.isEmpty()) keepalive.next();
+  check(opens == 5, "draining old timers opened attempt six");
+  automaticReconnectGeneration.incrementAndGet(); connectionProgressAttempt = 0;
+  scheduleAutomaticReconnect("explicit user retry"); keepalive.next();
+  check(opens == 6 && automaticReconnectAttemptCount == 1, "explicit retry did not reset the exhausted budget");
+ }
+ public void requestIdsCannotResetRecoveryBudget() {
+  scheduleAutomaticReconnect("initial loss");
+  for (int attempt = 1; attempt <= 5; attempt++) {
+   keepalive.next();
+   activeConnectionProgressRequestId = "join-" + attempt;
+   connectionProgressAttempt = 0;
+   openResult.completeExceptionally(new Exception("ready timeout"));
+  }
+  scheduleAutomaticReconnect("another request ID");
+  check(opens == 5 && keepalive.tasks.isEmpty(), "progress request IDs granted a new USB open budget");
+ }
+ public void readyRetainsAttemptAndRefreshesBudget() {
+  scheduleAutomaticReconnect("lost"); keepalive.next();
+  openResult.completeExceptionally(new Exception("first failure"));
+  check(lastProgressAttempt == 1 && "error".equals(lastProgressPhase), "first failure attempt missing");
+  keepalive.next(); check(lastProgressAttempt == 2 && "searching".equals(lastProgressPhase), "retry did not advance attempt");
+  ready = true; synchronizedSession = true; currentSetlist = new Object();
+  connectionProgressAttempt = 0; // A late UI join cannot relabel this completed attempt.
+  openResult.complete(new Object());
+  check(lastProgressAttempt == 2 && "ready".equals(lastProgressPhase), "terminal success regressed to attempt zero");
+  check(automaticReconnectAttemptCount == 0, "successful epoch did not refresh its independent budget");
+  ready = false; synchronizedSession = false; currentSetlist = null;
+  scheduleAutomaticReconnect("later loss");
+  for (int attempt = 1; attempt <= 5; attempt++) {
+   keepalive.next(); check(automaticReconnectAttemptCount == attempt, "later epoch inherited the exhausted budget");
+   openResult.completeExceptionally(new Exception("later failure"));
+  }
+  check(opens == 7 && keepalive.tasks.isEmpty(), "later recovery epoch was not bounded to five opens");
+ }
  public void replacementAndShutdown() {
   scheduleAutomaticReconnect("lost"); automaticReconnectGeneration.incrementAndGet(); keepalive.next();
   check(stateDecoder.arms == 1 && opens == 0, "old timer borrowed replacement intent");
@@ -215,6 +273,8 @@ public final class ReconnectHarness {
   scheduleSuspensionResync(connectionGeneration.get());
   check(keepalive.tasks.size() == 1 && opens == 0 && stateDecoder.resync == null, "current resync not queued");
   keepalive.next();
+  check(opens == 0 && keepalive.tasks.size() == 1, "suspension did not enter the shared automatic scheduler");
+  keepalive.next();
   check(opens == 1 && keepalive.tasks.isEmpty(), "current resync did not reopen once");
   scheduleSuspensionResync(connectionGeneration.get());
   check(keepalive.tasks.isEmpty(), "consumed resync queued twice");
@@ -225,7 +285,7 @@ public final class ReconnectHarness {
   connection = new UsbDeviceConnection(); reading = true; stateDecoder.resync = "successor";
   scheduleSuspensionResync(oldReader);
   check(keepalive.tasks.isEmpty() && "successor".equals(stateDecoder.resync), "old reader stole successor resync");
-  scheduleSuspensionResync(connectionGeneration.get()); keepalive.next();
+  scheduleSuspensionResync(connectionGeneration.get()); keepalive.next(); keepalive.next();
   check(opens == 1, "successor reader failed to reopen");
  }
  public void queuedSuspensionRetirement() {
@@ -242,6 +302,16 @@ public final class ReconnectHarness {
   stateDecoder.resync = "reset"; scheduleSuspensionResync(connectionGeneration.get());
   relayAdmissionGuard.terminal = true; keepalive.next();
   check(opens == 0 && keepalive.tasks.isEmpty(), "queued resync reopened terminal owner");
+ }
+ public void suspensionSharesExhaustedBudget() {
+  scheduleAutomaticReconnect("startup failed");
+  for (int attempt = 1; attempt <= 5; attempt++) {
+   keepalive.next(); openResult.completeExceptionally(new Exception("ready timeout"));
+  }
+  stateDecoder.resync = "late suspension";
+  scheduleSuspensionResync(connectionGeneration.get());
+  while (!keepalive.tasks.isEmpty()) keepalive.next();
+  check(opens == 5, "suspension bypassed the exhausted automatic budget");
  }
  final class Decoder { int arms; boolean due; String resync; CountDownLatch entered, release; boolean sessionSynchronized() { return synchronizedSession; } String takeSuspensionResync() { String value = resync; resync = null; return value; } boolean sessionTerminalReadFailed() { if (entered != null) { entered.countDown(); try { if (!release.await(2, TimeUnit.SECONDS)) throw new AssertionError("terminal fixture timeout"); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); } } return true; } long sessionScheduleReconnect(long now) { arms++; due = true; return 750; } boolean sessionReconnectDue(long now) { return due; } void sessionReconnectAttempted(long now) {} }
  static final class Guard { boolean terminal; boolean isTerminal() { return terminal; } boolean publish(long epoch, Runnable action) { if (terminal || epoch != 1) return false; action.run(); return true; } }

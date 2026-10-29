@@ -21,6 +21,8 @@ import { openOwnedLooper } from "./open-owned-looper.ts";
 import { attachNativeDemoProvider } from "./demo-provider-bridge.ts";
 import { mobileIndicatorConnection, refreshMobileTarget } from "./mobile-target-binding.ts";
 import { retainStartupFailure, startupFailureReport, type AndroidStartupFailure } from "./android-startup-failure.ts";
+import { createAndroidTargetIntent, type AndroidTargetSource } from "./android-target-intent.ts";
+import { advanceUsbConnectionProgress } from "./usb-connection-progress.ts";
 import appPackage from "../package.json";
 import { qcStreamRestartClearsBulkOperation } from "@qc-remote/ui";
 
@@ -48,10 +50,6 @@ const usbProgressLabels: Record<UsbConnectionProgressView["phase"], string> = {
   ready: "Device ready",
   error: "Connection needs attention"
 };
-const usbProgressOrder: Record<UsbConnectionProgressView["phase"], number> = {
-  idle: -1, searching: 0, permission: 1, opening: 2, claiming: 3, reader: 4,
-  handshake: 5, synchronizing: 6, ready: 100, error: 101, disconnected: 102
-};
 const usbProgressIsActive = (phase: UsbConnectionProgressView["phase"]) =>
   ["searching", "opening", "claiming", "reader", "handshake", "synchronizing"].includes(phase);
 function AppMark({ onClick }: { onClick: () => void }) {
@@ -75,6 +73,11 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
   } = qcController;
   useEffect(() => { if (corpusFixtureEnabled) setSnapshot(fixtureInitialSnapshot); }, [setSnapshot]);
   const demoDeviceSession = useMemo(() => createDemoDeviceSession(androidGatewayTransport), []);
+  const [selectedTarget, setSelectedTarget] = useState<AndroidTargetSource>("physical");
+  const [targetSelectionAcknowledged, setTargetSelectionAcknowledged] = useState(false);
+  const targetIntent = useMemo(() => createAndroidTargetIntent((source, acknowledged) => {
+    setSelectedTarget(source); setTargetSelectionAcknowledged(acknowledged);
+  }), []);
   const activeGateway = demoDeviceSession.gateway;
   const activeSourceRef = useRef<"device" | "virtual">("device");
   activeSourceRef.current = demoDeviceSession.source;
@@ -136,18 +139,16 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
   const [catalogRevision, setCatalogRevision] = useState(0);
   const demoActive = connection.source === "virtual" && connection.phase === "ready";
   const hostDemoActive = connection.brokerTarget?.source === "demo" && connection.phase === "ready";
-  const physicalSelected = hardwareConnected && connection.phase === "ready" && !demoActive && !hostDemoActive;
+  const physicalSelected = targetSelectionAcknowledged && selectedTarget === "physical" && hardwareConnected && connection.phase === "ready" && !demoActive && !hostDemoActive;
   const physicalSelectedRef = useRef(physicalSelected);
   physicalSelectedRef.current = physicalSelected;
   const targetIdentity = brokerTargetKey(connection.brokerTarget) ?? "";
   const targetIdentityRef = useRef(targetIdentity);
   targetIdentityRef.current = targetIdentity;
-  const sessionReady = demoActive || (hardwareConnected && !deviceSuspended && !deviceBulkBlocking);
+  const sessionReady = demoActive || (targetSelectionAcknowledged && selectedTarget === "physical" && hardwareConnected && !deviceSuspended && !deviceBulkBlocking);
   const [demoPending, setDemoPending] = useState(false);
   const demoStartInFlight = useRef(false);
   const demoPasteInFlight = useRef(false);
-  // A usable physical QC always takes precedence, including after an explicit demo selection.
-  const demoCanYieldToDevice = useRef(true);
   // Native availability may be published while connect() is still in flight.
   // Remember that edge and retry once if the owning attempt does not connect.
   const usbRetryRequested = useRef(false);
@@ -192,8 +193,9 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       : usbIndicatorPhase === "error"
         ? "Quad Cortex connection error"
         : "Quad Cortex disconnected";
-  const usbConnectionSummary = demoActive
-    ? usbProgressVisible ? `Demo remains active · ${usbStatusText}` : "Demo device ready"
+  const usbConnectionSummary = selectedTarget === "demo"
+    ? !targetSelectionAcknowledged ? "Demo held for this app session · selection not saved"
+      : demoActive ? usbProgressVisible ? `Demo remains active · ${usbStatusText}` : "Demo device ready" : "Demo selected · provider unavailable"
     : usbStatusText;
   const usbConnectionDotPhase = demoActive
     ? usbProgressActive ? "syncing" : usbProgress.phase === "error" ? "error" : usbProgress.phase === "permission" ? "action-required" : "demo"
@@ -217,13 +219,11 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
   const nativeStateStream = useRef<string | undefined>(undefined);
   const nativeStateRecoveryRevision = useRef(0);
   const gridRepair = useRef(createGridRepairCoordinator());
-  const startDemoDeviceRef = useRef<(reason?: string) => Promise<void>>(async () => undefined);
-  const resumeHardwareDeviceRef = useRef<(knownConnected?: boolean) => Promise<void>>(async () => undefined);
   useEffect(() => () => {
     if (modeChord.current.timer !== undefined) window.clearTimeout(modeChord.current.timer);
   }, []);
   useNativeStateRecovery({
-    enabled: native && hardwareConnected && !demoActive && !corpusFixtureEnabled,
+    enabled: native && targetSelectionAcknowledged && selectedTarget === "physical" && hardwareConnected && !demoActive && !corpusFixtureEnabled,
     controller: qcController,
     sequence: nativeStateSequence,
     streamId: nativeStateStream,
@@ -502,7 +502,6 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
         if (!iosPlatform && !acceptedPhysicalContext.current && activeSourceRef.current !== "virtual") { void attemptUsbConnection(); return; }
         setHardwareConnected(true);
         if (activeSourceRef.current === "virtual") {
-          if (demoCanYieldToDevice.current && !resumeHardwareInFlight.current) { resetCommands(); void resumeHardwareDeviceRef.current(true); }
           return;
         }
         presetSynchronized.current = true;
@@ -520,6 +519,17 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
 
   const attemptUsbConnection = async (announce = false) => {
     if (!native) return;
+    if (!announce && !targetIntent.canAutomaticallyConnectPhysical) return;
+    if (announce) {
+      try {
+        const selected = await targetIntent.select("physical", () => iosPlatform
+          ? Promise.resolve({ source: "physical", revision: 0 }) : QcUsbNative.selectBrokerTarget({ source: "physical" }));
+        if (!selected || !appOperationMounted.current) return;
+      } catch {
+        setNotice("The physical target selection was not acknowledged. The current target remains selected.");
+        return;
+      }
+    }
     const latchOwner = connectAttemptLatch.current.acquire();
     if (latchOwner === undefined) {
       usbRetryRequested.current = true;
@@ -538,7 +548,6 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
     if (fromDemo) {
       demoDeviceSession.useDevice();
       activeSourceRef.current = "device";
-      demoCanYieldToDevice.current = true;
       deviceHistory.clear();
       presetWorkflow.resetCache();
       setSelectedBlockId("");
@@ -623,16 +632,11 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       transitionConnection(awaitingPermission ? "absent" : "error", primary);
       setUsbProgress({ requestId, phase: awaitingPermission ? "permission" : "error", message: primary, ...(errorCode ? { errorCode } : {}) });
       if (announce) setNotice(primary);
-      // iOS remote-host recovery retains its existing Demo fallback. Android
-      // manual USB failures stay on the selected physical target and keep the
-      // error visible instead of silently switching the screen to Demo.
-      if (iosPlatform && fromDemo && attempt.current() && observationPolicy.mode !== "on-demand") {
-        void startDemoDeviceRef.current(primary);
-      }
+      // A failed physical connection never selects Demo. Selection is explicit.
     } finally {
       const released = connectAttemptLatch.current.release(latchOwner);
       if (released && usbRetryRequested.current && !usbSessionReady.current
-          && (activeSourceRef.current !== "virtual" || demoCanYieldToDevice.current)) {
+          && targetIntent.canAutomaticallyConnectPhysical) {
         usbRetryRequested.current = false;
         void attemptUsbConnection(false);
       }
@@ -647,7 +651,7 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       QcUsbNative.addListener("qcConnection", ({ state }) => {
         if (cancelled) return;
         if (state === "available") {
-          if (activeSourceRef.current !== "virtual" || demoCanYieldToDevice.current) void attemptUsbConnection();
+          if (targetIntent.canAutomaticallyConnectPhysical) void attemptUsbConnection();
         } else {
           clearPhysicalContext();
           connectionAttempts.invalidate();
@@ -661,34 +665,23 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
           setHardwareConnected(false);
           resetSessionBlocks();
           resetCommands();
-          if (activeSourceRef.current !== "virtual") {
+          if (targetIntent.source === "physical" && activeSourceRef.current !== "virtual") {
             activeUsbProgressRequest.current = null;
             setUsbProgress({ phase: "disconnected", message: iosPlatform ? "The paired host connection ended. Check that QC Remote is running on the host, then reconnect." : "USB connection ended. Check the cable and power, then tap Connect to retry." });
             transitionConnection("absent");
-            if (iosPlatform && observationPolicy.mode !== "on-demand") {
-              void startDemoDeviceRef.current("The paired QC Remote host disconnected.");
-            }
           }
         }
       }),
       ...(!iosPlatform ? [QcUsbNative.addListener("qcConnectionProgress", (progress) => {
         if (cancelled || progress.requestId !== activeUsbProgressRequest.current) return;
-        setUsbProgress(current => {
-          if (current.requestId !== progress.requestId) return current;
-          const nextAttempt = progress.attempt ?? 0;
-          const currentAttempt = current.attempt ?? 0;
-          if (nextAttempt < currentAttempt
-              || (nextAttempt === currentAttempt && usbProgressOrder[progress.phase] < usbProgressOrder[current.phase])) return current;
-          return progress;
-        });
+        setUsbProgress(current => advanceUsbConnectionProgress(current, progress));
       }), QcUsbNative.addListener("qcStartupFailure", (failure) => {
         if (!cancelled) setLastStartupFailure(current => retainStartupFailure(current, failure));
       })] : []),
       QcUsbNative.addListener("qcStateBatch", (frame) => {
         if (cancelled) return;
         setHardwareConnected(true);
-        if (activeSourceRef.current === "virtual") {
-          if (demoCanYieldToDevice.current && !resumeHardwareInFlight.current) { resetCommands(); void resumeHardwareDeviceRef.current(true); }
+        if (!targetIntent.canAutomaticallyConnectPhysical || activeSourceRef.current === "virtual") {
           return;
         }
         consumeQcNativeStateFrame(frame, {
@@ -714,6 +707,13 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
     // preset frame can beat the Capacitor bridge subscription.
     void Promise.all(listenerPromises).then(async () => {
       if (cancelled || !scanAttempt.current()) return;
+      await targetIntent.restore(() => iosPlatform
+        ? Promise.resolve({ source: "physical", revision: 0 }) : QcUsbNative.brokerTargetSelection());
+      if (cancelled || !scanAttempt.current()) return;
+      if (!targetIntent.canAutomaticallyConnectPhysical) {
+        setConnection({ phase: "needs-attention", source: "virtual", demo: true, detail: "Demo remains selected. Open LOCAL DEMO to resume its provider, or explicitly select Quad Cortex." });
+        return;
+      }
       const { devices, connected, synchronized } = await QcUsbNative.scan();
       if (cancelled || !scanAttempt.current()) return;
       if (connected) {
@@ -729,19 +729,16 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
         // preset changes. Reattaching USB mid-handshake reproduced it every
         // time: connected, streaming, and showing disconnected.
         if (synchronized) presetSynchronized.current = true;
-        if (activeSourceRef.current === "virtual") {
-          if (demoCanYieldToDevice.current && !resumeHardwareInFlight.current) { resetCommands(); void resumeHardwareDeviceRef.current(true); }
-        } else {
+        if (targetIntent.source === "physical" && activeSourceRef.current !== "virtual") {
           transitionConnection(presetSynchronized.current ? "connected" : "syncing");
         }
         return;
       }
       if (!devices.length) {
         setHardwareConnected(false);
-        if (activeSourceRef.current !== "virtual") {
+        if (targetIntent.source === "physical" && activeSourceRef.current !== "virtual") {
           setUsbProgress({ phase: "disconnected", message: "No Quad Cortex detected. Connect its USB cable and make sure the unit is powered on." });
           transitionConnection("absent");
-          if (observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current("No Quad Cortex was found.");
         }
         return;
       }
@@ -751,9 +748,6 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
         const detail = error instanceof Error ? error.message : "USB discovery failed unexpectedly.";
         setUsbProgress({ phase: "error", message: `Could not check the USB connection: ${detail}`, errorCode: "USB_SCAN_FAILED" });
         transitionConnection("error", detail);
-        if (iosPlatform && observationPolicy.mode !== "on-demand") {
-          void startDemoDeviceRef.current(error instanceof Error ? error.message : "Paired-host discovery failed.");
-        }
       }
     });
     return () => {
@@ -872,49 +866,44 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [native, hardwareConnected, observeWriteHealth]);
 
-  const startDemoDevice = async (reason?: string) => {
+  const startDemoDevice = async () => {
     if (!native || corpusFixtureEnabled || demoStartInFlight.current || demoActive) return;
-    if (hardwareConnected && connection.phase === "ready" && !hostDemoActive) { setNotice("The connected Quad Cortex takes precedence over the local demo."); return; }
-    if (reason === undefined) usbRetryRequested.current = false;
+    usbRetryRequested.current = false;
     clearPhysicalContext();
     const attempt = connectionAttempts.begin();
     demoStartInFlight.current = true;
     setDemoPending(true);
     resetCommands();
     try {
+      const selected = await targetIntent.select("demo", () => iosPlatform
+        ? Promise.resolve({ source: "demo", revision: 0 }) : QcUsbNative.selectBrokerTarget({ source: "demo" }));
+      if (!selected || !attempt.current()) return;
       const opened = await demoDeviceSession.start(virtualDeviceStorage, attempt.current);
       if (!opened || !attempt.current()) return;
       const { connection: state, snapshot: current } = opened;
       activeSourceRef.current = "virtual";
-      demoCanYieldToDevice.current = true;
       deviceHistory.clear();
       presetWorkflow.resetCache();
       setConnection(state);
       setSnapshot(current);
       setSelectedBlockId("");
       setMobileScreenView(null);
-      setNotice(reason
-        ? `Using the demo device because the Quad Cortex was not available (${reason}). ${current.presetLocation} · ${current.presetName} is saved on this phone.`
-        : hardwareConnected
+      setNotice(hardwareConnected
           ? `Demo device active. ${current.presetLocation} · ${current.presetName} is saved on this phone; the Quad Cortex stays connected in the background.`
           : `Demo device active. ${current.presetLocation} · ${current.presetName} is saved on this phone; nothing is sent to hardware.`);
     } catch (error) {
       if (!attempt.current()) return;
       const detail = error instanceof Error ? error.message : String(error);
-      if (hardwareConnected) {
-        demoDeviceSession.useDevice();
-        activeSourceRef.current = "device";
-        setNotice(`The demo device could not be opened: ${detail}`);
-      } else {
-        setConnection({ phase: "needs-attention", detail: `The demo device could not be opened: ${detail}`, demo: true, source: "device" });
-        setNotice(`The demo device could not be opened: ${detail}`);
-      }
+      const message = targetIntent.acknowledged
+        ? `Demo remains selected but is unavailable: ${detail}. Select Quad Cortex explicitly to use hardware.`
+        : `The Demo selection could not be confirmed as saved: ${detail}. Physical access is blocked for this app session, but this selection is not guaranteed after an app restart. Retry selecting Demo before restarting.`;
+      setConnection({ phase: "needs-attention", detail: message, demo: true, source: "virtual" });
+      setNotice(message);
     } finally {
       setDemoPending(false);
       demoStartInFlight.current = false;
     }
   };
-  startDemoDeviceRef.current = startDemoDevice;
 
   const resumeHardwareDevice = async (knownConnected = false) => {
     if (!appOperationMounted.current || connectionPending) return;
@@ -926,6 +915,7 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       if (!native || devicePending || demoPending || resumeHardwareInFlight.current) return;
       resumeHardwareInFlight.current = true;
       if (!iosPlatform || observationPolicy.readTarget) { await attemptUsbConnection(true); return; }
+      if (!await targetIntent.select("physical", () => Promise.resolve({ source: "physical", revision: 0 }))) return;
       if (!hardwareConnected && !knownConnected) {
         try { await attemptUsbConnection(true); }
         finally { resumeHardwareInFlight.current = false; }
@@ -937,7 +927,6 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
         if (!attempt.current() || !operationCurrent()) return;
         demoDeviceSession.useDevice();
         activeSourceRef.current = "device";
-        demoCanYieldToDevice.current = true;
         deviceHistory.clear();
         presetWorkflow.resetCache();
         setSnapshot(current);
@@ -953,14 +942,18 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       }
     } finally { resumeHardwareInFlight.current = false; operationLease.release(); }
   };
-  resumeHardwareDeviceRef.current = resumeHardwareDevice;
 
-  const stopDemoDevice = () => {
+  const stopDemoDevice = async () => {
     if (devicePending || demoPending) return;
     if (hardwareConnected) {
       void resumeHardwareDevice();
       return;
     }
+    try {
+      const selected = await targetIntent.select("physical", () => iosPlatform
+        ? Promise.resolve({ source: "physical", revision: 0 }) : QcUsbNative.selectBrokerTarget({ source: "physical" }));
+      if (!selected || !appOperationMounted.current) return;
+    } catch { setNotice("Stop Demo was not acknowledged. Demo remains selected."); return; }
     connectionAttempts.begin();
     clearPhysicalContext();
     demoDeviceSession.useDevice();
@@ -1207,7 +1200,8 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
     if (!native || iosPlatform || !gateway) return;
     const provider = attachNativeDemoProvider({
       port: QcUsbNative, gateway,
-      current: () => appOperationMounted.current && !physicalSelectedRef.current && demoDeviceSession.virtual === gateway,
+      current: () => appOperationMounted.current && targetIntent.acknowledged && targetIntent.source === "demo"
+        && activeSourceRef.current === "virtual" && !physicalSelectedRef.current && demoDeviceSession.virtual === gateway,
       sessionId: () => crypto.randomUUID(), visible: () => document.visibilityState !== "hidden",
       subscribeVisibility: changed => { document.addEventListener("visibilitychange", changed); return () => document.removeEventListener("visibilitychange", changed); },
       onResult: async (transport, current) => {
@@ -1222,9 +1216,10 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
     });
     void provider.ready.catch(() => { if (appOperationMounted.current) setNotice("The local demo is open, but its MCP provider is unavailable."); });
     return () => { void provider.dispose(); };
-  }, [native, iosPlatform, demoActive, physicalSelected, demoDeviceSession, snapshot.stateVersion?.session, qcController.readSnapshot]);
+  }, [native, iosPlatform, demoActive, physicalSelected, targetSelectionAcknowledged, demoDeviceSession, snapshot.stateVersion?.session, qcController.readSnapshot]);
 
   const applyNativeObservation = async (current: () => boolean) => {
+    if (!targetIntent.canAutomaticallyConnectPhysical) return false;
     const observation = await readAndroidGatewayTarget();
     if (!current()) throw new Error("The physical connection observation was superseded.");
     if (observation.connection.phase !== "ready" || !observation.snapshot) { clearPhysicalContext(); return false; }
@@ -1289,8 +1284,8 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       <div className="mobile-brand"><AppMark onClick={() => setWorkflowPanel("about")} /><span><strong>{QC_BRAND.appName}</strong><small>v{appVersion}</small></span></div>
       <div className="connection-pills">
         <button className={`connection-pill phase-${remotePresentation.phase}`} onClick={() => void openRemoteStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "remote"} aria-label={`REMOTE ${remotePresentation.state}; open remote access details`}><i /> REMOTE</button>
-        <button className={`connection-pill phase-${usbProgress.phase === "error" ? "error" : usbProgress.phase === "permission" ? "action-required" : usbProgressActive ? "syncing" : usbIndicatorPhase}`} onClick={() => void openUsbStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "usb"} aria-busy={usbProgressActive} aria-label={`${demoActive ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}: ${usbProgressLabels[usbProgress.phase]}. ${usbProgress.message} Open device connection details`}>
-          <i /> <span>{demoActive ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}</span>
+        <button className={`connection-pill phase-${usbProgress.phase === "error" ? "error" : usbProgress.phase === "permission" ? "action-required" : usbProgressActive ? "syncing" : usbIndicatorPhase}`} onClick={() => void openUsbStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "usb"} aria-busy={usbProgressActive} aria-label={`${selectedTarget === "demo" ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}: ${usbProgressLabels[usbProgress.phase]}. ${usbProgress.message} Open device connection details`}>
+          <i /> <span>{selectedTarget === "demo" ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}</span>
           {usbProgressActive && <span className="connection-pill-progress" role="progressbar" aria-label={usbProgressLabels[usbProgress.phase]} aria-valuetext={usbProgress.message}><span /></span>}
         </button>
       </div>
@@ -1333,10 +1328,10 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       <section className="mobile-workflow-panel" role="dialog" aria-modal="true" aria-labelledby="dialog-title" onClick={(event) => event.stopPropagation()}>
         <button className="mobile-workflow-close" aria-label="Close" onClick={() => setWorkflowPanel(null)}><QcUiIcon kind="close" /></button>
         {workflowPanel === "usb" && <div className={`mobile-connection-panel${demoActive ? " is-demo" : ""}`}>
-          <div className="dialog-kicker">DEVICE CONNECTION</div><h2 id="dialog-title">{demoActive || hostDemoActive ? "Demo device" : "Quad Cortex"}</h2>
+          <div className="dialog-kicker">DEVICE CONNECTION</div><h2 id="dialog-title">{selectedTarget === "demo" || hostDemoActive ? "Demo device" : "Quad Cortex"}</h2>
           <div className="mobile-device-tabs" role="group" aria-label="Active device">
-            <button type="button" aria-pressed={!demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void (demoActive ? resumeHardwareDevice() : openUsbStatusPanel())}><i className={`panel-status-dot phase-${demoActive ? hardwareConnected ? "ready" : "idle" : usbIndicatorPhase}`} />{hostDemoActive ? "Host demo" : "Quad Cortex"}<small>{iosPlatform ? "Remote host" : "USB"}</small></button>
-            <button type="button" className="demo-device-tab" aria-pressed={demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => { if (!demoActive) void startDemoDevice(); }}>LOCAL DEMO{demoPending && <small>Opening…</small>}</button>
+            <button type="button" aria-pressed={selectedTarget === "physical"} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void (selectedTarget === "demo" ? resumeHardwareDevice() : openUsbStatusPanel())}><i className={`panel-status-dot phase-${demoActive ? hardwareConnected ? "ready" : "idle" : usbIndicatorPhase}`} />{hostDemoActive ? "Host demo" : "Quad Cortex"}<small>{iosPlatform ? "Remote host" : "USB"}</small></button>
+            <button type="button" className="demo-device-tab" aria-pressed={selectedTarget === "demo"} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => { if (!demoActive) void startDemoDevice(); }}>LOCAL DEMO{demoPending && <small>Opening…</small>}</button>
           </div>
           <div className={`mobile-usb-progress phase-${usbProgress.phase}`} role="status" aria-live="polite"><span><i className={`panel-status-dot phase-${usbProgress.phase === "ready" ? "ready" : usbProgress.phase === "error" ? "error" : usbProgress.phase === "permission" ? "action-required" : usbProgress.phase === "disconnected" || usbProgress.phase === "idle" ? "idle" : "syncing"}`} /><strong>{usbProgressLabels[usbProgress.phase]}</strong></span><p>{usbProgress.message}</p>{usbProgressActive && <div className="mobile-usb-progress-track" role="progressbar" aria-label={usbProgressLabels[usbProgress.phase]} aria-valuetext={usbProgress.message}><span /></div>}</div>
           <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${usbConnectionDotPhase}`} />{usbConnectionSummary}</span>{!demoActive && <button type="button" disabled={!native || usbBusy} onClick={() => { void openUsbStatusPanel(); void connectUsb(); }}>{hardwareConnected ? "Reconnect" : iosPlatform ? "Refresh host" : usbProgress.phase === "error" || usbProgress.phase === "disconnected" ? "Retry connect" : "Connect"}</button>}{demoActive && !hardwareConnected && <button type="button" disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void resumeHardwareDevice()}>{iosPlatform ? "Connect to host" : "Connect Quad Cortex"}</button>}</div>
