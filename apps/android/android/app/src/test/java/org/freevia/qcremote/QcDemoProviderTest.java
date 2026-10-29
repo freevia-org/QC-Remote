@@ -12,10 +12,10 @@ import org.json.JSONObject;
 import org.junit.Test;
 
 public class QcDemoProviderTest {
-    private final AtomicBoolean physical = new AtomicBoolean();
-    private final AtomicLong physicalGeneration = new AtomicLong();
+    private final AtomicBoolean demoSelected = new AtomicBoolean(true);
+    private final AtomicLong selectionRevision = new AtomicLong();
     private final AtomicReference<QcBrokerTarget> brokerTarget = new AtomicReference<>(new QcBrokerTarget("demo", "native-demo", 1));
-    private final QcDemoProvider provider = new QcDemoProvider(physical::get, physicalGeneration::get, brokerTarget::get);
+    private final QcDemoProvider provider = new QcDemoProvider(demoSelected::get, selectionRevision::get, brokerTarget::get);
     private final List<JSONObject> requests = new ArrayList<>();
 
     private CompletableFuture<JSONObject> invoke() {
@@ -48,10 +48,10 @@ public class QcDemoProviderTest {
         assertEquals(2, requests.get(1).getLong("sequence"));
     }
 
-    @Test public void physicalAlwaysWinsAdmissionAndLateDemoCompletion() {
+    @Test public void onlyAnExplicitPhysicalSelectionRevokesDemoAdmissionAndLateCompletion() {
         provider.publish("ui-demo", 1);
         CompletableFuture<JSONObject> before = invoke();
-        physical.set(true);
+        demoSelected.set(false);
         assertFalse(provider.available());
         fails(invoke(), "NOT_CONNECTED");
         complete(0, new JSONObject());
@@ -59,10 +59,10 @@ public class QcDemoProviderTest {
         assertEquals(1, requests.size());
     }
 
-    @Test public void aPhysicalAttachAndDetachStillInvalidatesTheOldResult() {
+    @Test public void aSelectionChangeStillInvalidatesTheOldResultWhenItReturnsToDemo() {
         provider.publish("ui-demo", 1);
         CompletableFuture<JSONObject> before = invoke();
-        physicalGeneration.incrementAndGet();
+        selectionRevision.incrementAndGet();
         complete(0, new JSONObject());
         fails(before, "DEVICE_IDENTITY_MISMATCH");
     }

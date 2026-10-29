@@ -20,7 +20,7 @@ export interface NativeDemoPort {
 
 /** Android hosting glue only. Dispatch is the shared broker provider, bound to
  * the editor's immutable virtual transport, never the switchable UI gateway.
- * Native owns authentication, deadlines, physical-first admission and teardown.
+ * Native owns authentication, deadlines, selected-target admission and teardown.
  * No timer, retry, authentication or cloud connection is started here. */
 export function createNativeDemoProviderBridge(port: NativeDemoPort, onResult?: (gateway: GatewayTransport, current: () => boolean) => Promise<void>) {
   let generation = 0;

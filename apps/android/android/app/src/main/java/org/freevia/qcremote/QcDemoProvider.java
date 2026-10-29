@@ -12,8 +12,8 @@ import org.json.JSONObject;
 
 /** A foreground WebView owns the demo. Requests never fall through to USB. */
 final class QcDemoProvider {
-    private final BooleanSupplier physicalReady;
-    private final LongSupplier physicalGeneration;
+    private final BooleanSupplier demoSelected;
+    private final LongSupplier selectionRevision;
     private final Supplier<QcBrokerTarget> currentTarget;
     private final Map<String, Pending> pending = new HashMap<>();
     private String sessionId;
@@ -33,9 +33,9 @@ final class QcDemoProvider {
         }
     }
 
-    QcDemoProvider(BooleanSupplier physicalReady, LongSupplier physicalGeneration, Supplier<QcBrokerTarget> currentTarget) {
-        this.physicalReady = physicalReady;
-        this.physicalGeneration = physicalGeneration;
+    QcDemoProvider(BooleanSupplier demoSelected, LongSupplier selectionRevision, Supplier<QcBrokerTarget> currentTarget) {
+        this.demoSelected = demoSelected;
+        this.selectionRevision = selectionRevision;
         this.currentTarget = currentTarget;
     }
 
@@ -61,7 +61,13 @@ final class QcDemoProvider {
     }
 
     synchronized boolean available() {
-        return foreground && sessionId != null && !physicalReady.getAsBoolean();
+        return foreground && sessionId != null && demoSelected.getAsBoolean();
+    }
+
+    void targetChanged() {
+        Pending[] held;
+        synchronized (this) { held = drain(); }
+        retire(held);
     }
 
     static final class Registration {
@@ -79,7 +85,7 @@ final class QcDemoProvider {
 
     private boolean current(Pending request) {
         return request != null && available() && request.session.equals(sessionId)
-            && request.generation == physicalGeneration.getAsLong() && request.target.same(currentTarget.get());
+            && request.generation == selectionRevision.getAsLong() && request.target.same(currentTarget.get());
     }
 
     synchronized boolean admit(String id, String session, long generation, QcBrokerTarget expectedTarget) {
@@ -99,7 +105,7 @@ final class QcDemoProvider {
             QcBrokerTarget target = currentTarget.get();
             if (target == null || !"demo".equals(target.source))
                 return failed("TARGET_SUPERSEDED", "The demo broker target is no longer active.");
-            request = new Pending(sessionId, physicalGeneration.getAsLong(), method, target);
+            request = new Pending(sessionId, selectionRevision.getAsLong(), method, target);
             try {
                 envelope = new JSONObject().put("id", id).put("sessionId", sessionId)
                     .put("generation", providerGeneration).put("sequence", ++sequence)

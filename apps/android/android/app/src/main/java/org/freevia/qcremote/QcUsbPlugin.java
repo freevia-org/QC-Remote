@@ -167,6 +167,13 @@ public class QcUsbPlugin extends Plugin {
     // A recovery timer belongs to one operator connection intent. Explicit
     // disconnect/reconnect must not let an older timer re-enable recovery.
     private final AtomicLong automaticReconnectGeneration = new AtomicLong();
+    // All recovery producers share one queue slot and one budget. UI request IDs
+    // only correlate progress; changing one must never grant more USB opens.
+    private long automaticReconnectBudgetGeneration = -1;
+    private int automaticReconnectAttemptCount;
+    private long automaticReconnectScheduledGeneration = -1;
+    private long automaticReconnectActiveGeneration = -1;
+    private long automaticReconnectScheduleSerial;
     private final QcPendingOperations pendingOperations = new QcPendingOperations();
     private final QcNativeStateDecoder stateDecoder = new QcNativeStateDecoder();
     private static final String INTERNET_FORWARDING_SETTING = "internetForwarding";
@@ -185,9 +192,11 @@ public class QcUsbPlugin extends Plugin {
             public void release(long task) { stateDecoder.closeForwarding(task); }
         }, this::writeForwardingMessage);
     private static volatile QcUsbPlugin relaySession;
-    private final QcDemoProvider demoProvider = new QcDemoProvider(
-        QcUsbPlugin::relaySessionAvailable, connectionGeneration::get, this::currentBrokerTarget);
+    private static final String BROKER_SELECTION_SOURCE = "broker-selected-source";
+    private static final String BROKER_SELECTION_REVISION = "broker-selected-revision";
     private final QcBrokerTarget.Registry brokerTargets = new QcBrokerTarget.Registry();
+    private final QcDemoProvider demoProvider = new QcDemoProvider(
+        brokerTargets::demoSelected, brokerTargets::intentRevision, this::currentBrokerTarget);
     private static final ThreadLocal<RelayDeadline> CURRENT_RELAY_DEADLINE = new ThreadLocal<>();
     private static final ConcurrentHashMap<CompletableFuture<org.json.JSONObject>, RelayDeadline> RELAY_DEADLINES = new ConcurrentHashMap<>();
 
@@ -251,6 +260,15 @@ public class QcUsbPlugin extends Plugin {
 
     @Override
     public void load() {
+        try {
+            android.content.SharedPreferences preferences = getContext().getSharedPreferences("qc-usb", Context.MODE_PRIVATE);
+            brokerTargets.restoreIntent(preferences.getString(BROKER_SELECTION_SOURCE, "physical"),
+                preferences.getLong(BROKER_SELECTION_REVISION, 0));
+        } catch (RuntimeException unavailable) {
+            // An unreadable user choice must never make a physical target eligible.
+            brokerTargets.restoreIntent("demo", 0);
+            android.util.Log.w("QcUsbPlugin", "The saved broker selection could not be read; physical dispatch is held.");
+        }
         stateDecoder.initializeForwarding(getContext().getApplicationContext());
         internetForwardingEnabled = getContext().getSharedPreferences("qc-usb", Context.MODE_PRIVATE)
             .getBoolean(INTERNET_FORWARDING_SETTING, true);
@@ -305,7 +323,7 @@ public class QcUsbPlugin extends Plugin {
     }
 
     static boolean relayProviderAvailable() {
-        return relaySessionAvailable() || relayDemoAvailable();
+        return relayBrokerTarget() != null;
     }
 
     static QcBrokerTarget relayBrokerTarget() {
@@ -314,12 +332,40 @@ public class QcUsbPlugin extends Plugin {
     }
 
     private QcBrokerTarget currentBrokerTarget() {
-        if (relaySessionAvailable()) return brokerTargets.select("physical", stateStreamId, connectionGeneration.get());
-        if (demoProvider.available()) {
-            QcDemoProvider.Registration registration = demoProvider.registration();
-            if (registration != null) return brokerTargets.select("demo", registration.id, registration.generation);
+        QcDemoProvider.Registration registration = demoProvider.registration();
+        return brokerTargets.selectAvailable(relaySessionAvailable(), stateStreamId, connectionGeneration.get(),
+            demoProvider.available(), registration == null ? null : registration.id,
+            registration == null ? 0 : registration.generation);
+    }
+
+    @PluginMethod public void brokerTargetSelection(PluginCall call) {
+        synchronized (brokerTargets) {
+            call.resolve(new JSObject().put("source", brokerTargets.selectedSource()).put("revision", brokerTargets.intentRevision()));
         }
-        return brokerTargets.select(null, null, 0);
+    }
+
+    /** Explicit UI intent only. Provider registration and USB recovery never call this. */
+    @PluginMethod public void selectBrokerTarget(PluginCall call) {
+        String source = call.getString("source");
+        if (!("demo".equals(source) || "physical".equals(source))) {
+            call.reject("Choose Demo or the physical device.", "INVALID_PARAMS");
+            return;
+        }
+        long revision;
+        try {
+            revision = brokerTargets.commitIntent(source, next ->
+                getContext().getSharedPreferences("qc-usb", Context.MODE_PRIVATE).edit()
+                    .putString(BROKER_SELECTION_SOURCE, source).putLong(BROKER_SELECTION_REVISION, next).commit());
+        } catch (RuntimeException unavailable) {
+            demoProvider.targetChanged();
+            cancelRelayOperationsForSession(this);
+            call.reject("The target selection could not be saved. No new physical target was authorized for this app session. The selection is not guaranteed after an app restart; retry before restarting QC Remote.", "STORAGE_UNAVAILABLE");
+            return;
+        }
+        demoProvider.targetChanged();
+        cancelRelayOperationsForSession(this);
+        startForegroundDemoRelay();
+        call.resolve(new JSObject().put("source", source).put("revision", revision));
     }
 
     boolean matchesBrokerTarget(QcBrokerTarget expected) { return expected.same(currentBrokerTarget()); }
@@ -450,8 +496,8 @@ public class QcUsbPlugin extends Plugin {
         QcBrokerTarget captured = session.currentBrokerTarget();
         if (expectedTarget != null && !expectedTarget.same(captured))
             return failedRelay("TARGET_SUPERSEDED", "The requested broker target is no longer active.");
-        if (captured != null && "demo".equals(captured.source)) {
-            return session.demoProvider.invoke(method,
+        return QcBrokerTargetRouter.invoke(session.brokerTargets.demoSelected(), captured,
+            () -> session.demoProvider.invoke(method,
                 params == null ? new org.json.JSONObject() : params,
                 expected == null ? new org.json.JSONObject() : expected,
                 request -> session.getActivity().runOnUiThread(() -> {
@@ -462,14 +508,15 @@ public class QcUsbPlugin extends Plugin {
                         session.demoProvider.complete(request.optString("id"), request.optString("sessionId"),
                             request.optLong("generation"), null, null);
                     }
-                }));
-        }
-        return session.invokePhysicalGateway(method, params, expected, captured);
+                })),
+            () -> session.invokePhysicalGateway(method, params, expected, captured));
     }
 
     private CompletableFuture<org.json.JSONObject> invokePhysicalGateway(String method, org.json.JSONObject params,
             org.json.JSONObject expected, QcBrokerTarget captured) {
         QcUsbPlugin session = this;
+        if (brokerTargets.demoSelected())
+            return failedRelay("NOT_CONNECTED", "Demo remains selected. Choose the physical device explicitly before using USB commands.");
         if (captured == null && !"system.status".equals(method) && !"device.reconnect".equals(method))
             return failedRelay("NOT_CONNECTED", "No usable provider was available when this request arrived.");
         RelayDeadline deadline = new RelayDeadline(session, captured);
@@ -689,10 +736,26 @@ public class QcUsbPlugin extends Plugin {
 
     private synchronized void scheduleAutomaticReconnect(String detail, long recoveryGeneration) {
         if (recoveryGeneration != automaticReconnectGeneration.get() || relayAdmissionGuard.isTerminal()) return;
+        if (automaticReconnectBudgetGeneration != recoveryGeneration) {
+            automaticReconnectBudgetGeneration = recoveryGeneration;
+            automaticReconnectAttemptCount = 0;
+            automaticReconnectScheduledGeneration = -1;
+            automaticReconnectActiveGeneration = -1;
+            automaticReconnectScheduleSerial++;
+        }
+        if (automaticReconnectAttemptCount >= AUTOMATIC_RECONNECT_ATTEMPT_LIMIT
+            || automaticReconnectScheduledGeneration == recoveryGeneration
+            || automaticReconnectActiveGeneration == recoveryGeneration) return;
+        automaticReconnectScheduledGeneration = recoveryGeneration;
+        long scheduleSerial = ++automaticReconnectScheduleSerial;
         long delayMs = stateDecoder.sessionScheduleReconnect(monotonicMillis());
         keepalive.schedule(() -> {
             synchronized (this) {
-                if (recoveryGeneration != automaticReconnectGeneration.get() || relayAdmissionGuard.isTerminal()) return;
+                if (recoveryGeneration != automaticReconnectGeneration.get() || relayAdmissionGuard.isTerminal()
+                    || scheduleSerial != automaticReconnectScheduleSerial) return;
+                automaticReconnectScheduledGeneration = -1;
+                if (automaticReconnectAttemptCount >= AUTOMATIC_RECONNECT_ATTEMPT_LIMIT
+                    || automaticReconnectActiveGeneration == recoveryGeneration) return;
                 // A transport can be open while the preset/setlist seed has
                 // not arrived. A timed-out recovery must keep retrying then.
                 if (isReady() && stateDecoder.sessionSynchronized() && currentSetlist != null) return;
@@ -719,31 +782,42 @@ public class QcUsbPlugin extends Plugin {
                     return;
                 }
                 stateDecoder.sessionReconnectAttempted(now);
+                automaticReconnectAttemptCount++;
+                automaticReconnectActiveGeneration = recoveryGeneration;
                 String requestId = activeConnectionProgressRequestId;
                 int attempt = ++connectionProgressAttempt;
-                publishConnectionProgress(requestId, "searching",
+                publishConnectionProgress(requestId, attempt, "searching",
                     "Retrying the Quad Cortex USB connection (attempt " + attempt + "). Keep the unit powered on and connected.", null);
                 relayReconnect(detail, null, recoveryGeneration).whenComplete((ignored, error) -> {
-                    if (error != null) {
-                        Throwable cause = unwrapCompletion(error);
-                        String message = cause.getMessage() == null
-                            ? "USB recovery did not complete." : connectionFailureMessage(cause);
-                        boolean exhausted = attempt >= AUTOMATIC_RECONNECT_ATTEMPT_LIMIT;
-                        publishConnectionProgress(requestId, "error", exhausted
-                            ? "Automatic USB recovery stopped after " + attempt + " attempts: " + message
-                                + " Check the cable and power, then tap Retry."
-                            : "USB recovery attempt " + attempt + " failed: " + message
-                                + " The app will retry while the QC remains connected.",
-                            exhausted ? "USB_RECOVERY_EXHAUSTED"
-                                : cause instanceof RelayException ? ((RelayException) cause).code : "USB_CONNECT_FAILED");
-                        android.util.Log.w(
-                            "QcUsbPlugin", "Automatic QC USB reconnect failed: " + error.getMessage());
-                        if (!exhausted) scheduleAutomaticReconnect(detail, recoveryGeneration);
-                    } else if (isReady() && stateDecoder.sessionSynchronized() && currentSetlist != null) {
-                        connectionProgressAttempt = 0;
-                        publishConnectionProgress(requestId, "ready",
-                            "Quad Cortex reconnected and synchronized over USB.", null);
-                    }
+                    synchronized (QcUsbPlugin.this) {
+                        if (recoveryGeneration != automaticReconnectGeneration.get()
+                            || relayAdmissionGuard.isTerminal()) return;
+                        automaticReconnectActiveGeneration = -1;
+                        if (error != null) {
+                            Throwable cause = unwrapCompletion(error);
+                            String message = cause.getMessage() == null
+                                ? "USB recovery did not complete." : connectionFailureMessage(cause);
+                            boolean exhausted = automaticReconnectAttemptCount >= AUTOMATIC_RECONNECT_ATTEMPT_LIMIT;
+                            publishConnectionProgress(requestId, attempt, "error", exhausted
+                                ? "Automatic USB recovery stopped after " + automaticReconnectAttemptCount + " attempts: " + message
+                                    + " Check the cable and power, then tap Retry."
+                                : "USB recovery attempt " + attempt + " failed: " + message
+                                    + " The app will retry while the QC remains connected.",
+                                exhausted ? "USB_RECOVERY_EXHAUSTED"
+                                    : cause instanceof RelayException ? ((RelayException) cause).code : "USB_CONNECT_FAILED");
+                            android.util.Log.w(
+                                "QcUsbPlugin", "Automatic QC USB reconnect failed: " + error.getMessage());
+                            if (!exhausted) scheduleAutomaticReconnect(detail, recoveryGeneration);
+                        } else if (isReady() && stateDecoder.sessionSynchronized() && currentSetlist != null) {
+                            publishConnectionProgress(requestId, attempt, "ready",
+                                "Quad Cortex reconnected and synchronized over USB.", null);
+                            // Keep the terminal event's completed attempt number. Only
+                            // the independent open budget starts fresh after success.
+                            automaticReconnectAttemptCount = 0;
+                            automaticReconnectScheduledGeneration = -1;
+                            automaticReconnectScheduleSerial++;
+                        }
+                        }
                 });
             }
         }, delayMs, TimeUnit.MILLISECONDS);
@@ -1940,10 +2014,14 @@ public class QcUsbPlugin extends Plugin {
     }
 
     private void publishConnectionProgress(String requestId, String phase, String message, String errorCode) {
+        publishConnectionProgress(requestId, connectionProgressAttempt, phase, message, errorCode);
+    }
+
+    private void publishConnectionProgress(String requestId, int attempt, String phase, String message, String errorCode) {
         if (requestId == null) return;
         JSObject progress = new JSObject();
         progress.put("requestId", requestId);
-        progress.put("attempt", connectionProgressAttempt);
+        progress.put("attempt", attempt);
         progress.put("phase", phase);
         progress.put("message", message);
         if (errorCode != null) progress.put("errorCode", errorCode);
@@ -2918,8 +2996,10 @@ public class QcUsbPlugin extends Plugin {
                 if (connection == null || readerGeneration != connectionGeneration.get()
                         || intentGeneration != automaticReconnectGeneration.get()
                         || relayAdmissionGuard.isTerminal()) return;
-                relayReconnect("Quad Cortex resumed after " + resync
-                    + "; resynchronizing the session", null, intentGeneration);
+                // Suspension is another automatic producer, not permission to
+                // bypass an exhausted failure-recovery budget or queued chain.
+                scheduleAutomaticReconnect("Quad Cortex resumed after " + resync
+                    + "; resynchronizing the session", intentGeneration);
             }
         });
     }

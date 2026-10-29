@@ -42,6 +42,8 @@ export type AndroidUsbDiagnostics = {
 };
 
 interface QcUsbNativePlugin {
+    selectBrokerTarget(options: { source: "demo" | "physical" }): Promise<{ source: "demo" | "physical"; revision: number }>;
+    brokerTargetSelection(): Promise<{ source: "demo" | "physical"; revision: number }>;
   publishDemoProvider(options: { sessionId: string | null; generation: number }): Promise<void>;
   admitDemoRequest(options: { id: string; sessionId: string; generation: number; brokerTarget?: AndroidDemoRequest["brokerTarget"] }): Promise<{ admitted: boolean }>;
   completeDemoRequest(options: { id: string; sessionId: string; generation: number; result?: Record<string, unknown>; error?: { code: string; message: string } }): Promise<void>;

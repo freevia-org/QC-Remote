@@ -3,6 +3,48 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { startRelayReportingFailure } from "./relay-start.ts";
 import { retainStartupFailure, startupFailureReport } from "./android-startup-failure.ts";
+import { createAndroidTargetIntent } from "./android-target-intent.ts";
+import { advanceUsbConnectionProgress } from "./usb-connection-progress.ts";
+
+test("USB ready completes the successful retry and stale events cannot relabel the next connection", () => {
+  type Progress = { requestId: string; attempt: number; phase: "error" | "searching" | "ready" };
+  const failed: Progress = { requestId: "connect-1", attempt: 1, phase: "error" };
+  const retry: Progress = { requestId: "connect-1", attempt: 2, phase: "searching" };
+  const ready: Progress = { requestId: "connect-1", attempt: 2, phase: "ready" };
+  assert.equal(advanceUsbConnectionProgress(failed, retry), retry);
+  assert.equal(advanceUsbConnectionProgress(retry, ready), ready);
+  assert.equal(advanceUsbConnectionProgress(ready, failed), ready);
+  const next: Progress = { requestId: "connect-2", attempt: 0, phase: "searching" };
+  assert.equal(advanceUsbConnectionProgress(next, ready), next);
+});
+
+test("explicit Demo intent survives provider loss and only acknowledged physical selection releases it", async () => {
+  const changes: string[] = [];
+  const intent = createAndroidTargetIntent(source => changes.push(source));
+  assert.equal(intent.canAutomaticallyConnectPhysical, false, "bootstrap must verify persisted intent first");
+  await intent.restore(async () => ({ source: "physical", revision: 0 }));
+  assert.equal(intent.canAutomaticallyConnectPhysical, true);
+  await intent.select("demo", async () => ({ source: "demo", revision: 1 }));
+  assert.equal(intent.source, "demo");
+  assert.equal(intent.canAutomaticallyConnectPhysical, false, "physical arrival cannot change selection");
+  await assert.rejects(intent.select("physical", async () => { throw new Error("ack lost"); }));
+  assert.equal(intent.source, "demo");
+  assert.equal(intent.canAutomaticallyConnectPhysical, false);
+  await intent.select("physical", async () => ({ source: "physical", revision: 2 }));
+  assert.equal(intent.canAutomaticallyConnectPhysical, true);
+  assert.deepEqual(changes, ["physical", "demo", "demo", "physical"]);
+});
+
+test("failed Demo acknowledgement fails closed and a stale bootstrap cannot release its hold", async () => {
+  const intent = createAndroidTargetIntent(() => undefined);
+  let restore!: (value: { source: "physical"; revision: number }) => void;
+  const restoring = intent.restore(() => new Promise(resolve => { restore = resolve; }));
+  await assert.rejects(intent.select("demo", async () => { throw new Error("provider unavailable"); }));
+  restore({ source: "physical", revision: 0 }); await restoring;
+  assert.equal(intent.source, "demo");
+  assert.equal(intent.canAutomaticallyConnectPhysical, false);
+  assert.equal(intent.acknowledged, false, "a rejected save is not an acknowledged persisted selection");
+});
 
 test("startup diagnostics update from local events and reject older sessions across retry", () => {
   const first = retainStartupFailure(null, { sessionEpoch: 7, detail: "startup phase=initializing; type 35 decode-failure" });
@@ -219,7 +261,7 @@ test("Demo stays local while the connection screen reports background USB recove
     "active recovery, terminal USB states, and disconnects take precedence over the idle Demo label");
   assert.match(summary, /\{usbConnectionSummary\}/,
     "the main connection row shows USB progress without implying the physical target is active");
-  assert.match(appSource, /const usbConnectionSummary = demoActive[\s\S]*`Demo remains active · \$\{usbStatusText\}`/,
+  assert.match(appSource, /const usbConnectionSummary = selectedTarget === "demo"[\s\S]*`Demo remains active · \$\{usbStatusText\}`/,
     "the active recovery message is shown alongside the unchanged Demo target");
   assert.match(panel, /if \(demoActive\)[\s\S]*?await usbDiagnostics\(\)/,
     "opening USB details reads the native USB state while Demo is selected");

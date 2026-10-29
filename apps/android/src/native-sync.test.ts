@@ -180,10 +180,10 @@ test("Android USB recovery progress follows background retries for the active Co
   const reconnect = javaSource.slice(javaSource.indexOf("    private CompletableFuture<org.json.JSONObject> relayReconnect(\n        String detail, String backupOrigin, Long recoveryGeneration"), javaSource.indexOf("    private void resolvePendingReady()"));
   const appProgress = appSource.slice(appSource.indexOf('QcUsbNative.addListener("qcConnectionProgress"'), appSource.indexOf('QcUsbNative.addListener("qcStateBatch"'));
   assert.match(connect, /activeConnectionProgressRequestId = requestId;[\s\S]*connectionProgressAttempt = 0;/);
-  assert.match(javaSource, /int attempt = \+\+connectionProgressAttempt;[\s\S]{0,300}publishConnectionProgress\(requestId, "searching"/);
+  assert.match(javaSource, /int attempt = \+\+connectionProgressAttempt;[\s\S]{0,300}publishConnectionProgress\(requestId, attempt, "searching"/);
   assert.match(reconnect, /recoveryGeneration == null \? null : activeConnectionProgressRequestId/);
   assert.match(reconnect, /openDeviceAndHandshake\(candidate, pending, relayAdmissionGuard\.epoch\(\), connectionIntent, requestId\)/);
-  assert.match(appProgress, /nextAttempt < currentAttempt[\s\S]*usbProgressOrder\[progress\.phase\] < usbProgressOrder\[current\.phase\]/);
+  assert.match(appProgress, /advanceUsbConnectionProgress\(current, progress\)/);
   assert.match(servicesSource, /attempt\?: number;[\s\S]*phase: "searching"[\s\S]*\| "disconnected"/);
 });
 
@@ -251,15 +251,15 @@ test("USB attachment connects automatically and reports synchronization separate
   assert.match(appSource, /if \(state === "available"\)[\s\S]{0,120}attemptUsbConnection\(\)/);
   assert.match(
     appSource,
-    /if \(!devices\.length\) \{[\s\S]{0,800}?setHardwareConnected\(false\);[\s\S]{0,800}?if \(activeSourceRef\.current !== "virtual"\) \{[\s\S]{0,800}?transitionConnection\("absent"\);[\s\S]{0,800}?if \(observationPolicy\.mode !== "on-demand"\) void startDemoDeviceRef\.current\("No Quad Cortex was found\."\);/,
-    "an empty local scan may fall back to demo; a paired-host scan never opens the phone-local demo",
+    /if \(!devices\.length\) \{[\s\S]{0,800}?setHardwareConnected\(false\);[\s\S]{0,800}?if \(targetIntent\.source === "physical" && activeSourceRef\.current !== "virtual"\) \{[\s\S]{0,800}?transitionConnection\("absent"\);/,
+    "an empty scan reports absence and preserves the explicitly selected target",
   );
   assert.match(appSource, /state\.kind === "preset"[\s\S]*usbSessionReady\.current[\s\S]*transitionConnection\("connected"\)/);
   assert.match(appSource, /const \[hardwareConnected, setHardwareConnected\] = useState\(false\)/, "native USB readiness remains independent while the demo is active");
   assert.match(appSource, /qcConnectionIndicatorPhase\(mobileIndicatorConnection\(connection\), hardwareConnected && !demoActive, null, \{ actionRequired: usbWritesQuarantined \}\)/, "the device pill uses the global indicator contract, including write quarantine state");
   assert.doesNotMatch(appSource, /hardwareConnected \? "ready" : usbIndicatorPhase/, "a merely open USB handle cannot force any active-device status dot green");
   assert.match(appSource, /usbIndicatorPhase === "ready"[\s\S]{0,320}"Quad Cortex disconnected"/, "the USB panel words and colors share the same readiness phase");
-  assert.match(appSource, /demoActive \? "LOCAL DEMO" : hostDemoActive \? "HOST DEMO" : iosPlatform \? "HOST" : "USB"/, "the compact pill names the active device source on Android and iOS");
+  assert.match(appSource, /selectedTarget === "demo" \? "LOCAL DEMO" : hostDemoActive \? "HOST DEMO" : iosPlatform \? "HOST" : "USB"/, "the compact pill names selected Demo even when its provider is unavailable");
   assert.doesNotMatch(appSource, /qcReadyLabel\(connection\)/, "Android does not repeat the verbose desktop readiness label");
 });
 
@@ -272,16 +272,16 @@ test("Android USB failures stay on the physical target with a visible error", ()
   assert.ok(syncFailure, "the physical USB synchronization failure branch is present");
   assert.doesNotMatch(syncFailure, /startDemoDeviceRef\.current\(/,
     "a failed physical connection must not silently select Demo and hide the USB result");
-  assert.match(attempt, /if \(iosPlatform && fromDemo && attempt\.current\(\)[\s\S]{0,160}startDemoDeviceRef\.current\(primary\)/,
-    "the Android-only behavior change preserves the existing iOS Demo recovery");
+  assert.doesNotMatch(attempt, /startDemoDevice(?:Ref)?[.(]/,
+    "a physical connection failure never selects Demo implicitly");
   const connectionListener = appSource.match(/QcUsbNative\.addListener\("qcConnection", \(\{ state \}\) => \{([\s\S]*?)\n      \}\),/)?.[1];
   assert.ok(connectionListener, "the native connection listener is present");
-  assert.match(connectionListener, /if \(iosPlatform && observationPolicy\.mode !== "on-demand"\)[\s\S]*startDemoDeviceRef\.current/,
-    "iOS retains its paired-host disconnect behavior");
+  assert.doesNotMatch(connectionListener, /startDemoDevice(?:Ref)?[.(]/,
+    "provider loss preserves target intent on both platforms");
   assert.doesNotMatch(connectionListener, /if \(observationPolicy\.mode !== "on-demand"\) void startDemoDeviceRef\.current/,
     "an Android USB detach must remain disconnected instead of switching to Demo");
-  assert.match(appSource, /if \(iosPlatform && observationPolicy\.mode !== "on-demand"\) \{\s*void startDemoDeviceRef\.current\(error instanceof Error \? error\.message : "Paired-host discovery failed\."\)/,
-    "USB discovery exceptions do not silently select Demo on Android");
+  assert.doesNotMatch(appSource, /startDemoDeviceRef/,
+    "discovery and availability callbacks cannot select Demo");
   assert.match(appSource, /usbProgress\.phase === "error"[^}]*\? "Retry connect"/,
     "the visible connection panel keeps a retry action after failure");
 });
