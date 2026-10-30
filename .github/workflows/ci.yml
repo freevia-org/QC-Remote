@@ -44,11 +44,8 @@ jobs:
 
   rust:
     name: Rust workspace
-    # The native jobs run on pull requests that touch more than the safe set
-    # (see `changes`) and on every push to master. The master run is what keeps
-    # the build caches warm: a pull request restores master's cache and does not
-    # write its own (`save-if`), so a new pull request no longer starts from a
-    # cold target directory. Nothing waits on the master run.
+    # The native jobs run unless the change is confined to the safe set (see
+    # `changes`).
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
     runs-on: qc-remote-i5-windows
@@ -69,9 +66,24 @@ jobs:
       # `cargo test` builds and links every lib, bin and test target, and clippy
       # --all-targets has already checked the rest.
       - run: cargo fmt --all -- --check
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # The Windows jobs run on one persistent self-hosted runner and CI is
+      # dispatched by hand, so master rarely re-saved a GitHub cache, and any
+      # toolchain change (a stable release, or 1.87 installed beside it) changed
+      # the rust-cache key: every run compiled every crate from scratch. Cargo's
+      # own output kept on the runner stays warm across branches and runs; it is
+      # cleared whenever the compiler changes, which also bounds its size.
+      - name: Keep Cargo build output on the runner
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target/stable'
+          $rustc = (rustc -V) -join ' '
+          if ((Test-Path "$dir.rustc") -and (Get-Content -Raw "$dir.rustc").Trim() -ne $rustc) {
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          }
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Set-Content "$dir.rustc" $rustc
+          "CARGO_TARGET_DIR=$dir" >> $env:GITHUB_ENV
+          "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
@@ -98,10 +110,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: '1.87'
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: msrv-1.87
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # As in the Rust workspace job, in its own directory for 1.87.
+      - name: Keep Cargo build output on the runner
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target/msrv-1.87'
+          $rustc = (rustc +1.87 -V) -join ' '
+          if ((Test-Path "$dir.rustc") -and (Get-Content -Raw "$dir.rustc").Trim() -ne $rustc) {
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          }
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Set-Content "$dir.rustc" $rustc
+          "CARGO_TARGET_DIR=$dir" >> $env:GITHUB_ENV
+          "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
       - run: cargo +1.87 test -p quadcortex --locked
       # Optional encrypted forwarding uses a separate cipher dependency graph.
       # Default-feature tests do not verify that graph against the Rust minimum.
@@ -141,10 +162,20 @@ jobs:
       # Windows-only (it skips elsewhere); no other job ran it.
       - name: Test owned Windows producer admission, interruption and cleanup
         run: node --test scripts/windows-owned-producer.test.mjs
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          workspaces: apps/windows/src-tauri
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # Shares the Rust workspace job's directory (see there): these jobs run one
+      # at a time on the same runner and build many of the same crates.
+      - name: Keep Cargo build output on the runner
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target/stable'
+          $rustc = (rustc -V) -join ' '
+          if ((Test-Path "$dir.rustc") -and (Get-Content -Raw "$dir.rustc").Trim() -ne $rustc) {
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          }
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Set-Content "$dir.rustc" $rustc
+          "CARGO_TARGET_DIR=$dir" >> $env:GITHUB_ENV
+          "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
       - name: Stage check-only sidecar placeholders
         working-directory: apps/windows/src-tauri
         shell: pwsh
@@ -179,20 +210,21 @@ jobs:
           arch: x64
       # No clippy or rustfmt here: this job only builds and runs the tests.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          # Keeps the key (and so the cache already on master) of the job this
-          # one was split out of.
-          shared-key: rust-windows-app
-          # scripts/test-windows-native.mjs first builds the broker from the ROOT
-          # workspace (cargo build -p qc-device-broker, target/ at the repository
-          # root), then the app's own tests. Caching only the app left that root
-          # build compiling every dependency from source on each run (2m21s of
-          # the 9m36s test step in the 0.1.189 pull request run).
-          workspaces: |
-            . -> target
-            apps/windows/src-tauri -> target
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # Both workspaces build into the Rust workspace job's directory (see there):
+      # scripts/test-windows-native.mjs finds the built broker from Cargo's own
+      # messages, so it follows CARGO_TARGET_DIR.
+      - name: Keep Cargo build output on the runner
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target/stable'
+          $rustc = (rustc -V) -join ' '
+          if ((Test-Path "$dir.rustc") -and (Get-Content -Raw "$dir.rustc").Trim() -ne $rustc) {
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          }
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Set-Content "$dir.rustc" $rustc
+          "CARGO_TARGET_DIR=$dir" >> $env:GITHUB_ENV
+          "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
       - name: Stage check-only sidecar placeholders
         working-directory: apps/windows/src-tauri
         shell: pwsh

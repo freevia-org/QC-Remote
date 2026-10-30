@@ -324,9 +324,9 @@ test('the Windows app runs as parallel static and test jobs behind the unchanged
 
   const tests = bodyOf('rust-windows-app-tests');
   assert.match(tests, /node scripts\/test-windows-native\.mjs --root \./);
-  // The test script builds the broker from the root workspace, so that target must be cached.
-  assert.match(tests, /workspaces: \|\n\s+\. -> target\n\s+apps\/windows\/src-tauri -> target/);
-  assert.match(tests, /shared-key: rust-windows-app$/m, 'the test job inherits the existing master cache key');
+  // The test script builds the broker from the root workspace too, so both
+  // workspaces must build into the runner's persistent target directory.
+  assert.match(tests, /"CARGO_TARGET_DIR=\$dir" >> \$env:GITHUB_ENV/);
 
   const stat = bodyOf('rust-windows-app-static');
   for (const step of [
@@ -534,5 +534,23 @@ test('relay-only classification is pinned to the workflow wiring that makes it s
   // ios and macOS path lists never mention the service, so a relay diff cannot start them.
   for (const name of ['ios.yml', 'macos-build.yml']) {
     assert.doesNotMatch(workflow(name), /qc-remote-cloud/, name);
+  }
+});
+
+test('Windows CI keeps Cargo output on the persistent runner instead of a GitHub cache', () => {
+  // CI is dispatched by hand on one self-hosted Windows runner: master rarely
+  // re-saved a rust-cache entry and any toolchain change altered its key, so
+  // every run compiled every crate from scratch.
+  const ci = workflow('ci.yml');
+  for (const job of ['rust', 'rust-msrv', 'rust-windows-app-static', 'rust-windows-app-tests']) {
+    const start = ci.indexOf(`\n  ${job}:\n`) + 1;
+    assert.ok(start > 0, job);
+    const rest = ci.slice(start);
+    const end = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
+    const body = end === -1 ? rest : rest.slice(0, end + 1);
+    assert.match(body, /^ {4}runs-on: qc-remote-i5-windows$/m, job);
+    assert.doesNotMatch(body, /Swatinem\/rust-cache@/, job);
+    assert.match(body, /Join-Path \$env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target\/[a-z0-9.-]+'/, job);
+    assert.match(body, /"CARGO_TARGET_DIR=\$dir" >> \$env:GITHUB_ENV/, job);
   }
 });
