@@ -45,13 +45,68 @@ jobs:
           QC_PUSH_BEFORE: ${{ github.event.before }}
         run: node scripts/ci-changes.mjs
 
+  # Chooses where each job runs. Every pool (Linux, Windows) has exactly one
+  # local runner, which runs one job at a time and sits behind the shared I5
+  # capacity gate. The pool's local runner takes its heaviest job when no other
+  # run is using it; every other job, and all of them when another run holds
+  # it, goes to a GitHub-hosted runner (free: this repository is public). Jobs
+  # still queued locally ahead of this run count as using it.
+  pick-runners:
+    name: Pick runners
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      win-tests: ${{ steps.pick.outputs.win-tests }}
+      win-rust: ${{ steps.pick.outputs.win-rust }}
+      win-static: ${{ steps.pick.outputs.win-static }}
+      win-msrv: ${{ steps.pick.outputs.win-msrv }}
+      lin-android: ${{ steps.pick.outputs.lin-android }}
+      lin-other: ${{ steps.pick.outputs.lin-other }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          # Any failure to look falls back to the hosted runner, never to a wait.
+          in_use() {
+            local label=$1 id n total=0
+            for status in in_progress queued; do
+              for id in $(gh api "repos/$REPO/actions/runs?status=$status&per_page=50" --jq '.workflow_runs[].id' 2>/dev/null); do
+                [ "$id" = "$RUN_ID" ] && continue
+                n=$(gh api "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" \
+                  --jq "[.jobs[] | select((.status == \"in_progress\" or .status == \"queued\") and (.labels | index(\"$label\")))] | length" 2>/dev/null || echo 1)
+                total=$((total + n))
+              done
+            done
+            echo "$total"
+          }
+          pick() { # label hosted -> local label when its runner is free
+            local used; used=$(in_use "$1")
+            echo "$1: $used job(s) from other runs" >&2
+            [ "$used" = 0 ] && echo "$1" || echo "$2"
+          }
+          win=$(pick qc-remote-i5-windows windows-2025)
+          lin=$(pick qc-remote-i5-linux ubuntu-24.04)
+          {
+            echo "win-tests=$win"
+            echo "win-rust=windows-2025"
+            echo "win-static=windows-2025"
+            echo "win-msrv=windows-2025"
+            echo "lin-android=$lin"
+            echo "lin-other=ubuntu-24.04"
+          } | tee -a "$GITHUB_OUTPUT"
+
   rust:
     name: Rust workspace
     # The native jobs run unless the change is confined to the safe set (see
     # `changes`).
-    needs: changes
+    needs: [changes, pick-runners]
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-windows
+    runs-on: ${{ needs.pick-runners.outputs.win-rust }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -76,6 +131,7 @@ jobs:
       # own output kept on the runner stays warm across branches and runs; it is
       # cleared whenever the compiler changes, which also bounds its size.
       - name: Keep Cargo build output on the runner
+        if: ${{ runner.environment == 'self-hosted' }}
         shell: pwsh
         run: |
           $dir = Join-Path $env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target/stable'
@@ -87,6 +143,12 @@ jobs:
           Set-Content "$dir.rustc" $rustc
           "CARGO_TARGET_DIR=$dir" >> $env:GITHUB_ENV
           "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
+      # A GitHub-hosted runner starts empty, so it restores master's cache
+      # (pull requests never save one).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: ${{ runner.environment == 'github-hosted' }}
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
@@ -97,9 +159,9 @@ jobs:
   # toolchain below equal to that `rust-version`.
   rust-msrv:
     name: quadcortex on its declared Rust minimum (1.87)
-    needs: changes
+    needs: [changes, pick-runners]
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-windows
+    runs-on: ${{ needs.pick-runners.outputs.win-msrv }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -115,6 +177,7 @@ jobs:
           toolchain: '1.87'
       # As in the Rust workspace job, in its own directory for 1.87.
       - name: Keep Cargo build output on the runner
+        if: ${{ runner.environment == 'self-hosted' }}
         shell: pwsh
         run: |
           $dir = Join-Path $env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target/msrv-1.87'
@@ -126,6 +189,13 @@ jobs:
           Set-Content "$dir.rustc" $rustc
           "CARGO_TARGET_DIR=$dir" >> $env:GITHUB_ENV
           "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
+      # A GitHub-hosted runner starts empty, so it restores master's cache
+      # (pull requests never save one).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: ${{ runner.environment == 'github-hosted' }}
+        with:
+          key: msrv-1.87
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo +1.87 test -p quadcortex --locked
       # Optional encrypted forwarding uses a separate cipher dependency graph.
       # Default-feature tests do not verify that graph against the Rust minimum.
@@ -137,9 +207,9 @@ jobs:
   # below is the unchanged required context that is green exactly when both are.
   rust-windows-app-static:
     name: Windows app static checks (fmt, check, clippy, broker build)
-    needs: changes
+    needs: [changes, pick-runners]
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-windows
+    runs-on: ${{ needs.pick-runners.outputs.win-static }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -168,6 +238,7 @@ jobs:
       # Shares the Rust workspace job's directory (see there): these jobs run one
       # at a time on the same runner and build many of the same crates.
       - name: Keep Cargo build output on the runner
+        if: ${{ runner.environment == 'self-hosted' }}
         shell: pwsh
         run: |
           $dir = Join-Path $env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target/stable'
@@ -179,6 +250,13 @@ jobs:
           Set-Content "$dir.rustc" $rustc
           "CARGO_TARGET_DIR=$dir" >> $env:GITHUB_ENV
           "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
+      # A GitHub-hosted runner starts empty, so it restores master's cache
+      # (pull requests never save one).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: ${{ runner.environment == 'github-hosted' }}
+        with:
+          workspaces: apps/windows/src-tauri
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Stage check-only sidecar placeholders
         working-directory: apps/windows/src-tauri
         shell: pwsh
@@ -200,9 +278,9 @@ jobs:
 
   rust-windows-app-tests:
     name: Windows app native tests
-    needs: changes
+    needs: [changes, pick-runners]
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-windows
+    runs-on: ${{ needs.pick-runners.outputs.win-tests }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -217,6 +295,7 @@ jobs:
       # scripts/test-windows-native.mjs finds the built broker from Cargo's own
       # messages, so it follows CARGO_TARGET_DIR.
       - name: Keep Cargo build output on the runner
+        if: ${{ runner.environment == 'self-hosted' }}
         shell: pwsh
         run: |
           $dir = Join-Path $env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target/stable'
@@ -228,6 +307,16 @@ jobs:
           Set-Content "$dir.rustc" $rustc
           "CARGO_TARGET_DIR=$dir" >> $env:GITHUB_ENV
           "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
+      # A GitHub-hosted runner starts empty, so it restores master's cache
+      # (pull requests never save one).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: ${{ runner.environment == 'github-hosted' }}
+        with:
+          shared-key: rust-windows-app
+          workspaces: |
+            . -> target
+            apps/windows/src-tauri -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Stage check-only sidecar placeholders
         working-directory: apps/windows/src-tauri
         shell: pwsh
@@ -261,9 +350,9 @@ jobs:
 
   quadcortex-linux:
     name: Quad Cortex crate docs and Linux tests
-    needs: changes
+    needs: [changes, pick-runners]
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ needs.pick-runners.outputs.lin-other }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -281,7 +370,8 @@ jobs:
   third-party-notices:
     name: Third-party notices drift check
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
-    runs-on: qc-remote-i5-linux
+    needs: pick-runners
+    runs-on: ${{ needs.pick-runners.outputs.lin-other }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -315,9 +405,9 @@ jobs:
 
   typescript:
     name: TypeScript packages and apps
-    needs: changes
+    needs: [changes, pick-runners]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.typescript != 'false'))) }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ needs.pick-runners.outputs.lin-other }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -346,7 +436,8 @@ jobs:
 
   public-history:
     name: Public history and path boundary
-    runs-on: qc-remote-i5-linux
+    needs: pick-runners
+    runs-on: ${{ needs.pick-runners.outputs.lin-other }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -396,9 +487,9 @@ jobs:
 
   cloud-relay:
     name: Cloud relay (dry-run deploy)
-    needs: changes
+    needs: [changes, pick-runners]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.cloud != 'false'))) }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ needs.pick-runners.outputs.lin-other }}
     timeout-minutes: 20
     # services/qc-remote-cloud is an npm workspace of the root package.json and
     # has no lockfile of its own: install from the root lock and run the
@@ -428,9 +519,9 @@ jobs:
 
   android:
     name: Android app (debug build + unit tests)
-    needs: changes
+    needs: [changes, pick-runners]
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ needs.pick-runners.outputs.lin-android }}
     timeout-minutes: 40
     # Deliberately debug-only: no release signing or keystore. Do not set QC_ANDROID_KEYSTORE_BASE64,
     # QC_ANDROID_KEYSTORE, QC_ANDROID_STORE_PASSWORD, QC_ANDROID_KEY_ALIAS,
@@ -488,6 +579,7 @@ jobs:
     name: CI result
     if: ${{ always() }}
     needs:
+      - pick-runners
       - rust
       - rust-msrv
       - rust-windows-app-static
