@@ -25,7 +25,10 @@ jobs:
   # does not rebuild the native caches either.
   changes:
     name: Select jobs
-    runs-on: qc-remote-i5-linux
+    # Hosted: a seconds-long gate must not queue behind the shared I5
+    # capacity gate (it waited up to 9 minutes), and this repository is
+    # public, so hosted Linux minutes are free.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       native: ${{ steps.filter.outputs.native }}
@@ -243,7 +246,10 @@ jobs:
       - rust-windows-app-static
       - rust-windows-app-tests
     if: ${{ !cancelled() }}
-    runs-on: qc-remote-i5-linux
+    # Hosted: a seconds-long gate must not queue behind the shared I5
+    # capacity gate (it waited up to 9 minutes), and this repository is
+    # public, so hosted Linux minutes are free.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Fail unless both Windows app jobs passed or were skipped together
@@ -493,7 +499,10 @@ jobs:
       - public-history
       - cloud-relay
       - android
-    runs-on: qc-remote-i5-linux
+    # Hosted: a seconds-long gate must not queue behind the shared I5
+    # capacity gate (it waited up to 9 minutes), and this repository is
+    # public, so hosted Linux minutes are free.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Fail if any CI job failed or was cancelled

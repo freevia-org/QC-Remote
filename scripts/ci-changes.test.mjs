@@ -554,3 +554,15 @@ test('Windows CI keeps Cargo output on the persistent runner instead of a GitHub
     assert.match(body, /"CARGO_TARGET_DIR=\$dir" >> \$env:GITHUB_ENV/, job);
   }
 });
+
+test('seconds-long gate jobs run on hosted Linux, not behind the shared I5 capacity gate', () => {
+  const ci = workflow('ci.yml');
+  for (const job of ['changes', 'rust-windows-app', 'ci-result']) {
+    const start = ci.indexOf(`\n  ${job}:\n`) + 1;
+    assert.ok(start > 0, job);
+    const rest = ci.slice(start);
+    const end = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
+    const body = end === -1 ? rest : rest.slice(0, end + 1);
+    assert.match(body, /^ {4}runs-on: ubuntu-24\.04$/m, job);
+  }
+});
