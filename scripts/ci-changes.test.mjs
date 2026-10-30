@@ -537,10 +537,11 @@ test('relay-only classification is pinned to the workflow wiring that makes it s
   }
 });
 
-test('Windows CI keeps Cargo output on the persistent runner instead of a GitHub cache', () => {
-  // CI is dispatched by hand on one self-hosted Windows runner: master rarely
-  // re-saved a rust-cache entry and any toolchain change altered its key, so
-  // every run compiled every crate from scratch.
+test('Windows CI keeps Cargo output on the persistent runner, and caches only on hosted ones', () => {
+  // CI is dispatched by hand: master rarely re-saved a rust-cache entry and any
+  // toolchain change altered its key, so every run on the persistent runner
+  // compiled every crate from scratch. A hosted runner starts empty, so it
+  // restores master's cache instead.
   const ci = workflow('ci.yml');
   for (const job of ['rust', 'rust-msrv', 'rust-windows-app-static', 'rust-windows-app-tests']) {
     const start = ci.indexOf(`\n  ${job}:\n`) + 1;
@@ -548,10 +549,32 @@ test('Windows CI keeps Cargo output on the persistent runner instead of a GitHub
     const rest = ci.slice(start);
     const end = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
     const body = end === -1 ? rest : rest.slice(0, end + 1);
-    assert.match(body, /^ {4}runs-on: qc-remote-i5-windows$/m, job);
-    assert.doesNotMatch(body, /Swatinem\/rust-cache@/, job);
+    assert.match(body, /^ {4}runs-on: \$\{\{ needs\.pick-runners\.outputs\.win-[a-z]+ \}\}$/m, job);
     assert.match(body, /Join-Path \$env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target\/[a-z0-9.-]+'/, job);
+    assert.match(body, /if: \$\{\{ runner\.environment == 'self-hosted' \}\}\n {8}shell: pwsh/, job);
     assert.match(body, /"CARGO_TARGET_DIR=\$dir" >> \$env:GITHUB_ENV/, job);
+    assert.match(body, /Swatinem\/rust-cache@[0-9a-f]{40} # v[\d.]+\n {8}if: \$\{\{ runner\.environment == 'github-hosted' \}\}/, job);
+  }
+});
+
+test('runner choice falls back to hosted runners when a local runner is in use', () => {
+  const ci = workflow('ci.yml');
+  const start = ci.indexOf('\n  pick-runners:\n') + 1;
+  assert.ok(start > 0);
+  const rest = ci.slice(start);
+  const body = rest.slice(0, rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m) + 1);
+  assert.match(body, /^ {4}runs-on: ubuntu-24\.04$/m, 'the picker itself never waits on a local runner');
+  assert.match(body, /^ {6}actions: read$/m);
+  assert.match(body, /\[ "\$used" = 0 \] && echo "\$1" \|\| echo "\$2"/);
+  // Every job that can run locally takes its runner from the picker.
+  for (const job of ['rust', 'rust-msrv', 'rust-windows-app-static', 'rust-windows-app-tests', 'quadcortex-linux',
+    'third-party-notices', 'typescript', 'public-history', 'cloud-relay', 'android']) {
+    const s2 = ci.indexOf(`\n  ${job}:\n`) + 1;
+    const r2 = ci.slice(s2);
+    const b2 = r2.slice(0, r2.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m) + 1);
+    assert.match(b2, /^ {4}runs-on: \$\{\{ needs\.pick-runners\.outputs\./m, job);
+    assert.match(b2, /pick-runners/, job);
+    assert.doesNotMatch(b2, /runs-on: qc-remote-i5/, job);
   }
 });
 
