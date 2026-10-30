@@ -549,7 +549,7 @@ test('Windows CI keeps Cargo output on the persistent runner, and caches only on
     const rest = ci.slice(start);
     const end = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
     const body = end === -1 ? rest : rest.slice(0, end + 1);
-    assert.match(body, /^ {4}runs-on: \$\{\{ needs\.pick-runners\.outputs\.win-[a-z]+ \}\}$/m, job);
+    assert.match(body, /^ {4}runs-on: windows-2025$/m, job);
     assert.match(body, /Join-Path \$env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target\/[a-z0-9.-]+'/, job);
     assert.match(body, /if: \$\{\{ runner\.environment == 'self-hosted' \}\}\n {8}shell: pwsh/, job);
     assert.match(body, /"CARGO_TARGET_DIR=\$dir" >> \$env:GITHUB_ENV/, job);
@@ -557,25 +557,15 @@ test('Windows CI keeps Cargo output on the persistent runner, and caches only on
   }
 });
 
-test('runner choice falls back to hosted runners when a local runner is in use', () => {
+test('CI runs on GitHub-hosted runners only, never behind the shared I5 capacity gate', () => {
+  // The local I5 runners queue every job behind a gate shared with other
+  // repositories; jobs waited 9 to 35 minutes there. This repository is public,
+  // so hosted minutes are free. The self-hosted cache steps stay (they only run
+  // on a self-hosted runner) so a local runner can be tried again by changing
+  // `runs-on` alone.
   const ci = workflow('ci.yml');
-  const start = ci.indexOf('\n  pick-runners:\n') + 1;
-  assert.ok(start > 0);
-  const rest = ci.slice(start);
-  const body = rest.slice(0, rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m) + 1);
-  assert.match(body, /^ {4}runs-on: ubuntu-24\.04$/m, 'the picker itself never waits on a local runner');
-  assert.match(body, /^ {6}actions: read$/m);
-  assert.match(body, /\[ "\$used" = 0 \] && echo "\$1" \|\| echo "\$2"/);
-  // Every job that can run locally takes its runner from the picker.
-  for (const job of ['rust', 'rust-msrv', 'rust-windows-app-static', 'rust-windows-app-tests', 'quadcortex-linux',
-    'third-party-notices', 'typescript', 'public-history', 'cloud-relay', 'android']) {
-    const s2 = ci.indexOf(`\n  ${job}:\n`) + 1;
-    const r2 = ci.slice(s2);
-    const b2 = r2.slice(0, r2.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m) + 1);
-    assert.match(b2, /^ {4}runs-on: \$\{\{ needs\.pick-runners\.outputs\./m, job);
-    assert.match(b2, /pick-runners/, job);
-    assert.doesNotMatch(b2, /runs-on: qc-remote-i5/, job);
-  }
+  assert.doesNotMatch(ci, /^ {4}runs-on: qc-remote-i5-/m);
+  assert.doesNotMatch(ci, /pick-runners/);
 });
 
 test('seconds-long gate jobs run on hosted Linux, not behind the shared I5 capacity gate', () => {
