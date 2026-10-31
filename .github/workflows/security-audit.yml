@@ -1,3 +1,7 @@
+#I5 admission may wait up to 60 minutes. The original whole-work budget
+#starts after the hook; each existing step receives only its remaining share.
+#Step ids, commands, conditions and secret scopes stay in place.
+
 name: Dependency security audit
 
 on:
@@ -15,24 +19,134 @@ jobs:
   npm-audit:
     name: npm dependencies
     runs-on: qc-remote-i5-linux
-    timeout-minutes: 10
+    timeout-minutes: 70
     steps:
+      - name: Start original execution budget after admission
+        id: runner_work_budget
+        if: ${{ contains(runner.name, '-i5-') }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_MINUTES: 10
+        run: |+
+          set -euo pipefail
+          if [[ ! "$CI_EXECUTION_MINUTES" =~ ^[0-9]+$ ]] ||
+             (( CI_EXECUTION_MINUTES < 1 || CI_EXECUTION_MINUTES > 360 )); then
+            echo "::error::Invalid execution budget"
+            exit 1
+          fi
+          printf 'deadline=%s\n' "$(( $(/usr/bin/date +%s) + CI_EXECUTION_MINUTES * 60 ))" >> "$GITHUB_OUTPUT"
+
+      - name: Check remaining execution budget (1)
+        id: runner_budget_001
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: &runner_budget_guard_npm_audit |+
+          set -euo pipefail
+          if [[ ! "$CI_EXECUTION_DEADLINE" =~ ^[0-9]+$ ]] ||
+             [[ ! "$CI_STEP_LIMIT" =~ ^[0-9]+$ ]] ||
+             (( CI_STEP_LIMIT < 1 || CI_STEP_LIMIT > 360 )); then
+            echo "::error::Execution budget metadata is unavailable"
+            exit 1
+          fi
+          remaining=$(( CI_EXECUTION_DEADLINE - $(/usr/bin/date +%s) ))
+          if (( remaining <= 0 )); then
+            printf 'ready=false\nminutes=1\n' >> "$GITHUB_OUTPUT"
+            echo "::error::Original execution budget exhausted after capacity admission"
+            exit 1
+          fi
+          minutes=$(( (remaining + 59) / 60 ))
+          if (( minutes > CI_STEP_LIMIT )); then minutes=$CI_STEP_LIMIT; fi
+          printf 'ready=true\nminutes=%s\n' "$minutes" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_001.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_001.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (2)
+        id: runner_budget_002
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_npm_audit
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: package-lock.json
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_002.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_002.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (3)
+        id: runner_budget_003
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_npm_audit
       - run: npm ci --ignore-scripts
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_003.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_003.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (4)
+        id: runner_budget_004
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_npm_audit
       - run: npm audit --omit=dev --audit-level=moderate
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_004.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_004.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (5)
+        id: runner_budget_005
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_npm_audit
       - run: npm audit --audit-level=high
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_005.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_005.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (6)
+        id: runner_budget_006
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_npm_audit
       - run: npm audit --workspace @qc-remote/cloud --omit=dev --audit-level=moderate
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_006.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_006.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (7)
+        id: runner_budget_007
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_npm_audit
       - run: npm audit --workspace @qc-remote/cloud --audit-level=high
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_007.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_007.outputs.minutes || '1') || 360 }}
 
   rustsec:
     name: RustSec (${{ matrix.directory }})
     runs-on: qc-remote-i5-linux
-    timeout-minutes: 15
+    timeout-minutes: 75
     permissions:
       contents: read
       checks: write
@@ -45,7 +159,60 @@ jobs:
           - apps/windows/src-tauri
           - apps/ios/native-bridge/rust
     steps:
+      - name: Start original execution budget after admission
+        id: runner_work_budget
+        if: ${{ contains(runner.name, '-i5-') }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_MINUTES: 15
+        run: |+
+          set -euo pipefail
+          if [[ ! "$CI_EXECUTION_MINUTES" =~ ^[0-9]+$ ]] ||
+             (( CI_EXECUTION_MINUTES < 1 || CI_EXECUTION_MINUTES > 360 )); then
+            echo "::error::Invalid execution budget"
+            exit 1
+          fi
+          printf 'deadline=%s\n' "$(( $(/usr/bin/date +%s) + CI_EXECUTION_MINUTES * 60 ))" >> "$GITHUB_OUTPUT"
+
+      - name: Check remaining execution budget (1)
+        id: runner_budget_001
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: &runner_budget_guard_rustsec |+
+          set -euo pipefail
+          if [[ ! "$CI_EXECUTION_DEADLINE" =~ ^[0-9]+$ ]] ||
+             [[ ! "$CI_STEP_LIMIT" =~ ^[0-9]+$ ]] ||
+             (( CI_STEP_LIMIT < 1 || CI_STEP_LIMIT > 360 )); then
+            echo "::error::Execution budget metadata is unavailable"
+            exit 1
+          fi
+          remaining=$(( CI_EXECUTION_DEADLINE - $(/usr/bin/date +%s) ))
+          if (( remaining <= 0 )); then
+            printf 'ready=false\nminutes=1\n' >> "$GITHUB_OUTPUT"
+            echo "::error::Original execution budget exhausted after capacity admission"
+            exit 1
+          fi
+          minutes=$(( (remaining + 59) / 60 ))
+          if (( minutes > CI_STEP_LIMIT )); then minutes=$CI_STEP_LIMIT; fi
+          printf 'ready=true\nminutes=%s\n' "$minutes" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_001.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_001.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (2)
+        id: runner_budget_002
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_rustsec
       # audit-check runs `cargo install cargo-audit` (a ~3 minute release build
       # from source, in each of the three matrix jobs) unless cargo-audit is
       # already on PATH. Install the RustSec project's own prebuilt release
@@ -55,10 +222,23 @@ jobs:
         uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-audit
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_002.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_002.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (3)
+        id: runner_budget_003
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_rustsec
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           working-directory: ${{ matrix.directory }}
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_003.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_003.outputs.minutes || '1') || 360 }}
 
   android-gradle-osv:
     name: Android Gradle lockfile advisories
