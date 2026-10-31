@@ -1,6 +1,6 @@
 {
   "name": "@qc-remote/android",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "license": "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference",
   "private": true,
   "type": "module",
