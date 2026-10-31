@@ -6,6 +6,19 @@ Since 1.0.1, Windows, macOS, Linux, Android and iOS share one public application
 version. Android and iOS retain their separate increasing build counters;
 internal library and service versions are independent.
 
+## QC Remote 1.0.5 - 31 October 2026
+
+Hide the repository link on the Windows About screen, add content-free startup
+diagnostics for a rejected module-statistics reply, update the zip crate to 9.0.5
+(GHSA-m665-v7pm-7grj), and carry the Android USB recovery, Demo selection,
+staged progress and broker target routing changes already shipped in Android
+build 59.
+
+All application manifests use marketing version 1.0.5; Android advances to
+versionCode 59, which is already on Google Play, and the iOS App target to build
+7. This entry records source and release history; it does not imply Store
+approval. Windows, Linux and macOS builds follow the same shared version, with
+Linux and unsigned Intel macOS published as separate preview releases.
 ## QC Remote 1.0.4 - 27 October 2026
 
 Update the Cloudflare OAuth provider while retaining S256 PKCE, refresh the
