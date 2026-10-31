@@ -4465,17 +4465,6 @@
     {
       "ecosystem": "cargo",
       "name": "sha1",
-      "version": "0.10.7",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/RustCrypto/hashes",
-      "licenseTextHashes": [
-        "4031faf6212ee74481b2597dc84fb61568d6a732480c3efdf317f2ac83d330b4",
-        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "sha1",
       "version": "0.11.0",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/RustCrypto/hashes",
@@ -9723,7 +9712,6 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:sha1@0.10.7",
         "cargo:sha2@0.10.9"
       ]
     },
@@ -12117,7 +12105,6 @@
         "cargo:digest@0.11.3",
         "cargo:hybrid-array@0.4.15",
         "cargo:inout@0.2.5",
-        "cargo:sha1@0.10.7",
         "cargo:sha1@0.11.0",
         "cargo:sha2@0.10.9",
         "cargo:sha2@0.11.1"
