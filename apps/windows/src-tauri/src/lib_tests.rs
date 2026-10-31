@@ -529,6 +529,49 @@ fn gateway_output_deadline_unread_socket_is_bounded() {
     #[cfg(not(windows))]
     writer_socket.set_send_buffer_size(4096).unwrap();
     assert!(socket2::SockRef::from(&peer).recv_buffer_size().unwrap() <= 2 * 1024 * 1024);
+    // Windows loopback can buffer a whole frame. Establish real backpressure
+    // (a sustained WouldBlock from the unread peer) rather than inferring it
+    // from the frame size, then restore blocking mode for the bounded write.
+    let mut writer = writer;
+    {
+        use std::io::Write as _;
+        writer.set_nonblocking(true).unwrap();
+        let prefill_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let chunk = [0_u8; 64 * 1024];
+        let mut prefilled = 0_usize;
+        let mut blocked_since: Option<std::time::Instant> = None;
+        loop {
+            if std::time::Instant::now() >= prefill_deadline || prefilled >= 128 * 1024 * 1024 {
+                // Windows loopback is the platform that buffers a whole frame,
+                // so there sustained backpressure is required. Elsewhere the
+                // kernel may keep absorbing bytes; the bounded write below is
+                // still measured against the unread peer.
+                if cfg!(windows) {
+                    panic!("socket prefill budget expired without sustained backpressure");
+                }
+                break;
+            }
+            match writer.write(&chunk) {
+                Ok(0) => panic!("prefill peer closed rather than applying backpressure"),
+                Ok(written) => {
+                    prefilled += written;
+                    blocked_since = None;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    // One WouldBlock can precede a delayed loopback ACK and
+                    // renewed buffering. Require sustained unread pressure.
+                    let since = blocked_since.get_or_insert_with(std::time::Instant::now);
+                    if since.elapsed() >= std::time::Duration::from_millis(150) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("socket prefill failed: {error}"),
+            }
+        }
+        writer.set_nonblocking(false).unwrap();
+    }
     let elapsed = std::thread::scope(|scope| {
         let (start, started) = mpsc::channel();
         let (release, released) = mpsc::channel();
@@ -552,9 +595,11 @@ fn gateway_output_deadline_unread_socket_is_bounded() {
         let result = reads.write(&vec![0_u8; 8 * 1024 * 1024]);
         let elapsed = started.elapsed();
         drop(release);
+        let failure =
+            result.expect_err("a non-reading peer must not accept the complete bounded frame");
         assert!(
-            result.is_err(),
-            "a non-reading peer must not accept the complete bounded frame"
+            failure.attempted,
+            "the frame was attempted against a prefilled socket and must fail as attempted"
         );
         elapsed
     });
