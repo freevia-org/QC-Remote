@@ -17339,7 +17339,7 @@ Creator: Person: Daniel Thompson-Yvetot
 ================================================================================
 SHA-256: eb99a0d61b507ad0182e18e9d2a91537c1d9025c94e098e4e7603a53b4b5218a
 Source file names: LICENSE
-Applies to: npm:@capacitor/status-bar@8.0.4
+Applies to: npm:@capacitor/app@8.1.2, npm:@capacitor/status-bar@8.0.4
 --------------------------------------------------------------------------------
 Copyright 2020-present Ionic
 https://ionic.io
