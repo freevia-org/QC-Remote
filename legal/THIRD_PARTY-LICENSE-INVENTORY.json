@@ -8246,6 +8246,16 @@
     },
     {
       "ecosystem": "npm",
+      "name": "@capacitor/app",
+      "version": "8.1.2",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/ionic-team/capacitor-plugins",
+      "licenseTextHashes": [
+        "eb99a0d61b507ad0182e18e9d2a91537c1d9025c94e098e4e7603a53b4b5218a"
+      ]
+    },
+    {
+      "ecosystem": "npm",
       "name": "@capacitor/core",
       "version": "8.5.3",
       "license": "MIT",
@@ -12176,6 +12186,7 @@
         "LICENSE"
       ],
       "components": [
+        "npm:@capacitor/app@8.1.2",
         "npm:@capacitor/status-bar@8.0.4"
       ]
     },
