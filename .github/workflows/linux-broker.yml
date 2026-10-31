@@ -1,3 +1,7 @@
+#I5 admission may wait up to 60 minutes. The original whole-work budget
+#starts after the hook; each existing step receives only its remaining share.
+#Step ids, commands, conditions and secret scopes stay in place.
+
 name: Linux device broker
 
 on:
@@ -25,9 +29,62 @@ jobs:
     name: Headless broker on native Linux
     if: ${{ !cancelled() && !inputs.build_linux_draft }}
     runs-on: qc-remote-i5-linux
-    timeout-minutes: 20
+    timeout-minutes: 80
     steps:
+      - name: Start original execution budget after admission
+        id: runner_work_budget
+        if: ${{ contains(runner.name, '-i5-') }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_MINUTES: 20
+        run: |+
+          set -euo pipefail
+          if [[ ! "$CI_EXECUTION_MINUTES" =~ ^[0-9]+$ ]] ||
+             (( CI_EXECUTION_MINUTES < 1 || CI_EXECUTION_MINUTES > 360 )); then
+            echo "::error::Invalid execution budget"
+            exit 1
+          fi
+          printf 'deadline=%s\n' "$(( $(/usr/bin/date +%s) + CI_EXECUTION_MINUTES * 60 ))" >> "$GITHUB_OUTPUT"
+
+      - name: Check remaining execution budget (1)
+        id: runner_budget_001
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: &runner_budget_guard_native_linux |+
+          set -euo pipefail
+          if [[ ! "$CI_EXECUTION_DEADLINE" =~ ^[0-9]+$ ]] ||
+             [[ ! "$CI_STEP_LIMIT" =~ ^[0-9]+$ ]] ||
+             (( CI_STEP_LIMIT < 1 || CI_STEP_LIMIT > 360 )); then
+            echo "::error::Execution budget metadata is unavailable"
+            exit 1
+          fi
+          remaining=$(( CI_EXECUTION_DEADLINE - $(/usr/bin/date +%s) ))
+          if (( remaining <= 0 )); then
+            printf 'ready=false\nminutes=1\n' >> "$GITHUB_OUTPUT"
+            echo "::error::Original execution budget exhausted after capacity admission"
+            exit 1
+          fi
+          minutes=$(( (remaining + 59) / 60 ))
+          if (( minutes > CI_STEP_LIMIT )); then minutes=$CI_STEP_LIMIT; fi
+          printf 'ready=true\nminutes=%s\n' "$minutes" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_001.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_001.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (2)
+        id: runner_budget_002
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
       - name: Verify preinstalled isolated tray probe dependencies
         run: |
           for package in apparmor-utils bubblewrap dbus-daemon gir1.2-glib-2.0 python3-gi; do
@@ -36,19 +93,63 @@ jobs:
               exit 1
             fi
           done
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_002.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_002.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (3)
+        id: runner_budget_003
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
       # No rustfmt: formatting is platform independent, and ci.yml's `Rust
       # workspace` job checks it under the same change filter.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_003.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_003.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (4)
+        id: runner_budget_004
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
       # Master-only dispatches save this cache; validation on other refs reads it
       # without pushing branch-local copies into the shared cache budget.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: linux-broker
           save-if: ${{ github.ref == 'refs/heads/master' }}
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_004.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_004.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (5)
+        id: runner_budget_005
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
       - name: Build the standalone Linux broker
         run: cargo build --locked -p qc-device-broker --bin qc-device-broker --features linux-tray
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_005.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_005.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (6)
+        id: runner_budget_006
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
       - name: Upload broker for the hosted AppArmor startup probe
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -56,6 +157,17 @@ jobs:
           path: target/debug/qc-device-broker
           if-no-files-found: error
           retention-days: 1
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_006.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_006.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (7)
+        id: runner_budget_007
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
       # These real subprocess tests start disconnected; authentication/status,
       # election, filesystem modes, crash recovery and shutdown need no QC.
       # --probe, --verify-live and --auto-connect are deliberately absent.
@@ -64,16 +176,73 @@ jobs:
       # default-feature Quad Cortex job. Building it as a dependency is not enough.
       - name: Test shared engines and Linux native boundaries
         run: cargo test --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --features qc-device-broker/linux-tray
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_007.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_007.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (8)
+        id: runner_budget_008
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
       - name: Lint Linux broker and adapters
         run: cargo clippy --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --all-targets --features qc-device-broker/linux-tray -- -D warnings
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_008.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_008.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (9)
+        id: runner_budget_009
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
       - name: Check non-hardware executable entry point
         run: ./target/debug/qc-device-broker --self-check
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_009.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_009.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (10)
+        id: runner_budget_010
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
       - name: Test tray startup probe cleanup fixtures
         run: dbus-run-session -- python3 -m unittest scripts.test_linux_tray_startup -v
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_010.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_010.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (11)
+        id: runner_budget_011
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
       - name: Test Debian package verification and cleanup
         run: python3 -m unittest scripts.test_package_linux_deb
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_011.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_011.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (12)
+        id: runner_budget_012
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
       - name: Test Cargo test-executable selection
         run: python3 -m unittest scripts.test_select_cargo_test_executable
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_012.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_012.outputs.minutes || '1') || 360 }}
 
   linux-tray-startup-probe:
     name: Disconnected tray startup under AppArmor
@@ -111,11 +280,64 @@ jobs:
     name: Linux Tauri host and resident tray
     if: ${{ !cancelled() && !inputs.build_linux_draft }}
     runs-on: qc-remote-i5-linux
-    timeout-minutes: 45
+    timeout-minutes: 105
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
+      - name: Start original execution budget after admission
+        id: runner_work_budget
+        if: ${{ contains(runner.name, '-i5-') }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_MINUTES: 45
+        run: |+
+          set -euo pipefail
+          if [[ ! "$CI_EXECUTION_MINUTES" =~ ^[0-9]+$ ]] ||
+             (( CI_EXECUTION_MINUTES < 1 || CI_EXECUTION_MINUTES > 360 )); then
+            echo "::error::Invalid execution budget"
+            exit 1
+          fi
+          printf 'deadline=%s\n' "$(( $(/usr/bin/date +%s) + CI_EXECUTION_MINUTES * 60 ))" >> "$GITHUB_OUTPUT"
+
+      - name: Check remaining execution budget (1)
+        id: runner_budget_001
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: &runner_budget_guard_linux_desktop_host |+
+          set -euo pipefail
+          if [[ ! "$CI_EXECUTION_DEADLINE" =~ ^[0-9]+$ ]] ||
+             [[ ! "$CI_STEP_LIMIT" =~ ^[0-9]+$ ]] ||
+             (( CI_STEP_LIMIT < 1 || CI_STEP_LIMIT > 360 )); then
+            echo "::error::Execution budget metadata is unavailable"
+            exit 1
+          fi
+          remaining=$(( CI_EXECUTION_DEADLINE - $(/usr/bin/date +%s) ))
+          if (( remaining <= 0 )); then
+            printf 'ready=false\nminutes=1\n' >> "$GITHUB_OUTPUT"
+            echo "::error::Original execution budget exhausted after capacity admission"
+            exit 1
+          fi
+          minutes=$(( (remaining + 59) / 60 ))
+          if (( minutes > CI_STEP_LIMIT )); then minutes=$CI_STEP_LIMIT; fi
+          printf 'ready=true\nminutes=%s\n' "$minutes" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_001.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_001.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (2)
+        id: runner_budget_002
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_linux_desktop_host
       - name: Verify preinstalled Tauri, tray and Secret Service development libraries
         run: |
           for package in build-essential curl file libayatana-appindicator3-dev libdbus-1-dev \
@@ -126,15 +348,48 @@ jobs:
               exit 1
             fi
           done
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_002.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_002.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (3)
+        id: runner_budget_003
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_linux_desktop_host
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_003.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_003.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (4)
+        id: runner_budget_004
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_linux_desktop_host
       - name: Install frontend dependencies and build the Linux UI
         run: |
           npm ci
           npm run build --workspace @qc-remote/windows
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_004.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_004.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (5)
+        id: runner_budget_005
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_linux_desktop_host
       - name: Prepare Cargo-only Linux Tauri configuration
         run: |
           python3 - <<'PY'
@@ -145,17 +400,50 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
               env.write("TAURI_CONFIG=" + json.dumps(config, separators=(",", ":")) + "\n")
           PY
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_005.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_005.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (6)
+        id: runner_budget_006
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_linux_desktop_host
       # The app's checked-in rust-toolchain.toml intentionally pins Windows
       # MSVC. Explicit +stable selects this Linux runner's host toolchain.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_006.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_006.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (7)
+        id: runner_budget_007
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_linux_desktop_host
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: apps/windows/src-tauri -> target
           key: linux-tauri-host
           # Master only, as for the headless broker job above.
           save-if: ${{ github.ref == 'refs/heads/master' }}
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_007.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_007.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (8)
+        id: runner_budget_008
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_linux_desktop_host
       # Cargo validates Rust host code only; packaging needs a verified,
       # target-suffixed external broker. Avoid a placeholder that could be
       # mistaken for a shippable sidecar. There is no separate fmt or check pass:
@@ -165,6 +453,17 @@ jobs:
       - name: Link the native Linux desktop executable, resident broker and MCP host
         working-directory: apps/windows/src-tauri
         run: cargo +stable build --locked --features tray-sidecar,custom-protocol --bin qc-remote --bin qc-device-broker
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_008.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_008.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (9)
+        id: runner_budget_009
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_linux_desktop_host
       - name: Capture the exact GUI library test executable
         working-directory: apps/windows/src-tauri
         run: |
@@ -172,14 +471,38 @@ jobs:
           cargo +stable test --locked --features tray-sidecar,custom-protocol \
             --lib --no-run --message-format=json \
             | python3 ../../../scripts/select-cargo-test-executable.py
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_009.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_009.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (10)
+        id: runner_budget_010
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_linux_desktop_host
       - name: Test the GUI host with its in-process broker
         working-directory: apps/windows/src-tauri
         env:
           QC_GATEWAY_EXECUTABLE: ${{ github.workspace }}/apps/windows/src-tauri/target/debug/qc-device-broker
         run: cargo +stable test --locked --features tray-sidecar,custom-protocol
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_010.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_010.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (11)
+        id: runner_budget_011
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_linux_desktop_host
       - name: Lint Linux GUI, tray and sidecar targets
         working-directory: apps/windows/src-tauri
         run: cargo +stable clippy --locked --all-targets --features tray-sidecar,custom-protocol -- -D warnings
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_011.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_011.outputs.minutes || '1') || 360 }}
 
   linux-preview-release:
     name: Build Ubuntu preview release draft
