@@ -638,7 +638,7 @@ function mcpHandler(env: Env, props: PrincipalProps) {
     const projected = projectAction("get_current_preset", {});
     return route({ action: projected.action.name, method: projected.method, params: projected.params, ...(origin ? { origin } : {}) }, "qc:read");
   };
-  return createMcpHandler(() => {
+  return createMcpHandler((_requestContext) => {
     // `instructions` is carried at `initialize`, which is the only place a
     // client reads it. Omitting it here meant a cloud client received no
     // operating guidance at all, while the same string was returned only
