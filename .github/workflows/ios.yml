@@ -1,37 +1,6 @@
 name: iOS build
 
 on:
-  pull_request:
-    paths:
-      - "apps/ios/**"
-      - "apps/android/src/**"
-      - "packages/rust/**"
-      - "packages/typescript/**"
-      - "!packages/typescript/qc-ui/**/*.ts"
-      - "!packages/typescript/qc-ui/**/*.tsx"
-      - "!packages/typescript/qc-ui/**/*.css"
-      - "!packages/typescript/qc-ui/**/*.md"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "package.json"
-      - "package-lock.json"
-      - ".github/workflows/ios.yml"
-  push:
-    branches: [master]
-    paths:
-      - "apps/ios/**"
-      - "apps/android/src/**"
-      - "packages/rust/**"
-      - "packages/typescript/**"
-      - "!packages/typescript/qc-ui/**/*.ts"
-      - "!packages/typescript/qc-ui/**/*.tsx"
-      - "!packages/typescript/qc-ui/**/*.css"
-      - "!packages/typescript/qc-ui/**/*.md"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "package.json"
-      - "package-lock.json"
-      - ".github/workflows/ios.yml"
   workflow_dispatch:
 
 permissions:

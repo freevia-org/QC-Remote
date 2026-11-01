@@ -2,60 +2,11 @@ name: macOS desktop build
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/macos-build.yml
-      - apps/windows/**
-      - contracts/**
-      - packages/rust/**
-      - packages/typescript/**
-      - "!packages/typescript/qc-ui/**/*.ts"
-      - "!packages/typescript/qc-ui/**/*.tsx"
-      - "!packages/typescript/qc-ui/**/*.css"
-      - "!packages/typescript/qc-ui/**/*.md"
-      - services/device-broker/**
-      - services/rust-mcp/**
-      - THIRD_PARTY-NOTICES.md
-      - legal/**
-      - LICENSE
-      - LICENSE-MIT
-      - LICENSE-APACHE
-      - LICENSES/**
-      - package.json
-      - package-lock.json
-      - Cargo.toml
-      - Cargo.lock
-  push:
-    branches:
-      - master
-    paths:
-      - .github/workflows/macos-build.yml
-      - apps/windows/**
-      - contracts/**
-      - packages/rust/**
-      - packages/typescript/**
-      - "!packages/typescript/qc-ui/**/*.ts"
-      - "!packages/typescript/qc-ui/**/*.tsx"
-      - "!packages/typescript/qc-ui/**/*.css"
-      - "!packages/typescript/qc-ui/**/*.md"
-      - services/device-broker/**
-      - services/rust-mcp/**
-      - THIRD_PARTY-NOTICES.md
-      - legal/**
-      - LICENSE
-      - LICENSE-MIT
-      - LICENSE-APACHE
-      - LICENSES/**
-      - package.json
-      - package-lock.json
-      - Cargo.toml
-      - Cargo.lock
 
 permissions:
   contents: read
 
-# Superseded pull request runs are cancelled; runs for master and manual or
-# scheduled dispatches are never cancelled.
+# Manual build dispatches use the selected ref and are not cancelled.
 concurrency:
   group: macos-build-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
