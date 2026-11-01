@@ -187,9 +187,15 @@ test('the Capacitor CLI stays on a release without the xcode dependency chain', 
   // locked entry below no longer depends on `xcode`.
   const spec = readJson('apps/android/package.json').devDependencies['@capacitor/cli'];
   assert.match(spec, /^\d+\.\d+\.\d+$/, '@capacitor/cli must stay an exact version');
-  const locked = lock.packages['node_modules/@capacitor/cli'];
-  assert.equal(locked.version, spec);
-  assert.ok(!('xcode' in (locked.dependencies ?? {})), `@capacitor/cli ${locked.version} depends on xcode`);
+  assert.equal(readJson('apps/ios/package.json').devDependencies['@capacitor/cli'], spec);
+  const lockedCopies = Object.entries(lock.packages)
+    .filter(([path]) => path === 'node_modules/@capacitor/cli' || path.endsWith('/node_modules/@capacitor/cli'))
+    .map(([, entry]) => entry);
+  assert.ok(lockedCopies.length > 0, '@capacitor/cli is missing from the lockfile');
+  for (const locked of lockedCopies) {
+    assert.equal(locked.version, spec, `@capacitor/cli ${locked.version} does not match ${spec}`);
+    assert.ok(!('xcode' in (locked.dependencies ?? {})), `@capacitor/cli ${locked.version} depends on xcode`);
+  }
   assert.ok(!lock.packages['node_modules/xcode'], 'xcode is in the lockfile');
 });
 
