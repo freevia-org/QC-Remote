@@ -68,8 +68,12 @@ name: DCO
 # and body edits, which only cost a re-run of this short job.
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open pull request number targeting master
+        required: true
+        type: string
 
 permissions:
   contents: read
