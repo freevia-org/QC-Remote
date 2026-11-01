@@ -1,0 +1,2 @@
+# Offline catalog authoring only; never an application/runtime dependency.
+fonttools==4.65.0

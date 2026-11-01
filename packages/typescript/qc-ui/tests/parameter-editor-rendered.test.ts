@@ -268,13 +268,31 @@ async function withGridFonts(run: (h: {
     await act(async () => { if (renderer) renderer.update(view); else renderer = create(view); });
   };
   try {
-    await run({ loads, measured, show, renderer: () => renderer!, title: () => renderer!.root.findAllByType("text")
-      .find((node) => String(node.props.className).split(" ").includes("preset-title"))! });
+    await run({ loads, measured, show, renderer: () => renderer!, title: () => renderer!.root.findAll((node) =>
+      (node.type === "text" || node.type === "g")
+      && String(node.props.className).split(" ").includes("preset-title"))[0]! });
   } finally {
     if (renderer) await act(async () => renderer!.unmount());
     if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
     else delete (globalThis as any).document;
   }
+}
+
+function assertOutlinedTitle(h: { title: () => any }, text: string) {
+  const title = h.title();
+  assert.equal(title.props["data-outline-mode"], "paths", `outline fallback: ${title.props["data-outline-fallback"]}`);
+  assert.equal(title.props["data-outline-fallback"], "none");
+  assert.equal(title.findAllByType("path").length, text.replaceAll(" ", "").length);
+}
+
+function titleStartX(h: { title: () => any }): number {
+  const title = h.title();
+  if (title.props["data-outline-mode"] === "text") return title.props.x;
+  const firstPath = title.findAllByType("path")[0];
+  assert.ok(firstPath, "outlined title has a first glyph path");
+  const x = /^translate\((-?[\d.]+)/.exec(String(firstPath.props.transform))?.[1];
+  assert.ok(x, "first glyph transform carries the title's starting x coordinate");
+  return Number(x);
 }
 
 test("Grid keeps its fallback header visible and refits after each exact measured face becomes ready", async () => {
@@ -283,12 +301,12 @@ test("Grid keeps its fallback header visible and refits after each exact measure
     assert.deepEqual(h.loads.map(({ spec, text }) => [spec, text]), h.measured.map(({ spec, text }) => [spec, text]),
       "the effect waits on the same bank/title specs and normalized strings that Canvas measures");
     assert.ok(h.loads.every(({ spec }) => spec.startsWith("800 70px ")));
-    assert.deepEqual(h.title().children, ["PUBLIC TITLE"]);
-    assert.deepEqual([h.title().props.x, h.title().props.fontSize], [107, 50], "fallback layout stays rendered");
+    assertOutlinedTitle(h, "PUBLIC TITLE");
+    assert.deepEqual([titleStartX(h), h.title().props.fontSize], [107, 50], "fallback layout stays rendered");
     await act(async () => h.loads[0].resolve());
-    assert.deepEqual([h.title().props.x, h.title().props.fontSize], [147, 50], "bank readiness repositions using its real advance");
+    assert.deepEqual([titleStartX(h), h.title().props.fontSize], [147, 50], "bank readiness repositions using its real advance");
     await act(async () => h.loads[1].resolve());
-    assert.deepEqual([h.title().props.x, h.title().props.fontSize], [147, 70], "title readiness re-enters the existing size ladder");
+    assert.deepEqual([titleStartX(h), h.title().props.fontSize], [147, 70], "title readiness re-enters the existing size ladder");
     assert.equal(h.loads.length, 2, "readiness rerenders do not restart font loads");
   });
 });
@@ -301,7 +319,9 @@ test("Grid re-arms the exact displayed title when dirty style or normalized text
     assert.equal(h.loads.length, 3, "unchanged bank does not reload");
     assert.match(h.loads[2].spec, /^italic 800 70px /);
     assert.equal(h.loads[2].text, "PUBLIC TITLE*", "load covers the displayed dirty marker");
-    assert.deepEqual(h.title().children, ["PUBLIC TITLE*"]);
+    assert.equal(h.title().props["data-outline-mode"], "text", "dirty shear preserves the original text renderer");
+    assert.equal(h.title().props["data-outline-fallback"], "dirty");
+    assert.deepEqual(h.title().findAllByType("tspan")[0]?.children, ["PUBLIC TITLE*"]);
     assert.equal(h.title().props.fontSize, 50, "new style uses visible fallback until its own load");
     await act(async () => h.loads[2].resolve());
     assert.equal(h.title().props.fontSize, 70);
@@ -311,6 +331,9 @@ test("Grid re-arms the exact displayed title when dirty style or normalized text
     assert.equal(h.loads[3].text, "RECALLED TITLE");
     await act(async () => h.loads[3].resolve());
     assert.equal(h.title().props.fontSize, 70, "later text can also trigger refitting after readiness was already true");
+    assert.equal(h.title().props["data-outline-mode"], "text", "the original renderer handles a title whose traced ink exceeds the fitted width");
+    assert.equal(h.title().props["data-outline-fallback"], "outline-overflow");
+    assert.deepEqual(h.title().findAllByType("tspan")[0]?.children, ["RECALLED TITLE"]);
   });
 });
 
@@ -322,7 +345,7 @@ test("a superseded Grid title load cannot remeasure or replace the newly display
     const measuredBefore = h.measured.length;
     await act(async () => h.loads[1].resolve());
     assert.equal(h.measured.length, measuredBefore, "obsolete title readiness cannot schedule a new measurement");
-    assert.deepEqual(h.title().children, ["CURRENT TITLE"]);
+    assertOutlinedTitle(h, "CURRENT TITLE");
     assert.equal(h.title().props.fontSize, 50);
     await act(async () => h.loads[2].resolve());
     assert.equal(h.title().props.fontSize, 70);
@@ -334,8 +357,8 @@ for (const failure of ["throw", "reject"] as const) {
     await withGridFonts(async (h) => {
       await h.show();
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-      assert.deepEqual(h.title().children, ["PUBLIC TITLE"]);
-      assert.deepEqual([h.title().props.x, h.title().props.fontSize], [107, 50]);
+      assertOutlinedTitle(h, "PUBLIC TITLE");
+      assert.deepEqual([titleStartX(h), h.title().props.fontSize], [107, 50]);
       assert.equal(h.loads.length, 2);
       assert.equal(h.measured.length, 2, "failed readiness leaves the current nonzero fallback measurement intact");
     }, failure);

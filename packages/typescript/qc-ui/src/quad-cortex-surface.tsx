@@ -6,6 +6,7 @@ import { QC_BRAND, QC_COLORS, QC_SCREEN_ICON_VECTORS, QC_TYPOGRAPHY } from "@qc-
 import { officialBlockVisual } from "./block-visuals";
 import { useMenuButton } from "./use-menu-button";
 import { useFontFaceReady } from "./use-font-face-ready";
+import { CorOsHeaderOutlineText } from "./coros-header-outline-text";
 import { masterVolumeAngleDegrees } from "./master-volume-angle";
 import { CorOsParameterEditor, type CorOsParameterEditorProps } from "./parameter-editor";
 import { CorOsAddDevicePicker, type CorOsAddDevicePickerState } from "./add-device-picker";
@@ -987,8 +988,11 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
     <svg className="coros-vector-canvas" viewBox="0 0 800 480" role="img" aria-label={`${snapshot.presetLocation} ${snapshot.presetName}, ${snapshot.mode} mode`}>
       <rect width="800" height="480" fill={QC_COLORS.reference.screen} />
       <g fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize={PRESET_BANK_SIZE}>
-        <text data-grid-header="location" x={PRESET_BANK_X} y={PRESET_BANK_BASELINE}><tspan fill="var(--qc-grid-white-ink)">{presetBank}</tspan><tspan fill={presetSlotAccent}>{presetSlot}</tspan></text>
-        <text
+        <CorOsHeaderOutlineText enabled aria-hidden="true" data-grid-header="location"
+          x={PRESET_BANK_X} y={PRESET_BANK_BASELINE} fontSize={PRESET_BANK_SIZE}
+          runs={[{ text: presetBank, fill: "var(--qc-grid-white-ink)" }, { text: presetSlot, fill: presetSlotAccent }]} />
+        <CorOsHeaderOutlineText
+          enabled aria-hidden="true" dirty={snapshot.dirty} maxWidth={presetTitleMaxWidth}
           className={`preset-title${titlePresentation.italic ? " is-dirty" : ""}${titlePresentation.dimmed ? " is-unsaved" : ""}`}
           x={presetTitleStart}
           y={presetTitleBaseline}
@@ -997,7 +1001,8 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
           transform={titlePresentation.italic ? `translate(${presetTitleStart} ${presetTitleBaseline}) skewX(-12) translate(${-presetTitleStart} ${-presetTitleBaseline})` : undefined}
           textLength={squeezePresetTitle ? presetTitleMaxWidth : undefined}
           lengthAdjust={squeezePresetTitle ? "spacingAndGlyphs" : undefined}
-        >{presetTitle}</text>
+          runs={[{ text: presetTitle }]}
+        />
       </g>
       {!dragPreview && <>
       <QcScreenHeaderGlyph kind="nav-undo" />

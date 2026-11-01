@@ -103,6 +103,12 @@ export const publishedIdentityExceptions = new Map([
     'd399647b035d0da34c32e972fa15bc05dc6dbd64',
     new Set(['commit message contains a Co-authored-by trailer']),
   ],
+  [
+    // The already-published runner-admission timeout change has this GitHub
+    // trailer. Exempt only its immutable SHA and this exact finding.
+    '60ae3e340be4368c840c68a24539d08009f4539b',
+    new Set(['commit message contains a Co-authored-by trailer']),
+  ],
 ]);
 
 export function isPublishedIdentityException(commit, finding) {
