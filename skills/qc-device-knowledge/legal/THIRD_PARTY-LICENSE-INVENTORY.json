@@ -17,7 +17,8 @@
       "assets": [
         "packages/typescript/qc-theme/assets/fonts/IBMPlexSans.ttf",
         "packages/typescript/qc-theme/assets/fonts/IBMPlexSans-Medium.ttf",
-        "packages/typescript/qc-theme/assets/fonts/IBMPlexSans-Bold.ttf"
+        "packages/typescript/qc-theme/assets/fonts/IBMPlexSans-Bold.ttf",
+        "packages/typescript/qc-ui/src/coros-header-glyphs.ts"
       ],
       "licenseTextHashes": [
         "d4a933ac425f36a9b7a3db02cb6145c31fa3338a7ea29e517f55d4407df28bd0"

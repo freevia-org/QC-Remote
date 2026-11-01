@@ -43,6 +43,8 @@ alongside their content in this repository:
 
 - IBM Plex Sans (SIL Open Font License 1.1) —
   `packages/typescript/qc-theme/assets/fonts/LICENSE.txt`
+  also covers the derived glyph outlines and design metrics in
+  `packages/typescript/qc-ui/src/coros-header-glyphs.ts`.
 - The `pyquadcortex` community protocol notice (MIT), covering the vendored
   protobuf schema in `packages/rust/quadcortex/proto/` —
   `packages/rust/quadcortex/licenses/pyquadcortex-MIT.txt` (the same text

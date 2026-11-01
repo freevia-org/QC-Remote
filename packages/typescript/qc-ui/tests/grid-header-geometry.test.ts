@@ -88,8 +88,8 @@ const mustRun = Boolean(process.env.CI) || process.env.QC_REQUIRE_BROWSER === "1
 const skip = !browser && !mustRun ? "no Chrome or Chromium found; set QC_BROWSER_EXECUTABLE to run the Grid header render check" : false;
 
 interface Header {
-  location: { x: number; y: number; size: number; text: string; tracking: string; transform: string | null };
-  title: { x: number; y: number; size: number; text: string; textLength: string | null; advance: number };
+  location: { x: number; y: number; size: number; paths: number; outlineMode: string | null; transform: string | null };
+  title: { x: number; y: number; size: number; text: string | null; textLength: string | null; advance: number; outlineMode: string | null; paths: number };
   badge: { x: number; y: number; width: number; height: number };
   letter: { x: number; y: number; size: number; text: string };
   mode: { x: number; y: number; size: number; text: string };
@@ -100,14 +100,21 @@ interface Header {
 const PROBE = `(() => {
   const q = (name) => document.querySelector('svg.coros-vector-canvas [data-grid-header="' + name + '"]');
   const num = (element, name) => Number(element.getAttribute(name));
+  const origin = (element) => {
+    const matrix = element.querySelector("path")?.transform.baseVal.consolidate()?.matrix;
+    return matrix ? { x: matrix.e, y: matrix.f } : { x: num(element, "x"), y: num(element, "y") };
+  };
+  const advance = (element) => element.getAttribute("data-outline-advance") === null ? element.getComputedTextLength() : num(element, "data-outline-advance");
   const location = q("location");
-  const title = document.querySelector('svg.coros-vector-canvas text.preset-title');
+  const title = document.querySelector('svg.coros-vector-canvas [class~="preset-title"]');
+  const locationOrigin = origin(location);
+  const titleOrigin = origin(title);
   const badge = q("scene-badge");
   const letter = q("scene-letter");
   const mode = q("mode-label");
   return {
-    location: { x: num(location, "x"), y: num(location, "y"), size: Number(getComputedStyle(location).fontSize.replace("px", "")), text: location.textContent, tracking: getComputedStyle(location.firstChild).letterSpacing, transform: location.getAttribute("transform") },
-    title: { x: num(title, "x"), y: num(title, "y"), size: num(title, "font-size"), text: title.textContent, textLength: title.getAttribute("textLength"), advance: title.getComputedTextLength() },
+    location: { x: locationOrigin.x, y: locationOrigin.y, size: num(location, "font-size"), paths: location.querySelectorAll("path").length, outlineMode: location.getAttribute("data-outline-mode"), transform: location.getAttribute("transform") },
+    title: { x: titleOrigin.x, y: titleOrigin.y, size: num(title, "font-size"), text: title.getAttribute("data-outline-mode") === "paths" ? null : title.textContent, textLength: title.getAttribute("textLength"), advance: advance(title), outlineMode: title.getAttribute("data-outline-mode"), paths: title.querySelectorAll("path").length },
     badge: { x: num(badge, "x"), y: num(badge, "y"), width: num(badge, "width"), height: num(badge, "height") },
     letter: { x: num(letter, "x"), y: num(letter, "y"), size: num(letter, "font-size"), text: letter.textContent },
     mode: { x: num(mode, "x"), y: num(mode, "y"), size: num(mode, "font-size"), text: mode.textContent },
@@ -160,8 +167,9 @@ window.renderGrid = (partial) => root.render(createElement(QuadCortexSurface, { 
         // Bank and slot: one untracked 70px run at (12,77) with no horizontal scaling around it.
         assert.equal(header.groupTransform, null, `${where}: no x-scale or offset around the header`);
         assert.deepEqual([header.location.x, header.location.y, header.location.size], [12, 77, 70], `${where}: bank run`);
-        assert.equal(header.location.text, location);
-        assert.ok(header.location.tracking === "normal" || header.location.tracking === "0px", `${where}: bank tracking ${header.location.tracking}`);
+        assert.equal(header.location.outlineMode, "paths", `${where}: bank and slot use current-font outlines`);
+        assert.equal(header.location.paths, location.length, `${where}: one path per non-space bank glyph`);
+        assert.equal(header.location.transform, null, `${where}: bank is not transformed`);
         // Name: a ladder size, fitted to the edge with the browser's own advance, on the baseline the size implies.
         assert.ok(header.title.size === 22 || (PRESET_TITLE_SIZES as readonly number[]).includes(header.title.size), `${where}: a ladder size, got ${header.title.size}`);
         const edge = GRID_TITLE_RIGHT_EDGE + 0.01;
@@ -172,9 +180,10 @@ window.renderGrid = (partial) => root.render(createElement(QuadCortexSurface, { 
         }
         assert.equal(header.title.y, Math.ceil(77 - (70 - header.title.size) * 0.375 - 0.5), `${where}: baseline follows the size`);
         assert.equal(header.title.textLength, null, `${where}: no squeeze while an integer size fits`);
+        assert.ok(header.title.outlineMode === "paths" || header.title.text !== null, `${where}: title has either outlines or the safe text fallback`);
         // Scene badge and mode label.
         assert.deepEqual(header.badge, { x: 656, y: 12, width: 24, height: 24 }, `${where}: badge`);
-        assert.deepEqual([header.letter.x, header.letter.y, header.letter.size], [668, 33, 23], `${where}: badge letter`);
+        assert.deepEqual([header.letter.x, header.letter.y, header.letter.size, header.letter.text], [668, 33, 23, "A"], `${where}: badge letter`);
         assert.deepEqual([header.mode.x, header.mode.y, header.mode.size, header.mode.text], [692, 80, 22, mode], `${where}: mode label`);
       }
       // A name too long for even the smallest size is squeezed into the space instead.
@@ -189,8 +198,8 @@ window.renderGrid = (partial) => root.render(createElement(QuadCortexSurface, { 
       // A name's own trailing space is neither drawn nor counted: the title is the same with and without it.
       const trimmed = await render({ presetName: "Abcde fgh", presetLocation: "8B", mode: "SCENE" });
       const spaced = await render({ presetName: "Abcde fgh ", presetLocation: "8B", mode: "SCENE" });
-      assert.equal(spaced.title.text, "Abcde fgh");
       assert.equal(spaced.title.size, trimmed.title.size);
+      assert.equal(spaced.title.advance, trimmed.title.advance, "trailing space does not change the painted advance");
     });
   } finally {
     work.cleanup();
