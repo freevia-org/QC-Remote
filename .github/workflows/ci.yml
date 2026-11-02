@@ -51,7 +51,7 @@ jobs:
     # `changes`).
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: windows-2025
+    runs-on: qc-remote-i5-windows
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,7 +106,7 @@ jobs:
     name: quadcortex on its declared Rust minimum (1.87)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: windows-2025
+    runs-on: qc-remote-i5-windows
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -154,7 +154,7 @@ jobs:
     name: Windows app static checks (fmt, check, clippy, broker build)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: windows-2025
+    runs-on: qc-remote-i5-windows
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -225,7 +225,7 @@ jobs:
     name: Windows app native tests
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: windows-2025
+    runs-on: qc-remote-i5-windows
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -297,7 +297,7 @@ jobs:
     name: Quad Cortex crate docs and Linux tests
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: ubuntu-24.04
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
