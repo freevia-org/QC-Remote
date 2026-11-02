@@ -263,7 +263,14 @@ test('manual CI dispatch includes native, TypeScript and cloud jobs', () => {
     assert.match(bodyOf(name), /needs\.changes\.outputs\.native != 'false'/, `${name} must include the manual native classification`);
   }
   assert.match(bodyOf('typescript'), /github\.event_name == 'workflow_dispatch'/);
-  assert.match(bodyOf('cloud-relay'), /github\.event_name == 'workflow_dispatch'/);
+  const cloudRelay = bodyOf('cloud-relay');
+  assert.match(cloudRelay, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(cloudRelay, /github\.ref == 'refs\/heads\/master'/);
+  assert.match(cloudRelay, /^    runs-on: qc-remote-i5-linux$/m);
+  assert.match(cloudRelay, /DRY-RUN PLACEHOLDER/);
+  assert.match(cloudRelay, /CLOUDFLARE_API_TOKEN: ''/);
+  assert.doesNotMatch(cloudRelay, /secrets\.QCRC_OAUTH_KV_NAMESPACE_ID/);
+  assert.match(cloudRelay, /HOME: \$\{\{ runner\.temp \}\}\/qc-cloud-relay-home/);
 });
 test('CI result aggregates every other CI job so one required context cannot deadlock', () => {
   const ci = workflow('ci.yml');

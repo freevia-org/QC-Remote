@@ -425,33 +425,40 @@ jobs:
   cloud-relay:
     name: Cloud relay (dry-run deploy)
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.cloud != 'false'))) }}
-    runs-on: ubuntu-24.04
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && (needs.changes.result != 'success' || needs.changes.outputs.cloud != 'false') }}
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 20
     # services/qc-remote-cloud is an npm workspace of the root package.json and
     # has no lockfile of its own: install from the root lock and run the
     # workspace's scripts with --workspace. (`npm ci` run from inside the
     # workspace directory prunes the root node_modules down to this workspace.)
-    # The KV namespace id is a repository secret. A new repository, or a pull
-    # request from a fork, has none: the secret expands to an empty string, and
-    # `npm run check` (via kv:configure:dry-run) then binds the labelled
-    # all-zero DRY-RUN PLACEHOLDER id in wrangler.check.jsonc and says so in the
-    # log. That is enough for `wrangler types --check`, `tsc` and
-    # `wrangler deploy --dry-run`. This job never deploys; the real
+    # This check does not need the real KV namespace id or Cloudflare auth.
+    # Omit them and let kv:configure:dry-run bind the labelled all-zero
+    # DRY-RUN PLACEHOLDER id in wrangler.check.jsonc. That is enough for
+    # `wrangler types --check`, `tsc` and `wrangler deploy --dry-run`. Isolate
+    # HOME/XDG config so the self-hosted runner cannot supply a cached Wrangler
+    # OAuth login to this job. This job never deploys; the real
     # `npm run deploy` path refuses the placeholder, and the workspace's
     # `npm test` pins that. That test runs in the TypeScript job's root
     # `npm test`, which runs whenever this job does: a change that skips
     # TypeScript (markdown only) is always inside the set that skips this job.
     env:
-      QCRC_OAUTH_KV_NAMESPACE_ID: ${{ secrets.QCRC_OAUTH_KV_NAMESPACE_ID }}
+      HOME: ${{ runner.temp }}/qc-cloud-relay-home
+      XDG_CONFIG_HOME: ${{ runner.temp }}/qc-cloud-relay-home/.config
+      CLOUDFLARE_API_TOKEN: ''
+      CLOUDFLARE_API_KEY: ''
+      CLOUDFLARE_EMAIL: ''
+      CLOUDFLARE_AUTH_USE_KEYRING: 'false'
     steps:
+      - name: Create isolated Wrangler config home
+        run: mkdir -p "$HOME" "$XDG_CONFIG_HOME"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Types, tsc and dry-run deploy (secret id when set, placeholder otherwise)
+      - name: Types, tsc and dry-run deploy (placeholder KV id, no Cloudflare auth)
         run: npm run check --workspace @qc-remote/cloud
 
   android:
