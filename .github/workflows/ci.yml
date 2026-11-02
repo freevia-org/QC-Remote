@@ -443,15 +443,17 @@ jobs:
     # `npm test`, which runs whenever this job does: a change that skips
     # TypeScript (markdown only) is always inside the set that skips this job.
     env:
-      HOME: ${{ runner.temp }}/qc-cloud-relay-home
-      XDG_CONFIG_HOME: ${{ runner.temp }}/qc-cloud-relay-home/.config
       CLOUDFLARE_API_TOKEN: ''
       CLOUDFLARE_API_KEY: ''
       CLOUDFLARE_EMAIL: ''
       CLOUDFLARE_AUTH_USE_KEYRING: 'false'
     steps:
       - name: Create isolated Wrangler config home
-        run: mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+        shell: bash
+        run: |
+          relay_home="$RUNNER_TEMP/qc-cloud-relay-home"
+          mkdir -p "$relay_home/.config"
+          printf 'HOME=%s\nXDG_CONFIG_HOME=%s\n' "$relay_home" "$relay_home/.config" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
