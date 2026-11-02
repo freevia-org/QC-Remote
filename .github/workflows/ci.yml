@@ -464,8 +464,8 @@ jobs:
   android:
     name: Android app (debug build + unit tests)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: ubuntu-24.04
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 40
     # Deliberately debug-only: no release signing or keystore. Do not set QC_ANDROID_KEYSTORE_BASE64,
     # QC_ANDROID_KEYSTORE, QC_ANDROID_STORE_PASSWORD, QC_ANDROID_KEY_ALIAS,
