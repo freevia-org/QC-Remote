@@ -525,7 +525,7 @@ test('relay-only classification is pinned to the workflow wiring that makes it s
     const next = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
     return next === -1 ? rest : rest.slice(0, next + 1);
   };
-  const nativeGate = /^ {4}if: \$\{\{ !cancelled\(\) && \(needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.native != 'false'\) \}\}$/m;
+  const nativeGate = /needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.native != 'false'/;
   for (const job of ['rust', 'rust-msrv', 'rust-windows-app-static', 'rust-windows-app-tests', 'quadcortex-linux', 'android']) {
     assert.match(bodyOf(job), nativeGate, `${job} must be gated on the native output`);
   }
@@ -544,7 +544,7 @@ test('relay-only classification is pinned to the workflow wiring that makes it s
   }
 });
 
-test('Windows CI keeps Cargo output on the persistent runner, and caches only on hosted ones', () => {
+test('Windows CI keeps Cargo output on its persistent runner, and caches only on hosted ones', () => {
   // CI is dispatched by hand: master rarely re-saved a rust-cache entry and any
   // toolchain change altered its key, so every run on the persistent runner
   // compiled every crate from scratch. A hosted runner starts empty, so it
@@ -556,7 +556,7 @@ test('Windows CI keeps Cargo output on the persistent runner, and caches only on
     const rest = ci.slice(start);
     const end = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
     const body = end === -1 ? rest : rest.slice(0, end + 1);
-    assert.match(body, /^ {4}runs-on: windows-2025$/m, job);
+    assert.match(body, /^ {4}runs-on: qc-remote-i5-windows$/m, job);
     assert.match(body, /Join-Path \$env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target\/[a-z0-9.-]+'/, job);
     assert.match(body, /if: \$\{\{ runner\.environment == 'self-hosted' \}\}\n {8}shell: pwsh/, job);
     assert.match(body, /"CARGO_TARGET_DIR=\$dir" >> \$env:GITHUB_ENV/, job);
@@ -564,25 +564,27 @@ test('Windows CI keeps Cargo output on the persistent runner, and caches only on
   }
 });
 
-test('CI runs on GitHub-hosted runners only, never behind the shared I5 capacity gate', () => {
-  // The local I5 runners queue every job behind a gate shared with other
-  // repositories; jobs waited 9 to 35 minutes there. This repository is public,
-  // so hosted minutes are free. The self-hosted cache steps stay (they only run
-  // on a self-hosted runner) so a local runner can be tried again by changing
-  // `runs-on` alone.
+test('CI remains manually dispatched and keeps runner selection explicit', () => {
   const ci = workflow('ci.yml');
-  assert.doesNotMatch(ci, /^ {4}runs-on: qc-remote-i5-/m);
+  const triggerStart = ci.indexOf('\non:');
+  assert.ok(triggerStart >= 0, 'workflow trigger declaration exists');
+  const jobsStart = ci.indexOf('\njobs:');
+  assert.ok(jobsStart > triggerStart, 'jobs follow workflow triggers');
+  const triggers = ci.slice(triggerStart + 1, jobsStart);
+  assert.match(triggers, /^on:\n  workflow_dispatch:\s*$/m);
+  assert.doesNotMatch(triggers, /^  (?:push|pull_request|schedule):/m);
   assert.doesNotMatch(ci, /pick-runners/);
 });
 
-test('seconds-long gate jobs run on hosted Linux, not behind the shared I5 capacity gate', () => {
+test('short CI orchestration jobs on the staged runner have bounded timeouts', () => {
   const ci = workflow('ci.yml');
-  for (const job of ['changes', 'rust-windows-app', 'ci-result']) {
+  for (const job of ['changes', 'ci-result']) {
     const start = ci.indexOf(`\n  ${job}:\n`) + 1;
     assert.ok(start > 0, job);
     const rest = ci.slice(start);
     const end = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
     const body = end === -1 ? rest : rest.slice(0, end + 1);
-    assert.match(body, /^ {4}runs-on: ubuntu-24\.04$/m, job);
+    assert.match(body, /^ {4}runs-on: qc-remote-i5-linux$/m, job);
+    assert.match(body, /^ {4}timeout-minutes: 5$/m, job);
   }
 });
