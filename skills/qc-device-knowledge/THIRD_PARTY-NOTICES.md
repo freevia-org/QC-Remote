@@ -266,9 +266,9 @@ type-fest
 
 @cloudflare/kv-asset-handler, @cloudflare/unenv-preset, @cloudflare/workers-types, @tauri-apps/cli, @tauri-apps/cli-darwin-arm64, @tauri-apps/cli-darwin-x64, @tauri-apps/cli-linux-arm-gnueabihf, @tauri-apps/cli-linux-arm64-gnu, @tauri-apps/cli-linux-arm64-musl, @tauri-apps/cli-linux-riscv64-gnu, @tauri-apps/cli-linux-x64-gnu, @tauri-apps/cli-linux-x64-musl, @tauri-apps/cli-win32-arm64-msvc, @tauri-apps/cli-win32-ia32-msvc, @tauri-apps/cli-win32-x64-msvc, wrangler
 
-#### BlueOak-1.0.0 (10)
+#### BlueOak-1.0.0 (11)
 
-chownr, glob, lru-cache, minimatch, minipass, package-json-from-dist, path-scurry, rimraf, tar, yallist
+@isaacs/nonrecursive-glob-match, chownr, glob, lru-cache, minimatch, minipass, package-json-from-dist, path-scurry, rimraf, tar, yallist
 
 #### BSD-2-Clause (1)
 
