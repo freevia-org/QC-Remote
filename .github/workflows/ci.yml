@@ -25,10 +25,7 @@ jobs:
   # does not rebuild the native caches either.
   changes:
     name: Select jobs
-    # Hosted: a seconds-long gate must not queue behind the shared I5
-    # capacity gate (it waited up to 9 minutes), and this repository is
-    # public, so hosted Linux minutes are free.
-    runs-on: ubuntu-24.04
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 5
     outputs:
       native: ${{ steps.filter.outputs.native }}
@@ -280,10 +277,7 @@ jobs:
       - rust-windows-app-static
       - rust-windows-app-tests
     if: ${{ !cancelled() }}
-    # Hosted: a seconds-long gate must not queue behind the shared I5
-    # capacity gate (it waited up to 9 minutes), and this repository is
-    # public, so hosted Linux minutes are free.
-    runs-on: ubuntu-24.04
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 5
     steps:
       - name: Fail unless both Windows app jobs passed or were skipped together
@@ -315,7 +309,7 @@ jobs:
   third-party-notices:
     name: Third-party notices drift check
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-24.04
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -351,7 +345,7 @@ jobs:
     name: TypeScript packages and apps
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.typescript != 'false'))) }}
-    runs-on: ubuntu-24.04
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -380,7 +374,7 @@ jobs:
 
   public-history:
     name: Public history and path boundary
-    runs-on: ubuntu-24.04
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -533,10 +527,7 @@ jobs:
       - public-history
       - cloud-relay
       - android
-    # Hosted: a seconds-long gate must not queue behind the shared I5
-    # capacity gate (it waited up to 9 minutes), and this repository is
-    # public, so hosted Linux minutes are free.
-    runs-on: ubuntu-24.04
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 5
     steps:
       - name: Fail if any CI job failed or was cancelled
