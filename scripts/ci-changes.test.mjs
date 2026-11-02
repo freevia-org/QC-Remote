@@ -270,7 +270,9 @@ test('manual CI dispatch includes native, TypeScript and cloud jobs', () => {
   assert.match(cloudRelay, /DRY-RUN PLACEHOLDER/);
   assert.match(cloudRelay, /CLOUDFLARE_API_TOKEN: ''/);
   assert.doesNotMatch(cloudRelay, /secrets\.QCRC_OAUTH_KV_NAMESPACE_ID/);
-  assert.match(cloudRelay, /HOME: \$\{\{ runner\.temp \}\}\/qc-cloud-relay-home/);
+  assert.match(cloudRelay, /relay_home="\$RUNNER_TEMP\/qc-cloud-relay-home"/);
+  assert.match(cloudRelay, /printf 'HOME=%s\\nXDG_CONFIG_HOME=%s\\n'.*\$GITHUB_ENV/);
+  assert.doesNotMatch(cloudRelay, /^      (?:HOME|XDG_CONFIG_HOME): \$\{\{ runner\.temp/m);
 });
 test('CI result aggregates every other CI job so one required context cannot deadlock', () => {
   const ci = workflow('ci.yml');
