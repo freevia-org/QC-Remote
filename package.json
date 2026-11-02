@@ -38,6 +38,9 @@
     "@modelcontextprotocol/client": "2.4.0",
     "sharp": "0.35.5",
     "msw": "3.0.3",
+    "rimraf@6.1.3": {
+      "glob": "14.0.3"
+    },
     "miniflare": {
       "undici": "7.30.1"
     },
