@@ -265,7 +265,7 @@ jobs:
           curl --fail --location --retry 3 --silent --show-error \
             https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_SHA256SUMS \
             --output "$scanner_dir/SHA256SUMS"
-          (cd "$scanner_dir" && grep ' osv-scanner_linux_amd64$' SHA256SUMS | sha256sum --check --status)
+          (cd "$scanner_dir" && tr -d '\r' < SHA256SUMS | grep ' osv-scanner_linux_amd64$' | sha256sum --check --status)
           chmod 0755 "$scanner_dir/osv-scanner"
 
       - name: Scan Android Gradle lockfile advisories
