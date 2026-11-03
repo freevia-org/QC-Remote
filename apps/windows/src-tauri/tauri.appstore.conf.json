@@ -30,7 +30,7 @@
         "Resources/legal/LicenseRef-QC-Remote-Reference.txt": "../../../LICENSES/LicenseRef-QC-Remote-Reference.txt",
         "Resources/legal/LICENSE-MIT.txt": "../../../LICENSE-MIT",
         "Resources/legal/LICENSE-APACHE.txt": "../../../LICENSE-APACHE",
-        "../../../release-version.json": "Resources/release-version.json"
+        "Resources/release-version.json": "../../../release-version.json"
       },
       "bundleVersion": "198"
     },

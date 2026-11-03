@@ -82,7 +82,7 @@ export function appVersionProblems(read) {
   if (actualCode !== expectedCode) problems.push(`Android versionCode: ${actualCode} != derived ${expectedCode}`);
   const storeConfig = json(read(appStoreConfigPath));
   check('Mac App Store bundleVersion', storeConfig.bundle?.macOS?.bundleVersion, build);
-  check('Mac App Store canonical version resource', storeConfig.bundle?.macOS?.files?.['../../../release-version.json'], 'Resources/release-version.json');
+  check('Mac App Store canonical version resource', storeConfig.bundle?.macOS?.files?.['Resources/release-version.json'], '../../../release-version.json');
   const broker = read(plistPath);
   check('macOS broker marketing version', one(broker, /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/g, 'macOS broker version')[1], marketing);
   check('macOS broker build version', one(broker, /<key>CFBundleVersion<\/key>\s*<string>([^<]+)<\/string>/g, 'macOS broker build version')[1], build);
@@ -148,7 +148,7 @@ export function planAppVersion(read, canonical) {
   const storeConfig = json(read(appStoreConfigPath));
   if (!storeConfig.bundle?.macOS) throw new Error('Missing macOS App Store bundle configuration');
   storeConfig.bundle.macOS.files ??= {};
-  storeConfig.bundle.macOS.files['../../../release-version.json'] = 'Resources/release-version.json';
+  storeConfig.bundle.macOS.files['Resources/release-version.json'] = '../../../release-version.json';
   storeConfig.bundle.macOS.bundleVersion = String(target.build);
   changes.set(appStoreConfigPath, formatJson(storeConfig));
   let project = read(appProject);

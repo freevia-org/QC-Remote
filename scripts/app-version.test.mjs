@@ -40,7 +40,7 @@ test('one coordinated bump derives platform identifiers from MAJOR.MINOR.CODE+BU
   assert.deepEqual(builds(updated(project)), ['1', '1', nextBuild, nextBuild]);
   const appStoreConfig = JSON.parse(updated('apps/windows/src-tauri/tauri.appstore.conf.json'));
   assert.equal(appStoreConfig.bundle.macOS.bundleVersion, nextBuild);
-  assert.equal(appStoreConfig.bundle.macOS.files['../../../release-version.json'], 'Resources/release-version.json');
+  assert.equal(appStoreConfig.bundle.macOS.files['Resources/release-version.json'], '../../../release-version.json');
   const broker = updated('apps/windows/macos-broker/Info.plist');
   assert.match(broker, new RegExp(`<key>CFBundleShortVersionString</key>\\s*<string>${nextMarketing.replaceAll('.', '\\.')}<\\/string>`));
   assert.match(broker, new RegExp(`<key>CFBundleVersion</key>\\s*<string>${nextBuild}<\\/string>`));
