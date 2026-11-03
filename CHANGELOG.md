@@ -3,8 +3,9 @@
 Notable changes across QC Remote app versions. A version entry records project
 history and does not by itself mean that a build was publicly distributed.
 Since 1.0.1, Windows, macOS, Linux, Android and iOS share one public application
-version. Android and iOS retain their separate increasing build counters;
-internal library and service versions are independent.
+version. The versioning tool derives Android and Apple store-required
+identifiers from that shared version. Internal library and service versions
+are independent.
 
 ## QC Remote 1.0.5 - 31 October 2026
 

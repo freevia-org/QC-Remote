@@ -118,9 +118,11 @@ platform configuration automatically. The Store configuration replaces the
 resource map with an empty array and uses explicit `macOS.files` destinations
 for helpers and legal resources, preventing retained direct-helper inputs. Both packaging scripts
 reject stale or wrong-flavor binary markers. The Store configuration sets macOS
-13 minimum and a separate monotonically increasing `bundleVersion` (currently
-197); increase it for each subsequent App Store upload. Helpers use that same
-build number.
+13 minimum and derives `bundleVersion` from the same canonical
+`major.minor.build` version used by every platform. Helpers use that same value
+for both their marketing and build versions. Never increment a separate
+Mac-only counter; use the next canonical application version for every new
+upload.
 
 `package-macos-appstore.py` signs the editor and independent broker menu with
 App Sandbox and the shared group. Broker child executables receive only sandbox
