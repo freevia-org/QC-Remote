@@ -242,17 +242,35 @@ jobs:
 
   android-gradle-osv:
     name: Android Gradle lockfile advisories
+    runs-on: qc-remote-i5-linux
+    timeout-minutes: 15
     permissions:
-      actions: read
       contents: read
-      security-events: write
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
-    with:
-      # The reusable scanner runs in Docker; the I5 runner has no Docker daemon.
-      # This lockfile-only scan needs no private artifacts or credentials.
-      runs-on: ubuntu-latest
-      # The reusable workflow's scanner/reporter fails the job on vulnerabilities.
-      # SARIF upload needs a write token, which fork PRs do not receive.
-      upload-sarif: false
-      scan-args: |-
-        --lockfile=apps/android/android/app/gradle.lockfile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Use Google's standalone binary: the reusable scanner workflow wraps it
+      # in Docker, which is unavailable on this self-hosted Linux runner.
+      - name: Install verified OSV-Scanner 2.7.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          scanner_dir="$RUNNER_TEMP/osv-scanner"
+          mkdir -p "$scanner_dir"
+          curl --fail --location --retry 3 --silent --show-error \
+            https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64 \
+            --output "$scanner_dir/osv-scanner"
+          curl --fail --location --retry 3 --silent --show-error \
+            https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_SHA256SUMS \
+            --output "$scanner_dir/SHA256SUMS"
+          (cd "$scanner_dir" && grep ' osv-scanner_linux_amd64$' SHA256SUMS | sha256sum --check --status)
+          chmod 0755 "$scanner_dir/osv-scanner"
+
+      - name: Scan Android Gradle lockfile advisories
+        shell: bash
+        run: >-
+          "$RUNNER_TEMP/osv-scanner/osv-scanner"
+          scan source
+          --lockfile=apps/android/android/app/gradle.lockfile
