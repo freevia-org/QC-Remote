@@ -1,0 +1,106 @@
+name: Android signed store candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qc-remote-android-store-candidate
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build signed QC Remote Android candidate
+    if: ${{ github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify canonical release version
+        run: |
+          npm run versions:check
+          node --input-type=module - <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const version = readFileSync('apps/android/android/app/build.gradle', 'utf8').match(/^\s*versionName "([^"]+)"/m)?.[1];
+          if (version !== '1.0.6') throw new Error(`Expected 1.0.6, found ${version ?? 'missing'}`);
+          console.log(`Building QC Remote ${version}`);
+          NODE
+
+      - run: npm ci
+
+      - name: Build Android web assets and sync Capacitor
+        run: npm run android:sync --workspace @qc-remote/android
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+
+      - name: Install pinned Android SDK and NDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+
+      - name: Configure pinned NDK
+        run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+
+      - name: Prepare the existing Play upload key
+        shell: bash
+        env:
+          QC_ANDROID_KEYSTORE_BASE64: ${{ secrets.QC_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$QC_ANDROID_KEYSTORE_BASE64"
+          key="$RUNNER_TEMP/qc-remote-play-upload.jks"
+          printf '%s' "$QC_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$key"
+          chmod 600 "$key"
+          echo "QC_ANDROID_KEYSTORE=$key" >> "$GITHUB_ENV"
+
+      - name: Build the signed Play bundle
+        working-directory: apps/android/android
+        env:
+          QC_ANDROID_STORE_PASSWORD: ${{ secrets.QC_ANDROID_STORE_PASSWORD }}
+          QC_ANDROID_KEY_ALIAS: ${{ secrets.QC_ANDROID_KEY_ALIAS }}
+          QC_ANDROID_KEY_PASSWORD: ${{ secrets.QC_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$QC_ANDROID_STORE_PASSWORD"
+          test -n "$QC_ANDROID_KEY_ALIAS"
+          test -n "$QC_ANDROID_KEY_PASSWORD"
+          ./gradlew bundleRelease --no-daemon
+
+      - name: Verify signature and record digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="apps/android/android/app/build/outputs/bundle/release/app-release.aab"
+          test -s "$bundle"
+          verification="$(jarsigner -verify -verbose -certs "$bundle" 2>&1)"
+          printf '%s\n' "$verification"
+          grep -q 'jar verified' <<< "$verification"
+          sha256sum "$bundle" | tee "$RUNNER_TEMP/qc-remote-1.0.6-android.sha256"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qc-remote-1.0.6-android-signed-candidate
+          path: |
+            apps/android/android/app/build/outputs/bundle/release/app-release.aab
+            ${{ runner.temp }}/qc-remote-1.0.6-android.sha256
+          if-no-files-found: error
+          retention-days: 7
