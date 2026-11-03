@@ -1,11 +1,12 @@
-// One public marketing version for every QC Remote application. Library and
-// protocol versions, Android versionCode and Apple build numbers are independent.
+// One canonical three-part version drives every public app version and the
+// store-required Android/Apple identifiers derived from that version.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const appProject = 'apps/ios/ios/App/App.xcodeproj/project.pbxproj';
+const appStoreConfigPath = 'apps/windows/src-tauri/tauri.appstore.conf.json';
 const appConfigs = ['504EC3171FED79650016851F', '504EC3181FED79650016851F'];
 const gradlePath = 'apps/android/android/app/build.gradle';
 const plistPath = 'apps/windows/macos-broker/Info.plist';
@@ -34,9 +35,23 @@ export function appVersionProblems(read) {
   check('Tauri / macOS / Linux', json(read('apps/windows/src-tauri/tauri.conf.json')).version);
   check('desktop Cargo manifest', one(read('apps/windows/src-tauri/Cargo.toml'), /\[package\][\s\S]*?^version = "([^"]+)"/gm, 'desktop Cargo version')[1]);
   check('desktop Cargo lock', one(read('apps/windows/src-tauri/Cargo.lock'), /\[\[package\]\]\r?\nname = "qc-remote"\r?\nversion = "([^"]+)"/g, 'desktop Cargo lock version')[1]);
-  check('Android versionName', one(read(gradlePath), /^\s*versionName\s+"([^"]+)"/gm, 'Android versionName')[1]);
-  check('macOS broker', one(read(plistPath), /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/g, 'macOS broker version')[1]);
-  for (const id of appConfigs) check(`iOS App ${id}`, one(appConfig(read(appProject), id)[2], /MARKETING_VERSION = ([^;]+);/g, 'iOS marketing version')[1]);
+  const gradle = read(gradlePath);
+  check('Android versionName', one(gradle, /^\s*versionName\s+"([^"]+)"/gm, 'Android versionName')[1]);
+  try {
+    const expectedCode = androidVersionCode(expected);
+    const actualCode = Number(one(gradle, /^\s*versionCode\s+(\d+)/gm, 'Android versionCode')[1]);
+    if (actualCode !== expectedCode) problems.push(`Android versionCode: ${actualCode} != derived ${expectedCode}`);
+  } catch (error) { problems.push(error.message); }
+  const storeConfig = json(read(appStoreConfigPath));
+  check('Mac App Store bundleVersion', storeConfig.bundle?.macOS?.bundleVersion);
+  const broker = read(plistPath);
+  check('macOS broker marketing version', one(broker, /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/g, 'macOS broker version')[1]);
+  check('macOS broker build version', one(broker, /<key>CFBundleVersion<\/key>\s*<string>([^<]+)<\/string>/g, 'macOS broker build version')[1]);
+  for (const id of appConfigs) {
+    const body = appConfig(read(appProject), id)[2];
+    check(`iOS App ${id} marketing version`, one(body, /MARKETING_VERSION = ([^;]+);/g, 'iOS marketing version')[1]);
+    check(`iOS App ${id} build version`, one(body, /CURRENT_PROJECT_VERSION = ([^;]+);/g, 'iOS build version')[1]);
+  }
   return problems;
 }
 
@@ -46,8 +61,22 @@ function compare(left, right) {
   return 0;
 }
 
+// Google Play requires a positive integer versionCode. Derive it from the
+// canonical major.minor.build tuple instead of maintaining a second counter.
+// Two decimal slots are reserved for minor and build so tuple ordering is
+// preserved, while the resulting value remains below Play's 2.1B limit.
+export function androidVersionCode(version) {
+  if (!semver.test(version)) throw new Error('Use one x.y.z version for all platforms');
+  const [major, minor, build] = version.split('.').map(Number);
+  if (minor >= 100 || build >= 10000) throw new Error('Android versionCode requires minor < 100 and build < 10000');
+  const code = major * 1_000_000 + minor * 10_000 + build;
+  if (!Number.isSafeInteger(code) || code < 1 || code > 2_100_000_000) throw new Error('Derived Android versionCode is outside Google Play limits');
+  return code;
+}
+
 // Plan every edit before writing any file: malformed input must not leave a
-// half-bumped release. A repeated sync never consumes another store build number.
+// half-bumped release. Store-required identifiers are deterministic functions
+// of the version and cannot drift when the command is repeated.
 export function planAppVersion(read, version) {
   if (!semver.test(version)) throw new Error('Use one x.y.z version for all platforms');
   const changes = new Map();
@@ -75,23 +104,23 @@ export function planAppVersion(read, version) {
   let gradle = read(gradlePath);
   const name = one(gradle, /^(\s*versionName\s+")([^"]+)(")/gm, 'Android versionName');
   const code = one(gradle, /^(\s*versionCode\s+)(\d+)/gm, 'Android versionCode');
-  const nextCode = Number(code[2]) + (name[2] === version ? 0 : 1);
-  if (!Number.isSafeInteger(nextCode) || nextCode < 1 || nextCode > 2100000000) throw new Error('Invalid Android versionCode');
-  gradle = gradle.replace(name[0], `${name[1]}${version}${name[3]}`).replace(code[0], `${code[1]}${nextCode}`);
+  const derivedCode = androidVersionCode(version);
+  gradle = gradle.replace(name[0], `${name[1]}${version}${name[3]}`).replace(code[0], `${code[1]}${derivedCode}`);
   changes.set(gradlePath, gradle);
   const plist = read(plistPath);
   const marketing = one(plist, /(<key>CFBundleShortVersionString<\/key>\s*<string>)([^<]+)(<\/string>)/g, 'macOS broker version');
-  changes.set(plistPath, plist.replace(marketing[0], `${marketing[1]}${version}${marketing[3]}`));
+  const brokerBuild = one(plist, /(<key>CFBundleVersion<\/key>\s*<string>)([^<]+)(<\/string>)/g, 'macOS broker build version');
+  changes.set(plistPath, plist.replace(marketing[0], `${marketing[1]}${version}${marketing[3]}`).replace(brokerBuild[0], `${brokerBuild[1]}${version}${brokerBuild[3]}`));
+  const storeConfig = json(read(appStoreConfigPath));
+  if (!storeConfig.bundle?.macOS) throw new Error('Missing macOS App Store bundle configuration');
+  storeConfig.bundle.macOS.bundleVersion = version;
+  changes.set(appStoreConfigPath, formatJson(storeConfig));
   let project = read(appProject);
   const configurations = appConfigs.map(id => appConfig(project, id));
-  const oldBuilds = configurations.map(c => Number(one(c[2], /CURRENT_PROJECT_VERSION = (\d+);/g, 'iOS build number')[1]));
-  if (oldBuilds[0] !== oldBuilds[1] || !Number.isSafeInteger(oldBuilds[0]) || oldBuilds[0] < 1) throw new Error('iOS App build numbers disagree');
   const oldVersions = configurations.map(c => one(c[2], /MARKETING_VERSION = ([^;]+);/g, 'iOS marketing version')[1]);
   if (oldVersions.some(v => compare(version, v) < 0)) throw new Error('Refusing iOS marketing version downgrade');
-  const nextBuild = oldBuilds[0] + (oldVersions.every(v => v === version) ? 0 : 1);
-  if (!Number.isSafeInteger(nextBuild)) throw new Error('Invalid next iOS App build number');
   for (const c of configurations) {
-    const body = c[2].replace(/MARKETING_VERSION = [^;]+;/, `MARKETING_VERSION = ${version};`).replace(/CURRENT_PROJECT_VERSION = \d+;/, `CURRENT_PROJECT_VERSION = ${nextBuild};`);
+    const body = c[2].replace(/MARKETING_VERSION = [^;]+;/, `MARKETING_VERSION = ${version};`).replace(/CURRENT_PROJECT_VERSION = [^;]+;/, `CURRENT_PROJECT_VERSION = ${version};`);
     project = project.replace(c[0], c[1] + body + c[3]);
   }
   changes.set(appProject, project);
@@ -113,7 +142,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     } else {
       const changes = planAppVersion(read, request);
       for (const [path, text] of changes) writeFileSync(resolve(root, path), text);
-      console.log(`QC Remote ${request}: ${changes.size} version files synchronized; store build numbers preserved or advanced.`);
+      console.log(`QC Remote ${request}: ${changes.size} version files synchronized; Android and Apple identifiers derived from the canonical version.`);
     }
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

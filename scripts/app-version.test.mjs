@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { appVersionProblems, planAppVersion } from './app-version.mjs';
+import { androidVersionCode, appVersionProblems, planAppVersion } from './app-version.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const read = path => readFileSync(join(root, path), 'utf8');
@@ -18,7 +18,7 @@ test('the checked-in application versions agree on all platforms', () => {
   assert.deepEqual(appVersionProblems(read), []);
 });
 
-test('one bump advances store builds, preserves identity/dependencies and excluded targets, then is idempotent', () => {
+test('one bump derives Android and Apple identifiers from the canonical version and is idempotent', () => {
   const plan = planAppVersion(read, next);
   const updated = path => plan.get(path) ?? read(path);
   assert.deepEqual(appVersionProblems(updated), []);
@@ -29,20 +29,36 @@ test('one bump advances store builds, preserves identity/dependencies and exclud
     assert.deepEqual({ ...after, version: before.version }, before);
   }
   const code = text => Number(/versionCode\s+(\d+)/.exec(text)[1]);
-  assert.equal(code(updated(gradle)), code(read(gradle)) + 1);
+  assert.equal(code(updated(gradle)), androidVersionCode(next));
+  assert.equal(code(updated(gradle)), androidVersionCode(JSON.parse(updated('apps/android/package.json')).version));
   assert.equal(updated(gradle).replace(/versionName\s+"[^"]+"/, 'VERSION').replace(/versionCode\s+\d+/, 'CODE'), read(gradle).replace(/versionName\s+"[^"]+"/, 'VERSION').replace(/versionCode\s+\d+/, 'CODE'));
-  const builds = text => [...text.matchAll(/CURRENT_PROJECT_VERSION = (\d+);/g)].map(m => Number(m[1]));
-  const oldBuilds = builds(read(project)), newBuilds = builds(updated(project));
-  assert.deepEqual(newBuilds, oldBuilds.map((v, i) => i < 2 ? v : v + 1));
-  assert.equal(updated(project).replace(/MARKETING_VERSION = [^;]+;/g, 'MARKETING').replace(/CURRENT_PROJECT_VERSION = \d+;/g, 'BUILD'), read(project).replace(/MARKETING_VERSION = [^;]+;/g, 'MARKETING').replace(/CURRENT_PROJECT_VERSION = \d+;/g, 'BUILD'));
+  const builds = text => [...text.matchAll(/CURRENT_PROJECT_VERSION = ([^;]+);/g)].map(m => m[1]);
+  assert.deepEqual(builds(updated(project)), ['1', '1', next, next]);
+  assert.equal(updated(project).replace(/MARKETING_VERSION = [^;]+;/g, 'MARKETING').replace(/CURRENT_PROJECT_VERSION = [^;]+;/g, 'BUILD'), read(project).replace(/MARKETING_VERSION = [^;]+;/g, 'MARKETING').replace(/CURRENT_PROJECT_VERSION = [^;]+;/g, 'BUILD'));
+  const appStoreConfig = JSON.parse(updated('apps/windows/src-tauri/tauri.appstore.conf.json'));
+  assert.equal(appStoreConfig.bundle.macOS.bundleVersion, next);
+  const broker = updated('apps/windows/macos-broker/Info.plist');
+  assert.match(broker, new RegExp(`<key>CFBundleVersion</key>\\s*<string>${next.replaceAll('.', '\\.')}<\\/string>`));
   assert.equal(planAppVersion(updated, next).size, 0);
+});
+
+test('Android versionCode mapping is ordered, bounded and rejects ambiguous tuples', () => {
+  assert.equal(androidVersionCode('1.0.198'), 1000198);
+  assert.ok(androidVersionCode('1.1.0') > androidVersionCode('1.0.9999'));
+  assert.ok(androidVersionCode('2.0.0') > androidVersionCode('1.99.9999'));
+  assert.throws(() => androidVersionCode('1.100.0'), /minor < 100/);
+  assert.throws(() => androidVersionCode('1.0.10000'), /build < 10000/);
+  assert.throws(() => androidVersionCode('2101.0.0'), /Google Play limits/);
 });
 
 test('drift in Android, iOS native settings, macOS broker, or workspace lock is rejected', () => {
   for (const [path, mutate, label] of [
     ['apps/android/package.json', t => t.replace(`"${current}"`, '"8.8.8"'), 'android package'],
+    [gradle, t => t.replace(/versionCode\s+\d+/, 'versionCode 1'), 'Android versionCode'],
     [project, t => t.replace(`MARKETING_VERSION = ${current};`, 'MARKETING_VERSION = 8.8.8;'), 'iOS App'],
+    [project, t => t.replaceAll(`CURRENT_PROJECT_VERSION = ${current};`, 'CURRENT_PROJECT_VERSION = 6;'), 'iOS App'],
     ['apps/windows/macos-broker/Info.plist', t => t.replace(`<string>${current}</string>`, '<string>8.8.8</string>'), 'macOS broker'],
+    ['apps/windows/src-tauri/tauri.appstore.conf.json', t => t.replace(`"bundleVersion": "${current}"`, '"bundleVersion": "1.0.197"'), 'Mac App Store bundleVersion'],
     ['package-lock.json', t => { const x = JSON.parse(t); x.packages['apps/ios'].version = '8.8.8'; return JSON.stringify(x); }, 'ios workspace lock'],
   ]) {
     const changed = mutate(read(path));
