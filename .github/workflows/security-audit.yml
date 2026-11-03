@@ -248,7 +248,9 @@ jobs:
       security-events: write
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
     with:
-      runs-on: qc-remote-i5-linux
+      # The reusable scanner runs in Docker; the I5 runner has no Docker daemon.
+      # This lockfile-only scan needs no private artifacts or credentials.
+      runs-on: ubuntu-latest
       # The reusable workflow's scanner/reporter fails the job on vulnerabilities.
       # SARIF upload needs a write token, which fork PRs do not receive.
       upload-sarif: false
