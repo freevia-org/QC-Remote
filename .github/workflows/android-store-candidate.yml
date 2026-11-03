@@ -2,6 +2,12 @@ name: Android signed store candidate
 
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Use the local I5 runner, or choose GitHub-hosted Ubuntu as a fallback
+        type: choice
+        options: [local, hosted]
+        default: local
 
 permissions:
   contents: read
@@ -14,9 +20,27 @@ jobs:
   build:
     name: Build signed QC Remote Android candidate
     if: ${{ github.ref == 'refs/heads/master' }}
-    runs-on: ubuntu-latest
+    # The local I5 Linux runner already builds this app's Android CI lane with
+    # the same pinned SDK/NDK. Select hosted Ubuntu only when the local runner
+    # is unavailable or unsuitable for a particular manual build.
+    runs-on: ${{ inputs.runner == 'hosted' && 'ubuntu-24.04' || 'qc-remote-i5-linux' }}
     timeout-minutes: 60
     steps:
+      - name: Summarize runner selection
+        env:
+          REQUESTED_RUNNER: ${{ inputs.runner || 'local' }}
+          RESOLVED_RUNNER: ${{ inputs.runner == 'hosted' && 'ubuntu-24.04' || 'qc-remote-i5-linux' }}
+          RUNNER_NAME: ${{ runner.name }}
+          RUNNER_OS: ${{ runner.os }}
+          RUNNER_ARCH: ${{ runner.arch }}
+        run: |
+          {
+            echo '### Android candidate runner selection'
+            echo '| Requested | Resolved label | Runner | OS | Architecture |'
+            echo '|---|---|---|---|---|'
+            echo "| $REQUESTED_RUNNER | $RESOLVED_RUNNER | $RUNNER_NAME | $RUNNER_OS | $RUNNER_ARCH |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
