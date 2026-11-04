@@ -5,7 +5,7 @@
 <key>CFBundleIdentifier</key><string>org.freevia.qcremote.broker-menu</string>
 <key>CFBundleName</key><string>QC Device Broker</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>198</string>
+<key>CFBundleVersion</key><string>199</string>
 <key>CFBundleShortVersionString</key><string>1.0.6</string>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>

@@ -32,7 +32,7 @@
         "Resources/legal/LICENSE-APACHE.txt": "../../../LICENSE-APACHE",
         "Resources/release-version.json": "../../../release-version.json"
       },
-      "bundleVersion": "198"
+      "bundleVersion": "199"
     },
     "longDescription": "Independent, unofficial macOS controller for compatible Quad Cortex hardware, with a standalone device broker and optional remote access. Not affiliated with or endorsed by Neural DSP Technologies Oy."
   }
