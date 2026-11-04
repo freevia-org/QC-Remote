@@ -49,13 +49,26 @@ jobs:
           cache: npm
 
       - name: Verify canonical release version
+        id: version
         run: |
           npm run versions:check
           node --input-type=module - <<'NODE'
-          import { readFileSync } from 'node:fs';
-          const version = readFileSync('apps/android/android/app/build.gradle', 'utf8').match(/^\s*versionName "([^"]+)"/m)?.[1];
-          if (version !== '1.0.6') throw new Error(`Expected 1.0.6, found ${version ?? 'missing'}`);
-          console.log(`Building QC Remote ${version}`);
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const canonical = JSON.parse(readFileSync('release-version.json', 'utf8')).canonical;
+          const match = /^(\d+)\.(\d+)\.(\d+)\+(\d+)$/.exec(canonical ?? '');
+          if (!match) throw new Error(`Invalid canonical version: ${canonical ?? 'missing'}`);
+          const [, major, minor, patch, build] = match;
+          const version = `${major}.${minor}.${patch}`;
+          const gradle = readFileSync('apps/android/android/app/build.gradle', 'utf8');
+          const gradleVersion = gradle.match(/^\s*versionName "([^"]+)"/m)?.[1];
+          const gradleCode = Number(gradle.match(/^\s*versionCode\s+(\d+)/m)?.[1]);
+          const versionCode = Number(major) * 100_000_000 + Number(minor) * 1_000_000 + Number(patch) * 1_000 + Number(build);
+          if (gradleVersion !== version) throw new Error(`Expected Android versionName ${version}, found ${gradleVersion ?? 'missing'}`);
+          if (gradleCode !== versionCode) throw new Error(`Expected Android versionCode ${versionCode}, found ${gradleCode || 'missing'}`);
+          const suffix = `${version}-${build}`;
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\nbuild=${build}\nversion_code=${versionCode}\nartifact_suffix=${suffix}\n`);
+          appendFileSync(process.env.GITHUB_ENV, `QC_VERSION=${version}\nQC_BUILD=${build}\nQC_VERSION_CODE=${versionCode}\nQC_ARTIFACT_SUFFIX=${suffix}\n`);
+          console.log(`Building QC Remote ${canonical} (Android versionCode ${versionCode})`);
           NODE
 
       - run: npm ci
@@ -118,13 +131,13 @@ jobs:
           verification="$(jarsigner -verify -verbose -certs "$bundle" 2>&1)"
           printf '%s\n' "$verification"
           grep -q 'jar verified' <<< "$verification"
-          sha256sum "$bundle" | tee "$RUNNER_TEMP/qc-remote-1.0.6-android.sha256"
+          sha256sum "$bundle" | tee "$RUNNER_TEMP/qc-remote-${QC_ARTIFACT_SUFFIX}-android.sha256"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qc-remote-1.0.6-android-signed-candidate
+          name: qc-remote-${{ steps.version.outputs.artifact_suffix }}-android-signed-candidate
           path: |
             apps/android/android/app/build/outputs/bundle/release/app-release.aab
-            ${{ runner.temp }}/qc-remote-1.0.6-android.sha256
+            ${{ runner.temp }}/qc-remote-${{ steps.version.outputs.artifact_suffix }}-android.sha256
           if-no-files-found: error
           retention-days: 7
