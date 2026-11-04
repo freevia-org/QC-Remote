@@ -1,36 +1,32 @@
-# Application versions
+# Cross-platform release versions
 
-QC Remote uses one public application version for Windows, macOS, Linux,
-Android, and iOS. Starting with 1.0.1, release notes and platform downloads use
-the same x.y.z version. Earlier releases used independent desktop, Android,
-and iOS counters; those published artifacts are historical and stay unchanged.
+QC Remote uses one canonical release identity in `release-version.json`:
 
-From the public repository root, prepare the next release with:
+```text
+MAJOR.MINOR.CODE+BUILD
+```
+
+For example, `1.0.6+198` means customer-facing version `1.0.6`, release code `6`, and artifact build `198`.
+
+- `MAJOR.MINOR.CODE` is the same customer-facing version on every platform.
+- `BUILD` is a monotonically increasing per-app artifact number. A coordinated release uses the same value on Android, iOS, macOS, Windows, and Linux. Every rebuilt or replacement artifact gets a higher value, even when the customer-facing version is unchanged. Never reuse an uploaded version/build pair.
+- Increment `CODE` for a new coordinated feature/fix release and increment `BUILD` as well. Store-specific integer counters are derived; operators do not choose them independently.
+- Existing public releases and reviews remain unchanged until a replacement has passed its platform gates.
+
+## Platform mapping
+
+- **Google Play:** `versionName = MAJOR.MINOR.CODE`. Derive `versionCode` as `MAJOR × 100,000,000 + MINOR × 1,000,000 + CODE × 1,000 + BUILD`. Supported bounds are major ≤ 20, minor ≤ 99, code ≤ 999, and build ≤ 999. The maximum tuple maps to 2,099,999,999, below Play's 2.1 billion limit. Revisit the encoding before any component reaches its bound.
+- **Apple App Store:** `CFBundleShortVersionString = MAJOR.MINOR.CODE` and `CFBundleVersion = BUILD`. iOS and macOS in the same coordinated release use the same build ordinal.
+- **Microsoft Store:** use `MAJOR.MINOR.CODE.BUILD` for package versions supporting four numeric components. For EXE/MSI submissions, derive installer product/file version and the submission manifest from the same tuple.
+- **Direct desktop packages:** show `MAJOR.MINOR.CODE`; include `BUILD` in native package metadata, artifact names, and provenance receipts.
+
+The app version generator applies and checks this mapping:
 
 ```sh
-node scripts/app-version.mjs 1.0.2
+node scripts/app-version.mjs 1.0.7+199
 npm run versions:check
 ```
 
-The command updates all app manifests, native versions, the macOS broker, and
-workspace lock entries together. Android's required integer `versionCode` and
-Apple's required `CFBundleVersion` are derived from that canonical tuple rather
-than maintained as independent counters. Google Play uses
-`major * 1,000,000 + minor * 10,000 + build` as its integer `versionCode`; this
-preserves tuple ordering when `minor < 100` and `build < 10,000`. Apple uses
-the canonical three-part string for both marketing and build versions. The
-Mac App Store helper bundle follows the same version. The excluded DriverKit
-prototype and library/protocol package versions retain their independent
-versions. Linux derives its package version from the shared desktop Tauri
-configuration.
+The checked-in source target `1.0.6+198` is the initial migration from the previous three-part scheme, based on the recorded maximum Apple build 197. It is a source candidate only; it does not change an uploaded artifact or store submission. Recheck the current store/build records before generating release artifacts.
 
-For example, `1.0.6` is the only manually chosen application version; its
-Google Play `versionCode` is `1,000,006`, and Apple build metadata is also
-`1.0.6`. Do not hand-edit or publish a store-specific counter. The version
-check rejects any mismatch between public versions and derived store fields.
-
-Store approval and installed versions can still differ temporarily during a
-rollout. A source bump does not cancel an existing Apple submission, replace a
-published artifact, or imply that every store has approved the next release.
-Every rebuilt or replacement artifact must use a new canonical version; do not
-replace bits under an already uploaded version.
+A source version bump does not cancel an existing review, replace a published artifact, or mean that every store has approved the next release. A build is ready to upload only after its source commit, package identity, signer, platform qualification, and SHA-256 receipt are recorded.

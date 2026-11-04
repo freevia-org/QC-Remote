@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "QC Remote",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "identifier": "org.freevia.qcremote",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -57,7 +57,8 @@
       "../../../LICENSE": "legal/LICENSE.md",
       "../../../LICENSES/LicenseRef-QC-Remote-Reference.txt": "legal/LicenseRef-QC-Remote-Reference.txt",
       "../../../LICENSE-MIT": "legal/LICENSE-MIT.txt",
-      "../../../LICENSE-APACHE": "legal/LICENSE-APACHE.txt"
+      "../../../LICENSE-APACHE": "legal/LICENSE-APACHE.txt",
+      "../../../release-version.json": "release/release-version.json"
     },
     "publisher": "Freevia"
   }
