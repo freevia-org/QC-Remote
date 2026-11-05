@@ -1,8 +1,8 @@
 // Keep one canonical MAJOR.MINOR.CODE+BUILD release identity and derive each
 // platform's required marketing/build fields from it.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const canonicalPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\+([1-9]\d*)$/;
 const releaseVersionPath = 'release-version.json';
@@ -166,7 +166,13 @@ export function planAppVersion(read, canonical) {
   return new Map([...changes].filter(([path, text]) => text !== read(path)));
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+function isMain() {
+  if (!process.argv[1]) return false;
+  try { return fileURLToPath(import.meta.url) === realpathSync(resolve(process.argv[1])); }
+  catch { return false; }
+}
+
+if (isMain()) {
   try {
     const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
     const read = path => readFileSync(resolve(root, path), 'utf8');
