@@ -86,6 +86,9 @@ def main():
         run('ditto', str(args.profile), str(app / 'Contents/embedded.provisionprofile'))
         app_entitlements['com.apple.application-identifier'] = '8C782Q826S.org.freevia.qcremote'
         app_entitlements['com.apple.developer.team-identifier'] = '8C782Q826S'
+    # Downloaded provisioning profiles can retain quarantine when copied into
+    # the bundle. Apple rejects Store packages containing that attribute.
+    run('xattr', '-dr', 'com.apple.quarantine', str(app))
     app_entitlement_path = args.output / 'app.entitlements'
     menu_entitlement_path = args.output / 'menu.entitlements'
     app_entitlement_path.write_bytes(plistlib.dumps(app_entitlements))
@@ -122,6 +125,9 @@ def main():
             raise SystemExit('The app signature certificate is not authorized by the supplied profile')
     package = None
     if not args.development:
+        attributes = run('xattr', '-r', str(app), capture=True).stdout
+        if 'com.apple.quarantine' in attributes:
+            raise SystemExit('Quarantine remains on the Store app bundle')
         package = args.output / ('QC-Remote-' + source_info['CFBundleShortVersionString'] + '-AppStore.pkg')
         run('productbuild', '--component', str(app), '/Applications', '--sign', args.installer_identity, str(package))
         run('pkgutil', '--check-signature', str(package))
