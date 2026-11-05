@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,9 +12,14 @@ const read = path => readFileSync(join(root, path), 'utf8');
 const project = 'apps/ios/ios/App/App.xcodeproj/project.pbxproj';
 const gradle = 'apps/android/android/app/build.gradle';
 const canonical = JSON.parse(read('release-version.json')).canonical;
-const next = '1.0.7+199';
-const nextMarketing = '1.0.7';
-const nextBuild = '199';
+const [currentMarketing, currentBuild] = canonical.split('+');
+const [major, minor, releaseCode] = currentMarketing.split('.').map(Number);
+// Exercise a marketing and build bump without assuming a particular checked-in
+// release. The generator's documented bounds require revisiting the version
+// scheme before either component reaches its maximum.
+const nextMarketing = `${major}.${minor}.${releaseCode + 1}`;
+const nextBuild = String(Number(currentBuild) + 1);
+const next = `${nextMarketing}+${nextBuild}`;
 
 test('the checked-in application versions agree on all platforms', () => {
   assert.deepEqual(appVersionProblems(read), []);
@@ -34,7 +39,7 @@ test('one coordinated bump derives platform identifiers from MAJOR.MINOR.CODE+BU
   assert.equal(JSON.parse(updated('apps/windows/src-tauri/tauri.conf.json')).bundle.resources['../../../release-version.json'], 'release/release-version.json');
   const code = text => Number(/versionCode\s+(\d+)/.exec(text)[1]);
   assert.equal(code(updated(gradle)), androidVersionCode(next));
-  assert.equal(code(updated(gradle)), 100_007_199);
+  assert.equal(code(updated(gradle)), major * 100_000_000 + minor * 1_000_000 + (releaseCode + 1) * 1_000 + Number(nextBuild));
   assert.equal(code(updated(gradle)), androidVersionCode(JSON.parse(updated('release-version.json')).canonical));
   const builds = text => [...text.matchAll(/CURRENT_PROJECT_VERSION = ([^;]+);/g)].map(m => m[1]);
   assert.deepEqual(builds(updated(project)), ['1', '1', nextBuild, nextBuild]);
@@ -81,6 +86,11 @@ test('CLI refuses malformed/downgraded versions and invalid late input without p
     const files = [...new Set([...planAppVersion(read, next).keys(), 'scripts/app-version.mjs'])];
     for (const path of files) { mkdirSync(dirname(join(temp, path)), { recursive: true }); writeFileSync(join(temp, path), read(path)); }
     const run = version => spawnSync(process.execPath, [join(temp, 'scripts/app-version.mjs'), version], { encoding: 'utf8' });
+    if (process.platform !== 'win32') {
+      const alias = join(temp, 'version-cli.mjs');
+      symlinkSync(join(temp, 'scripts/app-version.mjs'), alias);
+      assert.notEqual(spawnSync(process.execPath, [alias, 'invalid'], { encoding: 'utf8' }).status, 0);
+    }
     for (const version of ['invalid', '1.0.6', '1.0.6+0', '0.0.1+100', '1.0.7+198']) {
       assert.notEqual(run(version).status, 0);
       for (const path of files) assert.equal(readFileSync(join(temp, path), 'utf8'), read(path));
