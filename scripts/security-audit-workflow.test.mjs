@@ -40,7 +40,7 @@ test("public dependency audit names every public Cargo and Gradle lock and cloud
   assert.match(workflow, /osv-scanner_SHA256SUMS/);
   assert.match(workflow, /sha256sum --check --status/,
     "the downloaded scanner binary must be checked against the published checksum");
-  assert.match(workflow, /osv-scanner"\s+scan source/,
+  assert.match(workflow, /osv-scanner_linux_amd64"\s+scan source/,
     "the installed scanner must be run against the source lockfile");
   const androidOsvJob = /^  android-gradle-osv:[\s\S]*?(?=^  [a-z0-9_-]+:|$(?![\s\S]))/m.exec(workflow)?.[0];
   assert.ok(androidOsvJob, "Android Gradle advisory scan job is missing");
