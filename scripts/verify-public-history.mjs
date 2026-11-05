@@ -109,6 +109,12 @@ export const publishedIdentityExceptions = new Map([
     '60ae3e340be4368c840c68a24539d08009f4539b',
     new Set(['commit message contains a Co-authored-by trailer']),
   ],
+  [
+    // GitHub added a privacy-preserving trailer to the published versioning
+    // merge. Keep the exception limited to that commit and finding.
+    'bdbb9e76442535e71bd685b336e1ec742be7ff9b',
+    new Set(['commit message contains a Co-authored-by trailer']),
+  ],
 ]);
 
 export function isPublishedIdentityException(commit, finding) {
