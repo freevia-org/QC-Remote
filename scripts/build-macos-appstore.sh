@@ -19,6 +19,7 @@ python3 scripts/build-macos-store-helpers.py --arch "$arch" --broker "$build_tar
 # The Store config replaces the default resource object with an empty array
 # and copies its exact helpers/legal resources through macOS.files instead.
 # This prevents recursive config merging from retaining the direct helper.
+mkdir -p apps/windows/src-tauri/binaries
 cp "$build_target/release/qc-device-broker" "apps/windows/src-tauri/binaries/qc-device-broker-$target"
 # Bundle assembly can retain resources from a previous flavor. Remove only
 # this rebuildable output app, after checking its identity and refusing links.
@@ -34,5 +35,6 @@ if app.exists():
     shutil.rmtree(app)
 PYAPP
 cd apps/windows
+npm exec -- tauri icon src-tauri/icons/icon.png --output src-tauri/icons/generated
 npm exec -- tauri build \
   --config src-tauri/tauri.appstore.conf.json --bundles app
