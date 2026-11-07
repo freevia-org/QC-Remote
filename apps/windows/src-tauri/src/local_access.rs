@@ -6570,6 +6570,15 @@ mod tests {
         // that always returned true would pass the assertion above.
         let neighbour = directory.join("ordinary.json");
         fs::write(&neighbour, b"{}").expect("ordinary file");
+        // Do not let the runner's umask turn this negative control into a
+        // 0600 file. The owner-only predicate must reject a normal, readable
+        // file regardless of the process defaults used by CI.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&neighbour, fs::Permissions::from_mode(0o644))
+                .expect("make the control file non-private");
+        }
         let inherited = owner_only_file::is_owner_only(&neighbour).expect("inspect a plain file");
         // A refresh re-publishes over the existing copy every 30 seconds. The
         // replaced file must not come back with the parent's ACEs.
