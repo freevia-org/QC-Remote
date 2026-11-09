@@ -15,7 +15,7 @@ permissions:
 # A new run for the same ref supersedes only an active pull request run. Manual
 # dispatches are not cancelled, so an explicitly requested validation completes.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.use_github_hosted && 'github-hosted' || 'self-hosted' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

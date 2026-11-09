@@ -585,6 +585,7 @@ test('CI remains manually dispatched and keeps runner selection explicit', () =>
   assert.match(triggers, /^on:\n  workflow_dispatch:\n    inputs:\n      use_github_hosted:\n        description: Use GitHub-hosted runners instead of the default self-hosted machines\n        required: false\n        default: false\n        type: boolean\s*$/m);
   assert.doesNotMatch(triggers, /^  (?:push|pull_request|schedule):/m);
   assert.doesNotMatch(ci, /pick-runners/);
+  assert.match(ci, /^  group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}-\$\{\{ inputs\.use_github_hosted && 'github-hosted' \|\| 'self-hosted' \}\}$/m);
 });
 
 test('short CI orchestration jobs on the staged runner have bounded timeouts', () => {
