@@ -275,7 +275,7 @@ test('manual CI dispatch includes native, TypeScript and cloud jobs', () => {
   const cloudRelay = bodyOf('cloud-relay');
   assert.match(cloudRelay, /github\.event_name == 'workflow_dispatch'/);
   assert.match(cloudRelay, /github\.ref == 'refs\/heads\/master'/);
-  assert.match(cloudRelay, /^    runs-on: qc-remote-i5-linux$/m);
+  assert.match(cloudRelay, /^    runs-on: \$\{\{ inputs\.use_github_hosted && 'ubuntu-latest' \|\| 'qc-remote-i5-linux' \}\}$/m);
   assert.match(cloudRelay, /DRY-RUN PLACEHOLDER/);
   assert.match(cloudRelay, /CLOUDFLARE_API_TOKEN: ''/);
   assert.doesNotMatch(cloudRelay, /secrets\.QCRC_OAUTH_KV_NAMESPACE_ID/);
@@ -567,7 +567,7 @@ test('Windows CI keeps Cargo output on its persistent runner, and caches only on
     const rest = ci.slice(start);
     const end = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
     const body = end === -1 ? rest : rest.slice(0, end + 1);
-    assert.match(body, /^ {4}runs-on: qc-remote-i5-windows$/m, job);
+    assert.match(body, /^ {4}runs-on: \$\{\{ inputs\.use_github_hosted && 'windows-latest' \|\| 'qc-remote-i5-windows' \}\}$/m, job);
     assert.match(body, /Join-Path \$env:RUNNER_TOOL_CACHE 'qc-remote-cargo-target\/[a-z0-9.-]+'/, job);
     assert.match(body, /if: \$\{\{ runner\.environment == 'self-hosted' \}\}\n {8}shell: pwsh/, job);
     assert.match(body, /"CARGO_TARGET_DIR=\$dir" >> \$env:GITHUB_ENV/, job);
@@ -582,7 +582,7 @@ test('CI remains manually dispatched and keeps runner selection explicit', () =>
   const jobsStart = ci.indexOf('\njobs:');
   assert.ok(jobsStart > triggerStart, 'jobs follow workflow triggers');
   const triggers = ci.slice(triggerStart + 1, jobsStart);
-  assert.match(triggers, /^on:\n  workflow_dispatch:\s*$/m);
+  assert.match(triggers, /^on:\n  workflow_dispatch:\n    inputs:\n      use_github_hosted:\n        description: Use GitHub-hosted runners instead of the default self-hosted machines\n        required: false\n        default: false\n        type: boolean\s*$/m);
   assert.doesNotMatch(triggers, /^  (?:push|pull_request|schedule):/m);
   assert.doesNotMatch(ci, /pick-runners/);
 });
@@ -595,7 +595,7 @@ test('short CI orchestration jobs on the staged runner have bounded timeouts', (
     const rest = ci.slice(start);
     const end = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
     const body = end === -1 ? rest : rest.slice(0, end + 1);
-    assert.match(body, /^ {4}runs-on: qc-remote-i5-linux$/m, job);
+    assert.match(body, /^ {4}runs-on: \$\{\{ inputs\.use_github_hosted && 'ubuntu-latest' \|\| 'qc-remote-i5-linux' \}\}$/m, job);
     assert.match(body, /^ {4}timeout-minutes: 5$/m, job);
   }
 });
