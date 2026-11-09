@@ -2,6 +2,12 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      use_github_hosted:
+        description: Use GitHub-hosted runners instead of the default self-hosted machines
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -25,7 +31,7 @@ jobs:
   # does not rebuild the native caches either.
   changes:
     name: Select jobs
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ inputs.use_github_hosted && 'ubuntu-latest' || 'qc-remote-i5-linux' }}
     timeout-minutes: 5
     outputs:
       native: ${{ steps.filter.outputs.native }}
@@ -48,7 +54,7 @@ jobs:
     # `changes`).
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-windows
+    runs-on: ${{ inputs.use_github_hosted && 'windows-latest' || 'qc-remote-i5-windows' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,7 +109,7 @@ jobs:
     name: quadcortex on its declared Rust minimum (1.87)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-windows
+    runs-on: ${{ inputs.use_github_hosted && 'windows-latest' || 'qc-remote-i5-windows' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -151,7 +157,7 @@ jobs:
     name: Windows app static checks (fmt, check, clippy, broker build)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-windows
+    runs-on: ${{ inputs.use_github_hosted && 'windows-latest' || 'qc-remote-i5-windows' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -222,7 +228,7 @@ jobs:
     name: Windows app native tests
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-windows
+    runs-on: ${{ inputs.use_github_hosted && 'windows-latest' || 'qc-remote-i5-windows' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -277,7 +283,7 @@ jobs:
       - rust-windows-app-static
       - rust-windows-app-tests
     if: ${{ !cancelled() }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ inputs.use_github_hosted && 'ubuntu-latest' || 'qc-remote-i5-linux' }}
     timeout-minutes: 5
     steps:
       - name: Fail unless both Windows app jobs passed or were skipped together
@@ -291,7 +297,7 @@ jobs:
     name: Quad Cortex crate docs and Linux tests
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ inputs.use_github_hosted && 'ubuntu-latest' || 'qc-remote-i5-linux' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -309,7 +315,7 @@ jobs:
   third-party-notices:
     name: Third-party notices drift check
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ inputs.use_github_hosted && 'ubuntu-latest' || 'qc-remote-i5-linux' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -345,7 +351,7 @@ jobs:
     name: TypeScript packages and apps
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.typescript != 'false'))) }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ inputs.use_github_hosted && 'ubuntu-latest' || 'qc-remote-i5-linux' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -374,7 +380,7 @@ jobs:
 
   public-history:
     name: Public history and path boundary
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ inputs.use_github_hosted && 'ubuntu-latest' || 'qc-remote-i5-linux' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -424,7 +430,7 @@ jobs:
     name: Cloud relay (dry-run deploy)
     needs: changes
     if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && (needs.changes.result != 'success' || needs.changes.outputs.cloud != 'false') }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ inputs.use_github_hosted && 'ubuntu-latest' || 'qc-remote-i5-linux' }}
     timeout-minutes: 20
     # services/qc-remote-cloud is an npm workspace of the root package.json and
     # has no lockfile of its own: install from the root lock and run the
@@ -465,7 +471,7 @@ jobs:
     name: Android app (debug build + unit tests)
     needs: changes
     if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ inputs.use_github_hosted && 'ubuntu-latest' || 'qc-remote-i5-linux' }}
     timeout-minutes: 40
     # Deliberately debug-only: no release signing or keystore. Do not set QC_ANDROID_KEYSTORE_BASE64,
     # QC_ANDROID_KEYSTORE, QC_ANDROID_STORE_PASSWORD, QC_ANDROID_KEY_ALIAS,
@@ -534,7 +540,7 @@ jobs:
       - public-history
       - cloud-relay
       - android
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ inputs.use_github_hosted && 'ubuntu-latest' || 'qc-remote-i5-linux' }}
     timeout-minutes: 5
     steps:
       - name: Fail if any CI job failed or was cancelled
