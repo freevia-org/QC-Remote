@@ -1,20 +1,14 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { QcConfirm, QcTextPrompt, type WorkflowPrompts } from "@qc-remote/ui";
+import { useEffect, type ReactNode } from "react";
+import type { WorkflowPrompts } from "@qc-remote/ui";
+// Imported by path, not by the "./use-android-prompts" specifier the build aliases to this file.
+import { useAndroidPrompts as useSharedPrompts } from "@qc-remote/android-src/use-android-prompts.tsx";
 import { registerWorkflowConfirmation } from "./workflow-confirmations";
 
+/** The shared hook owns one promise per dialog (a replacement or unmount settles the old
+ * one); iOS only routes its MCP confirmations through the same owner. */
 export function useAndroidPrompts(): { prompts: WorkflowPrompts; overlay: ReactNode } {
-  const [textPrompt, setTextPrompt] = useState<{ title: string; initialValue: string; resolve: (value: string | null) => void }>();
-  const [confirmation, setConfirmation] = useState<{ message: string; resolve: (value: boolean) => void }>();
-  const confirm = (message: string) => new Promise<boolean>((resolve) => setConfirmation({ message, resolve }));
-  useEffect(() => registerWorkflowConfirmation(confirm), []);
-  const prompts = useMemo<WorkflowPrompts>(() => ({
-    confirm,
-    prompt: (message, initialValue) => new Promise<string | null>((resolve) => setTextPrompt({ title: message, initialValue, resolve }))
-  }), []);
-  const answer = (accepted: boolean) => { confirmation?.resolve(accepted); setConfirmation(undefined); };
-  const overlay = <>
-    {confirmation && <QcConfirm message={confirmation.message} onConfirm={() => answer(true)} onCancel={() => answer(false)} />}
-    {textPrompt && <QcTextPrompt title={textPrompt.title} initialValue={textPrompt.initialValue} onSubmit={(value) => { textPrompt.resolve(value); setTextPrompt(undefined); }} onCancel={() => { textPrompt.resolve(null); setTextPrompt(undefined); }} />}
-  </>;
-  return { prompts, overlay };
+  const shared = useSharedPrompts();
+  const { confirm } = shared.prompts;
+  useEffect(() => registerWorkflowConfirmation((message) => Promise.resolve(confirm(message))), [confirm]);
+  return shared;
 }
