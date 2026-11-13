@@ -47,7 +47,9 @@ export function useModesConfigurationWorkflow(options: ModesConfigurationWorkflo
       } finally { if(session.current() && read===reads.current) setLoading(false); }
     }});
   }, [capture,connected, guarded.run,notice,pending]);
-  return { slots: stateOwner.current === workflowSession.key ? slots : undefined,
-    loading: stateOwner.current === workflowSession.key && loading, pending, refresh, commit, contextVersion };
+  // A revoked session's slots are hidden at once, as in the other device-wide hooks, not only when the key changes.
+  const currentState = stateOwner.current === workflowSession.key && workflowSession.current();
+  return { slots: currentState ? slots : undefined,
+    loading: currentState && loading, pending, refresh, commit, contextVersion };
 }
 export type ModesConfigurationWorkflow = ReturnType<typeof useModesConfigurationWorkflow>;
