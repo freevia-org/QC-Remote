@@ -1467,6 +1467,19 @@ fn chatgpt_msix_path_uses_the_package_install_location() {
 }
 
 #[test]
+fn claude_desktop_search_never_accepts_the_claude_code_cli() {
+    // `claude.exe` on PATH or in App Paths is the Claude Code CLI.
+    assert!(!CLAUDE_DESKTOP_SEARCH.ambient_lookup);
+    assert!(CLAUDE_DESKTOP_SEARCH.ambient_names().is_empty());
+    assert_eq!(CLAUDE_DESKTOP_SEARCH.executable_names, &["claude.exe"]);
+    assert_eq!(
+        CHATGPT_DESKTOP_SEARCH.ambient_names(),
+        &["ChatGPT.exe"],
+        "other hosts keep the lookup"
+    );
+}
+
+#[test]
 fn chatgpt_desktop_search_does_not_launch_codex_cli() {
     assert_eq!(CHATGPT_DESKTOP_SEARCH.executable_names, &["ChatGPT.exe"]);
     assert!(CHATGPT_DESKTOP_SEARCH
@@ -2286,6 +2299,7 @@ fn a_default_path_answers_before_the_slower_mechanisms() {
         // the Uninstall hives and the Store alias directory cannot answer
         // and the case stays about the first two steps.
         executable_names: &["qc-remote-detection-probe.exe"],
+        ambient_lookup: true,
         relative_candidates: &[r"Probe\qc-remote-detection-probe.exe"],
         display_names: &[],
         self_records: &[SelfInstallRecord {
@@ -3977,6 +3991,31 @@ fn read_bionic_route(config: &Path, executable: &Path) -> ConfiguredJsonMcpRoute
 /// there as a rare, very old installation, so a machine carrying both must
 /// be written where Bionic actually reads - getting that backwards installs
 /// a skill that is never loaded and reports success for it.
+#[test]
+fn a_live_connection_is_only_probed_for_when_the_managed_route_is_current() {
+    let route = |configured| ConfiguredAntigravityRoute {
+        configured,
+        launcher_current: configured,
+        managed_version: None,
+        enabled: true,
+    };
+    let integration =
+        |configured, permission_current, legacy_route_present| AntigravityIntegration {
+            route: route(configured),
+            permission_current,
+            legacy_route_present,
+        };
+    assert!(
+        !antigravity_managed_current(&integration(false, false, false)),
+        "an unconfigured route never reports a connection, so is never probed for one"
+    );
+    assert!(!antigravity_managed_current(&integration(
+        true, false, false
+    )));
+    assert!(!antigravity_managed_current(&integration(true, true, true)));
+    assert!(antigravity_managed_current(&integration(true, true, false)));
+}
+
 #[test]
 fn skill_paths_resolve_the_home_through_the_shared_helper() {
     // Off Windows only HOME is set; a USERPROFILE read made both of these None
