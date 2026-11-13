@@ -936,3 +936,14 @@ test("master volume updates clamp to the normalized range exactly like the Rust 
   assert.equal(volumeOf(-0.1), 0);
   assert.equal(volumeOf(Number.NaN), 0);
 });
+
+test("a scene colour update outside the eight scenes is ignored and a lone one yields a dense list", () => {
+  const bare = { ...demoSnapshot, sceneColors: undefined };
+  for (const index of [8, -1, 1.5]) {
+    assert.equal(applyQcStateUpdate(bare, { kind: "sceneColor", index, color: "#ff0000" }), bare);
+  }
+  const dense = applyQcStateUpdate(bare, { kind: "sceneColor", index: 3, color: "#ff0000" }).sceneColors;
+  assert.equal(dense?.length, 8);
+  assert.equal(dense?.[3], "#ff0000");
+  assert.equal(dense?.[0], "");
+});

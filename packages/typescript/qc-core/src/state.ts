@@ -1,4 +1,4 @@
-import { QC_MAXIMUM_TEMPO_BPM, QC_MINIMUM_TEMPO_BPM, QC_PRESETS_PER_SETLIST, type GridBlock, type GridRoute, type PresetSnapshot, type QcStateUpdate } from "@qc-remote/client";
+import { QC_MAXIMUM_TEMPO_BPM, QC_MINIMUM_TEMPO_BPM, QC_PRESETS_PER_SETLIST, QC_SCENE_COUNT, type GridBlock, type GridRoute, type PresetSnapshot, type QcStateUpdate } from "@qc-remote/client";
 import { adoptModelPresetCatalog } from "./model-preset-catalog.ts";
 import { samePresetAddress } from "./preset-address.ts";
 export type { QcStateUpdate } from "@qc-remote/client";
@@ -291,7 +291,9 @@ function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): Pr
     };
   }
   if (state.kind === "sceneColor" && state.index !== undefined && state.color) {
-    const colors = [...(snapshot.sceneColors ?? [])];
+    // Like the Rust reducer, an index outside the eight scenes is ignored.
+    if (!Number.isInteger(state.index) || state.index < 0 || state.index >= QC_SCENE_COUNT) return snapshot;
+    const colors = Array.from({ length: QC_SCENE_COUNT }, (_, index) => snapshot.sceneColors?.[index] ?? "");
     colors[state.index] = state.color;
     const argb = snapshot.sceneColorsArgb && state.rawColor !== undefined
       ? snapshot.sceneColorsArgb.map((value, index) => index === state.index ? state.rawColor! : value)
