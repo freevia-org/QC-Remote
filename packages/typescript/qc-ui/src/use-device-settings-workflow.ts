@@ -1,3 +1,4 @@
+import { observedGlobalBypassUpdate } from "./global-bypass-update.ts";
 import { useDeviceWorkflowSession } from "./use-device-workflow-session.ts";
 import { isCorOsVersion, type ObservedCorOsVersion } from "./cor-os-version.ts";
 import type { QcSettingsUnitSelection } from "./settings-unit-selection.ts";
@@ -48,14 +49,13 @@ export type MidiClockOutValue = typeof MIDI_CLOCK_OUT_VALUES[number];
 export type DeviceSettingsWorkflowOptions = DeviceGatewayWorkflowOptions & { ioSettingsError?: string };
 
 /** A bypass write replaces four rows, so every unedited row must be observed,
- * never invented. The other family is deliberately absent from the write. */
+ * never invented. The other family is deliberately absent from the write.
+ * The row policy lives in `observedGlobalBypassUpdate`; this only turns its
+ * "not observed" answer into the refusal the workflow reports. */
 export function globalBypassUpdate(settings: GeneralSettings, category: "cab" | "ir", row: 1 | 2 | 3 | 4, bypassed: boolean) {
-  const family = category === "cab" ? settings.globalBypassCab : settings.globalBypassIr;
-  const values = [family?.row1, family?.row2, family?.row3, family?.row4];
-  if (!values.every((value) => typeof value === "boolean")) throw new Error("Global Bypass state is unavailable. Refresh device settings before changing a row.");
-  const rows = values as [boolean, boolean, boolean, boolean];
-  rows[row - 1] = bypassed;
-  return { cab: category === "cab" ? rows : null, ir: category === "ir" ? rows : null };
+  const update = observedGlobalBypassUpdate(settings, category, row, bypassed);
+  if (!update) throw new Error("Global Bypass state is unavailable. Refresh device settings before changing a row.");
+  return update;
 }
 
 /**

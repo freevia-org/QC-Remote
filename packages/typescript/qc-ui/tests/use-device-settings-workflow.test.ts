@@ -6,7 +6,7 @@ import { observedGlobalBypassUpdate } from "../src/global-bypass-update.ts";
 
 register("./support/react-singleton-loader.mjs", import.meta.url);
 const React = (await import("react")).default;
-const { useDeviceSettingsWorkflow } = await import("../src/use-device-settings-workflow.ts");
+const { useDeviceSettingsWorkflow, globalBypassUpdate } = await import("../src/use-device-settings-workflow.ts");
 test("Device settings reject prior-session masks and late read/write completions on a stable gateway", async (t) => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   let value, renderer;
@@ -72,6 +72,13 @@ test("Global Bypass edits preserve observed rows and never replace unknown rows 
   assert.deepEqual(observedGlobalBypassUpdate(settings, "cab", 3, true), { cab: [false, true, true, true], ir: null });
   assert.deepEqual(settings.globalBypassCab, { row1: false, row2: true, row3: false, row4: true });
   assert.deepEqual(observedGlobalBypassUpdate({ globalBypassIr: { row1: true, row2: false, row3: true, row4: false } }, "ir", 1, false), { cab: null, ir: [false, false, true, false] });
+});
+
+test("the shipped globalBypassUpdate delegates to the observed-row policy and refuses unobserved rows (TU-11)", () => {
+  const settings: any = { globalBypassCab: { row1: false, row2: true, row3: false, row4: true } };
+  assert.deepEqual(globalBypassUpdate(settings, "cab", 3, true), observedGlobalBypassUpdate(settings, "cab", 3, true));
+  assert.throws(() => globalBypassUpdate({ globalBypassCab: { row1: false } } as any, "cab", 1, true), /Global Bypass state is unavailable/);
+  assert.throws(() => globalBypassUpdate({} as any, "ir", 2, true), /Global Bypass state is unavailable/);
 });
 
 test("the CorOS version the unit's Device Information screen showed is kept for the session, reconciled with the host's, and dropped with the session", async (t) => {
