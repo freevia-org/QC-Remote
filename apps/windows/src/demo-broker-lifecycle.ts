@@ -171,3 +171,43 @@ export function createDemoBrokerLifecycle(options: {
     }
   };
 }
+
+/**
+ * Answer one broker request against the demo store. The result is the answer
+ * the moment `invoke` returns: the follow-up read that refreshes this
+ * window's Grid is a UI courtesy, so its failure must not turn a write that
+ * already applied into an error reply the AI client would report or repeat.
+ */
+export async function answerDemoRequest<Result, Snapshot>(operation: {
+  invoke(): Promise<Result>;
+  refresh(): Promise<Snapshot>;
+  changed(snapshot: Snapshot): void;
+}): Promise<{ result: Result } | { error: { code: number; message: string; data: { code: string; retryable: boolean } } }> {
+  let result: Result;
+  try {
+    result = await operation.invoke();
+  } catch (error) {
+    const failure = error as { code?: string; message?: string };
+    return { error: { code: -32002, message: failure.message ?? "The demo provider request failed.", data: { code: failure.code ?? "DEMO_PROVIDER_ERROR", retryable: false } } };
+  }
+  try {
+    operation.changed(await operation.refresh());
+  } catch { /* the window shows the old Grid until the next refresh; the request itself succeeded */ }
+  return { result };
+}
+
+/**
+ * Attach several listeners as one unit. If any attachment fails, the ones that
+ * did attach are detached before the failure is rethrown, so a half-set-up
+ * caller never leaks a native listener it has no cleanup for.
+ */
+export async function attachAll(attachers: ReadonlyArray<() => Promise<() => void>>): Promise<Array<() => void>> {
+  const settled = await Promise.allSettled(attachers.map(attach => attach()));
+  const stops = settled.flatMap(entry => entry.status === "fulfilled" ? [entry.value] : []);
+  const failed = settled.find((entry): entry is PromiseRejectedResult => entry.status === "rejected");
+  if (failed) {
+    for (const stop of stops) { try { stop(); } catch { /* already gone */ } }
+    throw failed.reason;
+  }
+  return stops;
+}
