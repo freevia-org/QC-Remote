@@ -128,3 +128,28 @@ test("a failed on-demand control gets one direct readback and no idle retry loop
     assert.deepEqual(calls, ["read", "write", "read"]);
   } finally { await act(async () => renderer.unmount()); }
 });
+
+test("a forced reconciliation read that fails once is retried (TU-33)", async t => {
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  let controller!: ReturnType<typeof useQcController>;
+  function Probe() { controller = useQcController(demoSnapshot); return null; }
+  let reads = 0;
+  const releases: Array<() => void> = [];
+  const transport = {
+    async currentSnapshot() { reads++; if (reads === 1) throw new Error("transient"); return { ...demoSnapshot }; },
+    setTempo(tempo: number) { return new Promise((resolve) => { releases.push(() => resolve({})); }); }
+  } as unknown as QcDeviceTransport;
+  let renderer!: ReactTestRenderer;
+  await act(async () => { renderer = create(createElement(Probe)); });
+  try {
+    let first!: Promise<unknown>, second!: Promise<unknown>;
+    await act(async () => { first = controller.runTempo(transport, 120); second = controller.runTempo(transport, 130); });
+    await act(async () => { releases[1](); await second; });
+    await act(async () => { releases[0](); await first; });
+    await act(async () => { t.mock.timers.tick(3_100); });
+    assert.equal(reads, 1, "the forced read ran once and failed");
+    await act(async () => { t.mock.timers.tick(1_100); });
+    assert.ok(reads >= 2, `the superseded late success schedules a forced read and its failure is retried (reads: ${reads})`);
+  } finally { await act(async () => renderer.unmount()); }
+});
