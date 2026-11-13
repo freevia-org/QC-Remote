@@ -61,9 +61,15 @@ impl StateEventJournal {
 
     pub(super) fn page(&self, after: u64, limit: usize) -> Vec<DecodedStateFrame> {
         let mut bytes = 0;
+        // Sequences are strictly increasing, so the first frame after the
+        // cursor is found by bisection instead of scanning the retained
+        // history from the front on every page.
+        let start = self
+            .frames
+            .partition_point(|(frame, _)| frame.sequence <= after);
         self.frames
             .iter()
-            .filter(|(frame, _)| frame.sequence > after)
+            .skip(start)
             .take(limit.min(STATE_EVENT_MAXIMUM_LIMIT))
             .take_while(|(_, size)| {
                 bytes += size;
@@ -140,6 +146,27 @@ mod tests {
         assert!(serde_json::to_vec(&first).unwrap().len() < STATE_EVENT_PAGE_MAXIMUM_BYTES);
         assert_eq!(journal.page(2, 4096)[0].sequence, 3);
         assert_eq!(journal.page(0, 1).len(), 1);
+    }
+
+    /// RC-25: the cursor is found by bisection; results must equal a scan.
+    #[test]
+    fn paging_from_any_cursor_returns_exactly_the_frames_after_it() {
+        let mut journal = StateEventJournal::default();
+        // Gaps in the sequence (frames that were not retained) are normal.
+        let sequences = [2_u64, 3, 5, 8, 13, 21];
+        for sequence in sequences {
+            assert!(journal.push(frame(sequence, "s".into())));
+        }
+        for after in 0..=25_u64 {
+            let expected: Vec<u64> = sequences.iter().copied().filter(|s| *s > after).collect();
+            let got: Vec<u64> = journal
+                .page(after, 4096)
+                .iter()
+                .map(|frame| frame.sequence)
+                .collect();
+            assert_eq!(got, expected, "after {after}");
+        }
+        assert_eq!(journal.page(5, 2).len(), 2);
     }
 
     #[test]
