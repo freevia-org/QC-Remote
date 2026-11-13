@@ -91,6 +91,34 @@ fn relay_socket_config() -> WebSocketConfig {
 // Readiness stays locally sampled; unchanged application frames are never sent.
 const SOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Failure count after a session that ended abnormally. A short session keeps
+/// escalating the back-off; one that lasted at least the longest back-off was a
+/// healthy link that dropped (relay deploy, roam, resume), so the next
+/// reconnect starts from the first step rather than a minute-long wait.
+fn failures_after_session(failures: u32, lasted: Duration) -> u32 {
+    if lasted >= Duration::from_secs(MAXIMUM_BACKOFF_SECONDS) {
+        1
+    } else {
+        failures.saturating_add(1).clamp(1, MAXIMUM_FAILURE_COUNT)
+    }
+}
+
+/// How long the relay may stay silent before the link is presumed half-open.
+/// The edge answers every protocol Ping, so a live link has inbound traffic
+/// within one keepalive interval.
+const SOCKET_INBOUND_IDLE_LIMIT: Duration =
+    Duration::from_secs(2 * SOCKET_KEEPALIVE_INTERVAL.as_secs() + SOCKET_SEND_TIMEOUT.as_secs());
+
+fn note_inbound<T, E>(
+    message: Option<Result<T, E>>,
+    last_inbound: &mut tokio::time::Instant,
+) -> Option<Result<T, E>> {
+    if matches!(message, Some(Ok(_))) {
+        *last_inbound = tokio::time::Instant::now();
+    }
+    message
+}
+
 fn readiness_due(previous: Option<&TargetReadiness>, ready: &TargetReadiness) -> bool {
     previous != Some(ready)
 }
@@ -1422,13 +1450,16 @@ impl Client {
                     }
                     self.report_credential_status(false);
                     self.state.send_replace(ConnectionState::Connected);
+                    let connected_at = tokio::time::Instant::now();
                     if self.connected(socket).await.is_err() && !*self.stop.borrow() {
                         // Escalate rather than reset. A relay that accepts the
                         // upgrade and then drops, or answers with one malformed
                         // frame, used to pin `failures` at 1 for ever and
                         // reconnect every two seconds indefinitely, because the
-                        // reset above ran on every successful handshake.
-                        failures = failures.saturating_add(1).clamp(1, MAXIMUM_FAILURE_COUNT);
+                        // reset above ran on every successful handshake. A
+                        // session that outlived the longest back-off was not a
+                        // flap, so it restarts the ladder instead of extending it.
+                        failures = failures_after_session(failures, connected_at.elapsed());
                     } else {
                         failures = 0;
                     }
@@ -1480,6 +1511,7 @@ impl Client {
         );
         keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_readiness = None;
+        let mut last_inbound = tokio::time::Instant::now();
         let mut deferred = VecDeque::new();
         loop {
             tokio::select! {
@@ -1502,6 +1534,7 @@ impl Client {
                     if send_frame(&mut sink, &frame).await.is_err() { return Err(()); }
                 }
                 _ = keepalive.tick() => {
+                    if last_inbound.elapsed() > SOCKET_INBOUND_IDLE_LIMIT { return Err(()); }
                     if send_message(&mut sink, Message::Ping(Vec::new().into())).await.is_err() { return Err(()); }
                 }
                 changed = self.stop.changed() => {
@@ -1513,7 +1546,7 @@ impl Client {
                 message = async { match deferred.pop_front() {
                     Some(message) => Some(Ok(message)),
                     None => stream.next().await.map(|result| result.map(|message| (message, Instant::now()))),
-                } } => match message {
+                } } => match note_inbound(message, &mut last_inbound) {
                     Some(Ok((Message::Text(text), received_at))) if text.len() <= MAX_REQUEST_FRAME_BYTES => {
                         if self.consume_replacement_ack(&text)? { continue; }
                         let frame = serde_json::from_str(&text).map_err(|_| ())?;
@@ -1591,10 +1624,11 @@ impl Client {
                                             }
                                         }
                                         _ = keepalive.tick() => {
+                                            if last_inbound.elapsed() > SOCKET_INBOUND_IDLE_LIMIT { return Err(()); }
                                             if send_message(&mut sink, Message::Ping(Vec::new().into())).await.is_err() { return Err(()); }
                                         }
                                         incoming = stream.next() => {
-                                            match incoming {
+                                            match note_inbound(incoming, &mut last_inbound) {
                                                 Some(Ok(Message::Text(text))) if text.len() <= MAX_REQUEST_FRAME_BYTES => {
                                                     let received_at = Instant::now();
                                                     if self.consume_replacement_ack(&text)? { continue; }
@@ -1631,7 +1665,7 @@ impl Client {
                                 Err(error) => DeviceFrame::Result { id, ok: false, result: None, error: Some(error) },
                             }
                         };
-                        if send_frame(&mut sink, &response).await.is_err() { return Err(()); }
+                        if send_result_frame(&mut sink, response, &method).await.is_err() { return Err(()); }
                     }
                     Some(Ok((Message::Ping(value), _))) => if send_message(&mut sink, Message::Pong(value)).await.is_err() { return Err(()); },
                     Some(Ok((Message::Close(Some(frame)), _))) if qc_relay_protocol::pairing_rejection_close(u16::from(frame.code)) => {
@@ -1677,6 +1711,46 @@ where
         return Err(());
     }
     send_message(sink, Message::Text(text.into())).await
+}
+
+/// Send a result. One that cannot be sent (over the frame ceiling) is answered
+/// with a small error under the same id instead of tearing the socket down, so
+/// the caller hears about it now and the connection keeps its back-off state.
+async fn send_result_frame<S>(sink: &mut S, response: DeviceFrame, method: &str) -> Result<(), ()>
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    let text = serde_json::to_string(&response).map_err(|_| ())?;
+    if text.len() <= MAX_RESULT_FRAME_BYTES {
+        return send_message(sink, Message::Text(text.into())).await;
+    }
+    let DeviceFrame::Result { id, .. } = response else {
+        return Err(());
+    };
+    drop(text);
+    let error = if relay_method_read_only(method) {
+        DeviceError::new(
+            "RESULT_TOO_LARGE",
+            "The device result is too large to send through the relay",
+            false,
+        )
+    } else {
+        admitted_request_failure(
+            method,
+            "RESULT_TOO_LARGE",
+            "The device result is too large to send through the relay",
+        )
+    };
+    send_frame(
+        sink,
+        &DeviceFrame::Result {
+            id,
+            ok: false,
+            result: None,
+            error: Some(error),
+        },
+    )
+    .await
 }
 
 async fn send_message<S>(sink: &mut S, message: Message) -> Result<(), ()>
@@ -2039,6 +2113,62 @@ mod tests {
         assert_eq!(config.max_message_size, Some(MAX_REQUEST_FRAME_BYTES));
         assert_eq!(config.max_frame_size, Some(MAX_REQUEST_FRAME_BYTES));
         assert!(MAX_REQUEST_FRAME_BYTES < WebSocketConfig::default().max_frame_size.unwrap());
+    }
+
+    struct HugeResultAdapter;
+
+    #[async_trait]
+    impl DeviceAdapter for HugeResultAdapter {
+        async fn ready(&self) -> bool {
+            true
+        }
+        async fn invoke(&self, _method: &str, _params: Value) -> Result<Value, DeviceError> {
+            Ok(Value::String("x".repeat(MAX_RESULT_FRAME_BYTES + 1)))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oversized_result_is_answered_with_an_error_and_the_socket_stays_open() {
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+        let (host_io, relay_io) = tokio::io::duplex(1 << 20);
+        let (state, _) = watch::channel(ConnectionState::Connected);
+        let (_access_tx, access) = watch::channel(AccessMode::Full);
+        let (stop_tx, stop) = watch::channel(false);
+        let credentials: Credentials = serde_json::from_value(json!({
+            "endpoint":"https://relay.example.test", "deviceId":"fixture",
+            "deviceCredential":"fixture-only"
+        }))
+        .unwrap();
+        let mut client = Client::new(
+            credentials,
+            Arc::new(HugeResultAdapter),
+            state,
+            access,
+            stop,
+        );
+        let mut host = OwnedHost(tokio::spawn(async move {
+            let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
+            client.connected(socket).await
+        }));
+        let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
+        relay
+            .send(Message::Text(
+                json!({"type":"invoke","id":"big","action":"get_status","method":"system.status","params":{}})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let result = result_frame(&mut relay, "big").await;
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["error"]["code"], "RESULT_TOO_LARGE");
+        assert!(!host.0.is_finished(), "the socket must stay open");
+        stop_tx.send(true).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), &mut host.0)
+            .await
+            .expect("stop was not serviced")
+            .unwrap();
+        assert_eq!(outcome, Ok(()));
     }
 
     struct CountingAdapter(AtomicUsize);
@@ -3067,6 +3197,86 @@ mod tests {
                 .unwrap(),
             Ok(())
         );
+    }
+
+    #[test]
+    fn a_long_session_restarts_the_backoff_ladder_and_a_flap_escalates_it() {
+        let long = Duration::from_secs(MAXIMUM_BACKOFF_SECONDS);
+        assert_eq!(failures_after_session(9, long), 1);
+        assert_eq!(
+            failures_after_session(0, long + Duration::from_secs(3600)),
+            1
+        );
+        assert_eq!(failures_after_session(0, Duration::from_millis(5)), 1);
+        assert_eq!(failures_after_session(3, Duration::from_secs(59)), 4);
+        assert_eq!(
+            failures_after_session(MAXIMUM_FAILURE_COUNT, Duration::ZERO),
+            MAXIMUM_FAILURE_COUNT
+        );
+    }
+
+    async fn idle_limit_fixture() -> (
+        tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>,
+        tokio::task::JoinHandle<Result<(), ()>>,
+        watch::Sender<bool>,
+    ) {
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+        let adapter = Arc::new(AppliedThenStalledAdapter {
+            effects: AtomicUsize::new(0),
+            started: tokio::sync::Notify::new(),
+        });
+        let credentials: Credentials = serde_json::from_value(json!({
+            "endpoint":"https://relay.example.test", "deviceId":"fixture",
+            "deviceCredential":"fixture-only"
+        }))
+        .unwrap();
+        let (state, _) = watch::channel(ConnectionState::Connected);
+        let (_access_tx, access) = watch::channel(AccessMode::Full);
+        let (stop_tx, stop) = watch::channel(false);
+        let mut client = Client::new(credentials, adapter, state, access, stop);
+        let (host_io, relay_io) = tokio::io::duplex(8192);
+        let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
+        let relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
+        let host = tokio::spawn(async move { client.connected(socket).await });
+        (relay, host, stop_tx)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_relay_that_never_answers_is_dropped_as_a_half_open_link() {
+        // The peer is never polled, so no Pong is ever produced.
+        let (_relay, host, _stop) = idle_limit_fixture().await;
+        let outcome = tokio::time::timeout(Duration::from_secs(100), host)
+            .await
+            .expect("a silent relay must end the session within the idle limit")
+            .unwrap();
+        assert_eq!(outcome, Err(()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_relay_that_answers_pings_keeps_the_session_for_minutes() {
+        let (mut relay, mut host, stop_tx) = idle_limit_fixture().await;
+        let pump = tokio::spawn(async move {
+            while let Some(Ok(_)) = relay.next().await {
+                if relay.flush().await.is_err() {
+                    break;
+                }
+            }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_secs(300), &mut host)
+                .await
+                .is_err(),
+            "a live link must not be cycled"
+        );
+        stop_tx.send(true).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), &mut host)
+                .await
+                .unwrap()
+                .unwrap(),
+            Ok(())
+        );
+        pump.abort();
     }
 
     /// Readiness the host can only learn by asking: whatever `ready()`
