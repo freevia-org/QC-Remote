@@ -31,6 +31,9 @@ type ScalarState = {
   previousModeSlots?: PresetSnapshot["modeSlots"];
   previousFootswitchModes?: PresetSnapshot["footswitchModes"];
   previousTempoLedEnabled?: boolean;
+  /** A preset step clears the loaded preset's identity and name; a rollback puts them back. */
+  previousPresetIdentity?: string;
+  previousPresetName?: string;
 };
 
 /** The newest value the device is known to hold, and when it was observed. */
@@ -453,7 +456,7 @@ export class QcCommandCoordinator {
     if (state.kind === "scene" && state.activeScene !== undefined
       && !this.acceptScalar("scene", state.activeScene, state, now, graceMs, { key: "scene", previous: state.activeScene })) return null;
     if (state.kind === "position" && state.position !== undefined
-      && !this.acceptScalar("position", state.position, state, now, graceMs, { key: "position", previous: state.position })) return null;
+      && !this.acceptScalar("position", state.position, state, now, graceMs, { key: "position", previous: state.position, previousPresetIdentity: state.presetIdentity })) return null;
     // A mode frame without its slot table cannot describe the complete state
     // a rollback restores, so it is not adopted as a rollback base.
     if (state.kind === "mode" && state.mode && !this.acceptScalar("mode", state.mode, state, now, graceMs,
@@ -514,7 +517,9 @@ function scalarState(snapshot: PresetSnapshot, key: ScalarKey): ScalarState {
     previous: scalarValue(snapshot, key),
     previousModeSlots: key === "mode" ? snapshot.modeSlots : undefined,
     previousFootswitchModes: key === "mode" ? snapshot.footswitchModes : undefined,
-    previousTempoLedEnabled: key === "tempo" ? snapshot.tempoLedEnabled : undefined
+    previousTempoLedEnabled: key === "tempo" ? snapshot.tempoLedEnabled : undefined,
+    previousPresetIdentity: key === "position" ? snapshot.presetIdentity : undefined,
+    previousPresetName: key === "position" ? snapshot.presetName : undefined
   };
 }
 
@@ -570,5 +575,10 @@ function restoreScalar(snapshot: PresetSnapshot, rollback: ScalarState): PresetS
     footswitchModes: rollback.previousFootswitchModes
   };
   if (rollback.key === "tempo") return { ...restored, tempoLedEnabled: rollback.previousTempoLedEnabled };
+  if (rollback.key === "position") return {
+    ...restored,
+    presetIdentity: rollback.previousPresetIdentity,
+    presetName: rollback.previousPresetName ?? restored.presetName
+  };
   return restored;
 }
