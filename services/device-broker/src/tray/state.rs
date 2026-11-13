@@ -322,9 +322,26 @@ fn open_app() -> Result<(), String> {
         .stderr(std::process::Stdio::null());
     command
         .spawn()
-        .map(|_| ())
+        .map(reap_when_it_exits)
         .map_err(|error| format!("Could not open QC Remote: {error}"))
 }
+
+/// A child that exits before its parent stays a zombie on Unix until the
+/// parent waits for it, and the resident broker never otherwise would. The app
+/// often returns at once (it only focuses an existing window), so each "Open
+/// QC Remote" would leave one entry for the life of the broker. Windows needs
+/// nothing: dropping the handle is enough there.
+#[cfg(unix)]
+fn reap_when_it_exits(mut child: std::process::Child) {
+    let _ = std::thread::Builder::new()
+        .name("qc-broker-open-app-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        });
+}
+
+#[cfg(not(unix))]
+fn reap_when_it_exits(_: std::process::Child) {}
 
 fn app_beside(broker: &Path) -> Option<std::path::PathBuf> {
     #[cfg(windows)]
@@ -701,6 +718,21 @@ mod tests {
             end_local_session(Some(&OldHost), "stdio-a"),
             "This build's background host cannot end a session"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_opened_app_that_exits_at_once_is_reaped_not_left_a_zombie() {
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        reap_when_it_exits(child);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // A reaped child is gone from /proc; a zombie keeps its entry.
+        let state = || std::fs::read_to_string(format!("/proc/{pid}/stat")).ok();
+        while state().is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(state().is_none(), "the exited child was never reaped");
     }
 
     #[test]
