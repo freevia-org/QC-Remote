@@ -27,6 +27,7 @@ async function main() {
         Authorization: `Bearer ${token}`,
         'X-GitHub-Api-Version': '2022-11-28',
       },
+      signal: AbortSignal.timeout(20_000),
     });
     if (!response.ok) fail(`GitHub returned HTTP ${response.status} for PR ${number}`);
 

@@ -1,16 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import {
+  getWithRetry,
   validateWebsiteSync,
   websiteUrl,
 } from './website-sync-contract.mjs';
 
 const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
 
-async function get(url) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(20_000) });
-  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-  return response;
-}
+const get = (url) => getWithRetry(url);
 
 const page = await (await get(websiteUrl)).text();
 const contract = validateWebsiteSync(readme, page);
@@ -24,7 +21,8 @@ for (const imageUrl of contract.imageUrls) {
   if (!image.headers.get('content-type')?.startsWith('image/png')) {
     throw new Error(`Screenshot is not served as PNG: ${imageUrl}`);
   }
-  await image.arrayBuffer();
+  // Headers prove it is served as a PNG; do not download the whole image.
+  await image.body?.cancel();
 }
 
 console.log('QC Remote website and GitHub README share live screenshots, platform downloads, release notes, and Google Play link.');

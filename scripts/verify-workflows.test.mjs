@@ -37,6 +37,7 @@ test('dispatch helper validates trusted PR metadata before fetching objects', ()
   assert.match(helper, /pr\.base\?\.ref !== 'master'/);
   assert.match(helper, /const baseSha = pr\.base\?\.sha/);
   assert.match(helper, /Authorization: `Bearer \$\{token\}`/);
+  assert.match(helper, /signal: AbortSignal\.timeout\(20_000\)/);
   assert.match(helper, /https:\/\/api\.github\.com\/repos/);
   assert.match(helper, /\^\[0-9a-f\]\{40\}\$/);
   assert.match(helper, /new Set\(\['OWNER', 'MEMBER', 'COLLABORATOR'\]\)/);
