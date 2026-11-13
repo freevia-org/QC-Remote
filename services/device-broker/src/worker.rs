@@ -850,7 +850,7 @@ fn wait_for_worker(
     if handle.thread().id() == thread::current().id() {
         // The worker can never own a controller, but if it ever drops one it
         // must not wait for itself. It is already on its way out.
-        eprintln!(
+        crate::diagnostics::diag!(
             "QC device broker: worker shutdown requested from the worker itself; not waiting \
              (clean disconnect not verified)"
         );
@@ -859,7 +859,7 @@ fn wait_for_worker(
     while !thread_signalled(&handle) {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            eprintln!(
+            crate::diagnostics::diag!(
                 "QC device broker: the USB worker did not stop by the shutdown deadline; retaining \
                  its original thread (clean disconnect not verified)"
             );
@@ -870,7 +870,7 @@ fn wait_for_worker(
     match handle.join() {
         Ok(()) => (WorkerExit::Joined, None),
         Err(_) => {
-            eprintln!(
+            crate::diagnostics::diag!(
                 "QC device broker: the USB worker panicked during shutdown (clean disconnect \
                  not verified)"
             );
@@ -3144,7 +3144,9 @@ impl Drop for DecoderThreadOwner {
         } else {
             let retirement = Arc::clone(&lifetime.0);
             retirement.retain(thread, std::sync::Weak::new(), lifetime);
-            eprintln!("QC device broker: retaining a decoder that did not acknowledge shutdown");
+            crate::diagnostics::diag!(
+                "QC device broker: retaining a decoder that did not acknowledge shutdown"
+            );
         }
     }
 }
@@ -3549,7 +3551,7 @@ fn retain_latest_message_payload(
         return true;
     }
     latest.remove(&incoming.message_type);
-    eprintln!(
+    crate::diagnostics::diag!(
         "Did not cache an oversized QC frame: {}",
         summarize_payload(incoming)
     );
@@ -3625,7 +3627,9 @@ fn cache_latest_message(
     match quadcortex_hid::insert_latest_message(latest, incoming) {
         Ok(()) => None,
         Err(rejection) => {
-            eprintln!("Did not cache a {bytes}-byte QC frame of type {message_type}: {rejection}");
+            crate::diagnostics::diag!(
+                "Did not cache a {bytes}-byte QC frame of type {message_type}: {rejection}"
+            );
             Some(bytes)
         }
     }
@@ -5607,7 +5611,7 @@ fn update_message(
     };
     if retain_latest_message_payload(latest, &message) {
         if let Err(rejection) = quadcortex_hid::insert_latest_message(latest, message) {
-            eprintln!(
+            crate::diagnostics::diag!(
                 "Did not keep QC frame type {message_type} as the session's latest: {rejection}"
             );
         }

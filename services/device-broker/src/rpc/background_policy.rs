@@ -115,7 +115,7 @@ impl UnusedDevice {
                 .flatten();
             if let Some(admission) = admission {
                 if let Err(error) = self.performance_midi.retire_controller(&self.device) {
-                    eprintln!("Unused device remains open: {error}");
+                    crate::diagnostics::diag!("Unused device remains open: {error}");
                     drop(admission);
                     drop(exclusive);
                     #[cfg(target_os = "linux")]
@@ -133,7 +133,9 @@ impl UnusedDevice {
                             }
                             Ok(false) => {} // A newer generation owns the policy.
                             Err(error) => {
-                                eprintln!("Unused device retry was not admitted: {error}")
+                                crate::diagnostics::diag!(
+                                    "Unused device retry was not admitted: {error}"
+                                )
                             }
                         }
                     }

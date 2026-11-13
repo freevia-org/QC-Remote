@@ -2,6 +2,7 @@ pub mod cli;
 pub mod control;
 mod demo_provider;
 pub mod device_lease;
+pub(crate) mod diagnostics;
 mod generated_broker_surface;
 pub mod orphan_guard;
 pub mod platform;

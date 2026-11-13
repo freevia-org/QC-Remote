@@ -528,7 +528,7 @@ impl Drop for StdioControllerOwner {
             } else {
                 // This function is the terminal stdio CLI path. Do not close
                 // HID before MIDI; process teardown retains final ownership.
-                eprintln!(
+                crate::diagnostics::diag!(
                     "Retaining stdio HID owner until process teardown: MIDI close unacknowledged"
                 );
                 std::mem::forget(controller);
@@ -3353,7 +3353,7 @@ struct AcceptBackoff {
 impl AcceptBackoff {
     fn accepted(&mut self) {
         if self.consecutive_failures > 0 {
-            eprintln!(
+            crate::diagnostics::diag!(
                 "The device broker accepted a connection again after {} failed accept(s)",
                 self.consecutive_failures
             );
@@ -3378,6 +3378,36 @@ impl AcceptBackoff {
             .min(ACCEPT_RETRY_CEILING)
     }
 }
+
+/// Per-connection setup right after a successful `accept`: restore blocking
+/// mode and keep a second handle for shutdown. A failure here belongs to this
+/// one client, never to the listener, so the caller drops the socket and keeps
+/// serving.
+fn prepare_accepted_socket(stream: TcpStream) -> io::Result<(TcpStream, TcpStream)> {
+    #[cfg(test)]
+    {
+        let port = stream.local_addr().map(|address| address.port()).ok();
+        let mut failures = TEST_PREPARE_FAILURES.lock_recover();
+        if let Some(slot) = failures
+            .iter_mut()
+            .find(|(registered, remaining)| Some(*registered) == port && *remaining > 0)
+        {
+            slot.1 -= 1;
+            return Err(io::Error::other("injected per-connection setup failure"));
+        }
+    }
+    // Winsock accepts inherit the listener's nonblocking mode. Only accept is
+    // polled; framed authentication and connection readers require blocking
+    // sockets with explicit deadlines.
+    stream.set_nonblocking(false)?;
+    let shutdown_socket = stream.try_clone()?;
+    Ok((stream, shutdown_socket))
+}
+
+/// Setup failures to inject for accepted sockets, keyed by the listener's port
+/// so tests running in parallel never see each other's.
+#[cfg(test)]
+static TEST_PREPARE_FAILURES: Mutex<Vec<(u16, u32)>> = Mutex::new(Vec::new());
 
 /// The first retry after a failed descriptor refresh. Each further failure
 /// doubles it, up to `DESCRIPTOR_REFRESH_INTERVAL`, so a reader holding the
@@ -3423,7 +3453,7 @@ fn refresh_descriptor_while_claimed_until<T>(
         match outcome {
             Ok(()) => {
                 if failures > 0 {
-                    eprintln!(
+                    crate::diagnostics::diag!(
                         "The device broker descriptor refresh succeeded again after {failures} failed attempt(s)"
                     );
                 }
@@ -3438,7 +3468,7 @@ fn refresh_descriptor_while_claimed_until<T>(
                     delay.saturating_mul(2)
                 }
                 .min(interval);
-                eprintln!(
+                crate::diagnostics::diag!(
                     "Could not refresh the device broker descriptor (attempt {failures}); retrying in {} ms: {error}",
                     delay.as_millis()
                 );
@@ -5378,7 +5408,7 @@ fn serve_registered_tcp_connection(
         if let Err(error) = push {
             // Nothing else runs yet: the connection ends, and the guard in
             // `authenticate_and_serve_tcp_client` detaches it.
-            eprintln!("Could not start a broker TCP push thread: {error}");
+            crate::diagnostics::diag!("Could not start a broker TCP push thread: {error}");
             return;
         }
         if phase_events && !control {
@@ -5415,7 +5445,7 @@ fn serve_registered_tcp_connection(
                 });
             if let Err(error) = phase {
                 // The push thread is running: stop it, or the scope never ends.
-                eprintln!("Could not start a broker TCP phase thread: {error}");
+                crate::diagnostics::diag!("Could not start a broker TCP phase thread: {error}");
                 stop.store(true, Ordering::Release);
                 return;
             }
@@ -5478,7 +5508,7 @@ fn serve_registered_tcp_connection(
                 // already admitted, then end, as an EOF always did.
             });
         if let Err(error) = reader {
-            eprintln!("Could not start a broker TCP reader thread: {error}");
+            crate::diagnostics::diag!("Could not start a broker TCP reader thread: {error}");
             stop.store(true, Ordering::Release);
             return;
         }
@@ -5612,7 +5642,9 @@ fn serve_registered_tcp_connection(
                 if let Err(spawn_error) = spawned {
                     // Failed admission also retires never-started Work and
                     // sends its one refusal through the callback above.
-                    eprintln!("Could not admit observer device action: {spawn_error}");
+                    crate::diagnostics::diag!(
+                        "Could not admit observer device action: {spawn_error}"
+                    );
                 }
                 continue;
             }
@@ -6836,7 +6868,7 @@ impl BrokerShared {
 
     fn release_unused_device_after_grace(&self, device: Arc<DeviceController>) {
         if let Err(error) = background_policy::unused(self, device) {
-            eprintln!("Could not start the device release grace thread; the unused device stays open: {error}");
+            crate::diagnostics::diag!("Could not start the device release grace thread; the unused device stays open: {error}");
         }
     }
 
@@ -6910,7 +6942,7 @@ impl BrokerShared {
         }
         self.test_point("disconnect_devices:done");
         if !failures.is_empty() {
-            eprintln!("Device disconnect not verified: {}", failures.join("; "));
+            crate::diagnostics::diag!("Device disconnect not verified: {}", failures.join("; "));
         }
         DisconnectDevicesReport {
             midi_retired: true,
@@ -8124,7 +8156,9 @@ impl ServingLifetime {
             if crate::platform::process::thread_signalled(&self.jobs[index].thread) {
                 let job = self.jobs.swap_remove(index);
                 if job.thread.join().is_err() {
-                    eprintln!("An owned broker serving task panicked during retirement");
+                    crate::diagnostics::diag!(
+                        "An owned broker serving task panicked during retirement"
+                    );
                 }
             } else {
                 index += 1;
@@ -8193,7 +8227,7 @@ impl ServingLifetime {
 impl Drop for ServingLifetime {
     fn drop(&mut self) {
         if let Err(error) = self.finish() {
-            eprintln!("{error}");
+            crate::diagnostics::diag!("{error}");
         }
     }
 }
@@ -8365,19 +8399,25 @@ fn serve_broker_tcp_full_with_stop(
     let mut accept_backoff = AcceptBackoff::default();
     while !stop.load(Ordering::Acquire) {
         serving.reap_finished();
-        let stream = match listener.accept() {
-            Ok((stream, _)) => {
-                // Winsock accepts inherit the listener's nonblocking mode.
-                // Only accept is polled; framed authentication and connection
-                // readers require blocking sockets with explicit deadlines.
-                stream.set_nonblocking(false).map_err(|error| {
-                    format!(
-                        "Could not restore blocking mode for an accepted broker socket: {error}"
-                    )
-                })?;
-                accept_backoff.accepted();
-                stream
-            }
+        let (stream, shutdown_socket) = match listener.accept() {
+            Ok((stream, _)) => match prepare_accepted_socket(stream) {
+                Ok(prepared) => {
+                    accept_backoff.accepted();
+                    prepared
+                }
+                Err(error) => {
+                    // One client's socket could not be set up (handle
+                    // exhaustion fails `try_clone` exactly as it fails
+                    // `accept`). That client is dropped, which closes its
+                    // socket; the broker, its USB session and every attached
+                    // client keep running, paced like a failed accept.
+                    if let Some(message) = accept_backoff.failed(&error) {
+                        crate::diagnostics::diag!("{message}");
+                    }
+                    thread::sleep(accept_backoff.delay());
+                    continue;
+                }
+            },
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(25));
                 continue;
@@ -8386,15 +8426,12 @@ fn serve_broker_tcp_full_with_stop(
                 // A persistent failure (handle exhaustion, WSAENOBUFS) used to
                 // spin this loop at full CPU with nothing logged.
                 if let Some(message) = accept_backoff.failed(&error) {
-                    eprintln!("{message}");
+                    crate::diagnostics::diag!("{message}");
                 }
                 thread::sleep(accept_backoff.delay());
                 continue;
             }
         };
-        let shutdown_socket = stream.try_clone().map_err(|error| {
-            format!("Could not retain broker client shutdown ownership: {error}")
-        })?;
         let Some(connection_id) = accept_client(&shared.clients) else {
             continue;
         };
@@ -8427,7 +8464,7 @@ fn serve_broker_tcp_full_with_stop(
                 });
             }
             Err(error) => {
-                eprintln!("Could not start a broker TCP client thread: {error}");
+                crate::diagnostics::diag!("Could not start a broker TCP client thread: {error}");
                 // The closure that would decrement the count never ran.
                 shared.detach_client(connection_id);
             }
@@ -9972,6 +10009,46 @@ mod tcp_tests {
                 "persistent participant remains attached"
             );
         }
+    }
+
+    /// RC-22: one client whose socket cannot be set up is dropped; the accept
+    /// loop, the broker and an already attached client keep working.
+    #[test]
+    fn a_failed_per_connection_setup_drops_that_client_and_keeps_the_broker_serving() {
+        let path = scratch_descriptor_path("per-connection-setup-failure");
+        let serve = start_broker_serve_for_test(&path);
+        let mut attached = authenticated_tcp_client(serve.port, &serve.token);
+
+        TEST_PREPARE_FAILURES.lock_recover().push((serve.port, 1));
+        let mut dropped = TcpStream::connect(("127.0.0.1", serve.port)).unwrap();
+        dropped
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        match dropped.read(&mut byte) {
+            Ok(0) | Err(_) => {}
+            Ok(_) => panic!("the client whose setup failed received data"),
+        }
+        assert_eq!(
+            TEST_PREPARE_FAILURES.lock_recover().last().copied(),
+            Some((serve.port, 0)),
+            "the injected failure was consumed by that connection"
+        );
+
+        // The broker still accepts and authenticates the next client ...
+        let mut next = authenticated_tcp_client(serve.port, &serve.token);
+        // ... and the client attached before the failure was never touched.
+        for client in [&mut attached, &mut next] {
+            let reply = send_request(client, "broker.clientCount", json!({}));
+            assert!(reply.get("result").is_some(), "{reply:?}");
+        }
+        assert!(
+            !serve.exited.load(Ordering::Acquire),
+            "the broker kept serving"
+        );
+        TEST_PREPARE_FAILURES
+            .lock_recover()
+            .retain(|(port, _)| *port != serve.port);
     }
 
     #[test]
