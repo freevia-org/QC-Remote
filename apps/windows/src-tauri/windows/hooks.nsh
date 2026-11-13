@@ -26,8 +26,13 @@
 !macro QC_STOP_INSTALLED_HOST_AT DIRECTORY
   ${If} ${FileExists} "${DIRECTORY}\qc-remote-tray.exe"
     ClearErrors
-    ExecWait '"${DIRECTORY}\qc-remote-tray.exe" --stop-for-install' $R0
-    ${If} ${Errors}
+    ; Bounded: a wedged host is the very condition this runs for, and a silent
+    ; or /UPDATE run has no window to show that it is waiting. nsExec returns
+    ; "timeout" or "error" instead of a number, and both fail the check below.
+    nsExec::ExecToStack /TIMEOUT=20000 '"${DIRECTORY}\qc-remote-tray.exe" --stop-for-install'
+    Pop $R0
+    Pop $R2
+    ${If} $R0 == "error"
       SetErrorLevel 1
       Abort "Could not request QC Remote background host shutdown. Close QC Remote and retry."
     ${EndIf}
@@ -53,8 +58,12 @@
     ${IfNot} ${Errors}
     ${AndIf} $R8 == "$R6 $R7"
       ClearErrors
-      ExecWait '"${DIRECTORY}\qc-device-broker.exe" --stop-for-install' $R0
-      ${If} ${Errors}
+      ; A helper that does not answer in time is not a verdict: the unlocked
+      ; check that follows is, so a timeout falls through to it.
+      nsExec::ExecToStack /TIMEOUT=20000 '"${DIRECTORY}\qc-device-broker.exe" --stop-for-install'
+      Pop $R0
+      Pop $R2
+      ${If} $R0 == "error"
         SetErrorLevel 1
         Abort "Could not request QC Remote broker shutdown. Close QC Remote and retry."
       ${EndIf}
@@ -200,8 +209,10 @@
     !insertmacro QC_STOP_INSTALLED_HOST_AT "$LOCALAPPDATA\QC Control"
     ${If} ${FileExists} "$LOCALAPPDATA\QC Control\uninstall.exe"
       ClearErrors
-      ExecWait '"$LOCALAPPDATA\QC Control\uninstall.exe" /S _?=$LOCALAPPDATA\QC Control' $R0
-      ${If} ${Errors}
+      nsExec::ExecToStack /TIMEOUT=120000 '"$LOCALAPPDATA\QC Control\uninstall.exe" /S _?=$LOCALAPPDATA\QC Control'
+      Pop $R0
+      Pop $R2
+      ${If} $R0 == "error"
         SetErrorLevel 1
         Abort "Could not retire the old QC Control installation. Uninstall QC Control and retry."
       ${EndIf}
