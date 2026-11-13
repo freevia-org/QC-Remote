@@ -41,6 +41,8 @@ export function synchronizeTempoPulseEpoch(
     : undefined;
   if (Math.trunc(currentTick) !== 0) return validEpoch;
   if (validEpoch === undefined) return observedAt;
+  // No usable tempo gives no beat period; keep the epoch rather than returning NaN.
+  if (!Number.isFinite(bpm)) return validEpoch;
 
   const safeBpm = Math.max(QC_MINIMUM_TEMPO_BPM, Math.min(QC_MAXIMUM_TEMPO_BPM, bpm));
   const period = 60_000 / safeBpm;
