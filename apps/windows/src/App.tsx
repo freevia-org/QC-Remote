@@ -16,6 +16,7 @@ import { useWindowsDeviceFrames } from "./use-windows-device-frames";
 import { useWindowsPrompts } from "./use-windows-prompts";
 import { BROWSER_PAIRING_EXPIRED, beginBrowserPairingOnPanelOpen, browserPairingPollFailureMessage, createBrowserPairingSession, startBrowserPairingLifecycle } from "./browser-pairing-session";
 import { shouldCloseBlockEditorOnEscape } from "./block-editor-keyboard";
+import { appendConnectionEvent, DIAGNOSTICS_EVENT_COUNT } from "./connection-events";
 import { saveOpenedWorkspaceCopy } from "./workspace-copy";
 import { captureGatewaySession } from "@qc-remote/ui";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
@@ -215,6 +216,9 @@ export function App() {
   const [fullScreen, setFullScreen] = useState(Boolean(document.fullscreenElement));
   const [appMenuOpen, setAppMenuOpen] = useState(false);
   const [connectionEvents, setConnectionEvents] = useState<ConnectionEvent[]>([{ at: new Date().toISOString(), event: "app-start", result: "info", detail: `${QC_BRAND.appName} started; waiting for the desktop runtime.` }]);
+  const logConnectionEvent = useCallback((entry: Omit<ConnectionEvent, "at">) => {
+    setConnectionEvents((events) => appendConnectionEvent(events, { at: new Date().toISOString(), ...entry }));
+  }, []);
   const autoConnectStarted = useRef(false);
   const liveSyncFailures = useRef(0);
   const [physicalQcDevices, setPhysicalQcDevices] = useState<PhysicalQcDevice[]>([]);
@@ -359,7 +363,7 @@ export function App() {
     // The loss also restarts the live measurement, so a drop another path
     // heals before any poll sees it is not counted as live time.
     recordLiveSessionLoss();
-    setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "live-health-failed", result: "failure", detail: cause }]);
+    logConnectionEvent({ event: "live-health-failed", result: "failure", detail: cause });
     // Loss revokes hardware readiness, never selects a simulated target.
     // The existing inventory follow can resume the broker's next live session.
     showDisconnectedRef.current(`The live connection was lost: ${cause}`);
@@ -618,7 +622,7 @@ export function App() {
     if (qcStreamRestartClearsBulkOperation(reason)) {
       setDeviceBulkBlocking(false);
     }
-    setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: reason === "restarted" ? "state-stream-restarted" : "state-stream-interrupted", result: "warning", detail: reason === "restarted" ? "The device state producer changed; restoring the current preset state." : "Some live updates were missed; restoring the current preset state." }]);
+    logConnectionEvent({ event: reason === "restarted" ? "state-stream-restarted" : "state-stream-interrupted", result: "warning", detail: reason === "restarted" ? "The device state producer changed; restoring the current preset state." : "Some live updates were missed; restoring the current preset state." });
     // useNativeStateRecovery owns the checked snapshot. Its revision poll runs
     // after this frame has been reduced and only while deviceReady permits
     // reads, so it cannot race the replacement frame or a suspend/bulk event.
@@ -641,23 +645,21 @@ export function App() {
         pendingNativeStateRecovery.current = undefined;
         reportedNativeStateRecoveryFailure.current = undefined;
         setConnection((state) => ({ ...state, lastSync: new Date().toISOString() }));
-        setConnectionEvents((events) => [...events, {
-          at: new Date().toISOString(),
+        logConnectionEvent({
           event: "state-stream-resynchronized",
           result: "success",
           detail: `${result.snapshot.presetLocation} · ${result.snapshot.presetName} is up to date.`
-        }]);
+        });
         return;
       }
       if (reportedNativeStateRecoveryFailure.current === result.revision) return;
       reportedNativeStateRecoveryFailure.current = result.revision;
       const detail = result.error instanceof Error ? result.error.message : String(result.error);
-      setConnectionEvents((events) => [...events, {
-        at: new Date().toISOString(),
+      logConnectionEvent({
         event: "state-stream-resync-failed",
         result: "failure",
         detail
-      }]);
+      });
     }
   });
 
@@ -817,7 +819,7 @@ export function App() {
     void tauriTransport.runtimeStatus().then((status) => {
       if (!attempt.current()) return;
       setRuntime((current) => qcKeepRuntime(current, status));
-      setConnectionEvents((current) => [...current, { at: new Date().toISOString(), event: "runtime-ready", result: status.gatewayAvailable ? "success" : "warning", detail: status.message || (status.gatewayAvailable ? "Device gateway is available." : "Device gateway is unavailable.") }]);
+      logConnectionEvent({ event: "runtime-ready", result: status.gatewayAvailable ? "success" : "warning", detail: status.message || (status.gatewayAvailable ? "Device gateway is available." : "Device gateway is unavailable.") });
     }).catch((error: Error) => { if (attempt.current()) setNotice(error.message); });
     return () => {
       if (syncProgressTimer.current !== undefined) window.clearInterval(syncProgressTimer.current);
@@ -1254,7 +1256,7 @@ export function App() {
     clearUndo();
     presetWorkflow.resetCache();
     setSelectedBlockId("");
-    setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "demo-device-suspended", result: "info", detail: "The demo device was set aside; its presets stay saved on this computer." }]);
+    logConnectionEvent({ event: "demo-device-suspended", result: "info", detail: "The demo device was set aside; its presets stay saved on this computer." });
     return true;
   };
 
@@ -1280,9 +1282,9 @@ export function App() {
   };
   const showDisconnected = (reason: string, keepExplicitDemo = false, providerAlreadyRetiring = false) => {
     if (!keepExplicitDemo) demoDeviceSession.useDevice();
-    if (!keepExplicitDemo && !providerAlreadyRetiring) void withdrawDemoProvider().catch(error => setConnectionEvents(events => [...events, {
-      at: new Date().toISOString(), event: "demo-provider-withdraw-failed", result: "failure", detail: String(error)
-    }]));
+    if (!keepExplicitDemo && !providerAlreadyRetiring) void withdrawDemoProvider().catch(error => logConnectionEvent({
+      event: "demo-provider-withdraw-failed", result: "failure", detail: String(error)
+    }));
     nativeStateAvailable.current = false;
     setDeviceHeldInBackground(false);
     stopSyncProgressAnimation();
@@ -1323,7 +1325,7 @@ export function App() {
     // Retire only the old provider. Never clear or take over the new broker's
     // selection, start a broker, or open Demo as a result of this observation.
     await withdrawDemoProvider();
-    setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-ended-broker-restart", result: "warning", detail }]);
+    logConnectionEvent({ event: "demo-ended-broker-restart", result: "warning", detail });
     return { selectionEpoch };
   };
 
@@ -1370,7 +1372,7 @@ export function App() {
     nativeStateStream.current = undefined;
     gridRepair.current = createGridRepairCoordinator();
     nativeStateAvailable.current = false;
-    setConnectionEvents((current) => [...current, { at: new Date().toISOString(), event: mode === "reset" ? "reset-started" : "connection-started", result: "pending", detail: mode === "reset" ? "Restarting the private gateway session and USB handshake." : "Discovering the gateway and opening the Quad Cortex session." }]);
+    logConnectionEvent({ event: mode === "reset" ? "reset-started" : "connection-started", result: "pending", detail: mode === "reset" ? "Restarting the private gateway session and USB handshake." : "Discovering the gateway and opening the Quad Cortex session." });
     stopSyncProgressAnimation();
     showSyncProgress(null);
     // Gray, with no bar, until HID enumeration finds a Quad Cortex. The bar
@@ -1412,13 +1414,13 @@ export function App() {
       awaitingDetection.current = false;
       if (next.phase === "ready") {
         reconnectAfterCurrentAttempt.current = false;
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "gateway-connected", result: "success", detail: next.detail }]);
+        logConnectionEvent({ event: "gateway-connected", result: "success", detail: next.detail });
         beginSyncProgress();
         const syncing = { ...next, phase: "syncing" as const, detail: "Quad Cortex connected; reading the active preset…", lastSync: undefined };
         connectionRef.current = syncing;
         setConnection(syncing);
         setNotice(syncing.detail);
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "preset-sync-started", result: "pending", detail: "Reading the active preset, routes, scenes, assignments, and parameter state." }]);
+        logConnectionEvent({ event: "preset-sync-started", result: "pending", detail: "Reading the active preset, routes, scenes, assignments, and parameter state." });
         liveSyncFailures.current = 0;
         presetWorkflow.resetCache();
         const current = await tauriTransport.currentSnapshot();
@@ -1456,11 +1458,11 @@ export function App() {
         connectionRef.current = ready;
         setConnection(ready);
         showSyncProgress(null);
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "preset-sync-complete", result: "success", detail: `${synchronized.presetLocation} · ${synchronized.presetName} synchronized successfully.` }]);
+        logConnectionEvent({ event: "preset-sync-complete", result: "success", detail: `${synchronized.presetLocation} · ${synchronized.presetName} synchronized successfully.` });
       } else {
         stopSyncProgressAnimation();
         showSyncProgress(null);
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "connection-incomplete", result: "warning", detail: next.detail }]);
+        logConnectionEvent({ event: "connection-incomplete", result: "warning", detail: next.detail });
         if (next.phase === "disconnected" || next.phase === "searching") {
           showDisconnected(next.detail);
         } else {
@@ -1478,7 +1480,7 @@ export function App() {
       const detail = error instanceof Error ? error.message : String(error);
       stopSyncProgressAnimation();
       showSyncProgress(null);
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "connection-failed", result: "failure", detail }]);
+      logConnectionEvent({ event: "connection-failed", result: "failure", detail });
       showDisconnected(detail);
     }
   };
@@ -1509,7 +1511,7 @@ export function App() {
       connectionRef.current = disconnecting;
       setConnection(disconnecting);
       setNotice(disconnecting.detail);
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnect-started", result: "pending", detail: "Closing the live device and gateway session." }]);
+      logConnectionEvent({ event: "disconnect-started", result: "pending", detail: "Closing the live device and gateway session." });
       try {
         await withdrawDemoProvider(true);
         if (!attempt.current() || !operationCurrent()) return;
@@ -1533,10 +1535,10 @@ export function App() {
         setNotice(outcome.notice);
         if (outcome.closed) {
           showDisconnected(outcome.notice);
-          setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnected", result: "success", detail: outcome.notice }]);
+          logConnectionEvent({ event: "disconnected", result: "success", detail: outcome.notice });
           return;
         }
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnect-left-open", result: "warning", detail: outcome.notice }]);
+        logConnectionEvent({ event: "disconnect-left-open", result: "warning", detail: outcome.notice });
         try {
           const verifiedRuntime = await tauriTransport.runtimeStatus();
           if (!attempt.current() || !operationCurrent()) return;
@@ -1556,13 +1558,13 @@ export function App() {
           connectionRef.current = ready;
           setConnection(ready);
           setNotice(outcome.notice);
-          setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "device-kept-live", result: "warning", detail: `${outcome.notice}. The Quad Cortex stays live in this window; no reconnect was needed.` }]);
+          logConnectionEvent({ event: "device-kept-live", result: "warning", detail: `${outcome.notice}. The Quad Cortex stays live in this window; no reconnect was needed.` });
         } catch (error) {
           if (!attempt.current() || !operationCurrent()) return;
           // Not restored: the latch stays held and the reason stays on screen.
           const detail = error instanceof Error ? error.message : String(error);
           setNotice(outcome.notice);
-          setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "device-kept-live-failed", result: "warning", detail: `${outcome.notice}. Live could not be restored without a reconnect: ${detail}` }]);
+          logConnectionEvent({ event: "device-kept-live-failed", result: "warning", detail: `${outcome.notice}. Live could not be restored without a reconnect: ${detail}` });
         }
       } catch (error) {
         if (!attempt.current() || !operationCurrent()) return;
@@ -1570,7 +1572,7 @@ export function App() {
         const failed = { phase: "needs-attention" as const, detail, demo: true, source: "device" as const };
         connectionRef.current = failed;
         setConnection(failed);
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnect-failed", result: "failure", detail }]);
+        logConnectionEvent({ event: "disconnect-failed", result: "failure", detail });
         setNotice(detail);
       }
     } finally { operationLease.release(); }
@@ -1648,7 +1650,7 @@ export function App() {
     stopSyncProgressAnimation();
     showSyncProgress(null);
     resetCommands();
-    setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "demo-device-starting", result: "pending", detail: "Opening the demo device saved on this computer." }]);
+    logConnectionEvent({ event: "demo-device-starting", result: "pending", detail: "Opening the demo device saved on this computer." });
     try {
       if (closeDeviceSession) await tauriTransport.disconnect().catch(() => undefined);
       if (!attempt.current()) return;
@@ -1680,7 +1682,7 @@ export function App() {
             }).catch(() => undefined);
           }
           if (!ready && message && appOperationMounted.current) {
-            setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-mcp-unavailable", result: "info", detail: `Demo access is unavailable: ${message}` }]);
+            logConnectionEvent({ event: "demo-mcp-unavailable", result: "info", detail: `Demo access is unavailable: ${message}` });
             if (published && demoDeviceSession.source === "virtual" && demoDeviceSession.virtual === demo) {
               // The provider really ended: do not show a usable Demo without
               // MCP, but never turn that failure into an implicit QC choice.
@@ -1724,7 +1726,7 @@ export function App() {
       setNotice(keepDeviceInBackground
           ? `${state.detail} ${current.presetLocation} · ${current.presetName} loaded from this computer. The Quad Cortex stays connected in the background; select its USB tab to return to it.`
           : `${state.detail} ${current.presetLocation} · ${current.presetName} loaded from this computer.`);
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "demo-device-started", result: "success", detail: keepDeviceInBackground ? "Demo device active in this window and MCP. The Quad Cortex stays connected in the background; nothing is sent to it while the demo is active." : "Demo device active in this window and MCP. Edits are saved on this computer; nothing is sent to a Quad Cortex." }]);
+      logConnectionEvent({ event: "demo-device-started", result: "success", detail: keepDeviceInBackground ? "Demo device active in this window and MCP. The Quad Cortex stays connected in the background; nothing is sent to it while the demo is active." : "Demo device active in this window and MCP. Edits are saved on this computer; nothing is sent to a Quad Cortex." });
     } catch (error) {
       if (!attempt.current()) return;
       const detail = error instanceof Error ? error.message : String(error);
@@ -1743,7 +1745,7 @@ export function App() {
       connectionRef.current = failed;
       setConnection(failed);
       setNotice(failed.detail);
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "demo-device-failed", result: "failure", detail }]);
+      logConnectionEvent({ event: "demo-device-failed", result: "failure", detail });
     } finally {
       if (demoOpenToken.current === demoOpen) setDemoPending(false);
       if (attempt.current() && reconnectAfterCurrentAttempt.current
@@ -1795,7 +1797,7 @@ export function App() {
     connectionRef.current = idle;
     setConnection(idle);
     setNotice(idle.detail);
-    setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "demo-device-stopped", result: "info", detail: idle.detail }]);
+    logConnectionEvent({ event: "demo-device-stopped", result: "info", detail: idle.detail });
   };
 
   /**
@@ -1843,14 +1845,14 @@ export function App() {
         setConnection(ready);
         setDeviceHeldInBackground(false);
         setNotice(`Switched back to the Quad Cortex. ${current.presetLocation} · ${current.presetName} resumed from the background.`);
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "device-resumed", result: "success", detail: "Switched back to the Quad Cortex that stayed connected in the background; no reconnect was needed." }]);
+        logConnectionEvent({ event: "device-resumed", result: "success", detail: "Switched back to the Quad Cortex that stayed connected in the background; no reconnect was needed." });
       } catch (error) {
         if (!attempt.current() || !operationCurrent()) return;
         const detail = error instanceof Error ? error.message : String(error);
         // The background session did not survive. Show Disconnected, never
         // silently reopen Demo after the user chose the physical device.
         setDeviceHeldInBackground(false);
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "device-resume-failed", result: "failure", detail }]);
+        logConnectionEvent({ event: "device-resume-failed", result: "failure", detail });
         showDisconnected(detail);
       }
     } finally { operationLease.release(); }
@@ -2063,7 +2065,7 @@ export function App() {
     },
     // Details are for the on-screen log only: they can contain preset names,
     // filesystem paths and native error text. Copy/issue must be as private as export.
-    events: connectionEvents.slice(-100).map(({ at, event }) => ({ at, event }))
+    events: connectionEvents.slice(-DIAGNOSTICS_EVENT_COUNT).map(({ at, event }) => ({ at, event }))
   });
 
   // The clipboard path for the Feedback window: the same report the export
@@ -2079,7 +2081,7 @@ export function App() {
   const exportDiagnostics = async (): Promise<string> => {
     const result = await diagnosticsFiles.export(buildDiagnosticsReport());
     if (result.cancelled) return "Diagnostics export cancelled.";
-    setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "diagnostics-exported", result: "success", detail: "A redacted diagnostic report was exported." }]);
+    logConnectionEvent({ event: "diagnostics-exported", result: "success", detail: "A redacted diagnostic report was exported." });
     return `Redacted diagnostics exported as ${result.name}.`;
   };
 
@@ -2163,7 +2165,7 @@ export function App() {
       showSyncProgress(null);
       recordLiveSessionLoss();
       const detail = `the Quad Cortex did not answer within ${QC_CONNECT_STALL_MS / 1000} s`;
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "connection-stalled", result: "failure", detail }]);
+      logConnectionEvent({ event: "connection-stalled", result: "failure", detail });
       showDisconnected(detail);
     }
   };
@@ -2195,7 +2197,7 @@ export function App() {
       followDemoGaveUpNoticed.current = true;
       const detail = `The broker reports the Quad Cortex ready, but ${QC_FOLLOW_DEMO_ATTEMPTS} automatic connections did not synchronize it. Staying on the demo device; select its USB tab or Connect to try again.`;
       setNotice(detail);
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "automatic-connect-paused", result: "warning", detail }]);
+      logConnectionEvent({ event: "automatic-connect-paused", result: "warning", detail });
     } else if (!step.demoGaveUp) followDemoGaveUpNoticed.current = false;
     if (step.connect) void connectOnDetection.current();
   };
@@ -2241,7 +2243,7 @@ export function App() {
           connectionRef.current = ready;
           setConnection(ready);
           setNotice(detail);
-          setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "live-sync-recovered", result: "success", detail }]);
+          logConnectionEvent({ event: "live-sync-recovered", result: "success", detail });
         }
       } catch (error) {
         if (cancelled) return;
@@ -2277,17 +2279,17 @@ export function App() {
     try {
       if (!deviceReady || commandPending) return;
       setNotice("Refreshing complete device state…");
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "refresh-started", result: "pending", detail: "Reading the complete active preset state from the device." }]);
+      logConnectionEvent({ event: "refresh-started", result: "pending", detail: "Reading the complete active preset state from the device." });
       try {
         const current = await qcController.readSnapshot(() => tauriTransport.currentSnapshot());
         if (!operationCurrent()) return;
         setConnection((state) => ({ ...state, lastSync: new Date().toISOString() }));
         setNotice("Live preset state refreshed.");
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "refresh-complete", result: "success", detail: `${current.presetLocation} · ${current.presetName} refreshed successfully.` }]);
+        logConnectionEvent({ event: "refresh-complete", result: "success", detail: `${current.presetLocation} · ${current.presetName} refreshed successfully.` });
       } catch (error) {
         if (!operationCurrent() || error instanceof SupersededPresetOperation) return;
         const detail = error instanceof Error ? error.message : String(error);
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "refresh-failed", result: "failure", detail }]);
+        logConnectionEvent({ event: "refresh-failed", result: "failure", detail });
         actionFailed(error);
       }
     } finally { operationLease.release(); }
