@@ -322,7 +322,13 @@ impl Owned {
             drop(joining);
             drop((self.resource.take(), self.permit.take()));
             if outcome {
-                eprintln!("An owned native actor retired after panic");
+                let _ = std::io::Write::write_fmt(
+                    &mut std::io::stderr(),
+                    format_args!(
+                        "An owned native actor retired after panic
+"
+                    ),
+                );
             }
             true
         }
