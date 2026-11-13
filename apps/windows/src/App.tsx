@@ -1,5 +1,5 @@
 import { formatNativeBackupSaveNotice } from "@qc-remote/ui";
-import { applicationModifier, shortcutLabel } from "./host-platform.ts";
+import { applicationModifier, desktopPlatform, shortcutLabel } from "./host-platform.ts";
 import { exposeDesktopDemo, observeDemoBrokerInstance } from "./demo-broker.ts";
 import { demoRegistrationNeverAttempted, observeDemoSelectionHold } from "./demo-broker-lifecycle.ts";
 import relayProfile from "../../../contracts/public/qc-relay-profile.v1.json";
@@ -1584,7 +1584,7 @@ export function App() {
         return;
       }
       unlisten.push(...stops);
-      if (typeof navigator !== "undefined" && /Mac/.test(navigator.platform)) {
+      if (desktopPlatform === "macOS") {
         void macosMenuEventsReady().catch((error: unknown) => {
           console.error("QC Remote could not activate macOS menu actions:", error);
         });
@@ -2502,7 +2502,7 @@ export function App() {
     },
     setBrokerTrayEnabled: async (enabled) => {
       const status = await applyBrokerTrayChange(() => brokerTray.setEnabled(enabled));
-      const isMacOS = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
+      const isMacOS = desktopPlatform === "macOS";
       if (isMacOS) {
         return status.trayStopping ? "Background broker stopping; it will exit within five seconds."
           : status.trayEnabled ? "Menu bar item and background broker enabled." : "Menu bar item hidden; background broker disabled.";

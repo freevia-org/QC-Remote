@@ -18,3 +18,11 @@ test("issue forms label the actual host and leave unknown platforms unlabeled", 
     assert.ok(url.searchParams.get("behavior")?.includes(`App version: ${version}`));
   }
 });
+
+test("no source re-tests navigator.platform for macOS itself (WF-14)", async () => {
+  const { readFileSync } = await import("node:fs");
+  for (const file of ["App.tsx", "app-window.tsx", "about-content.ts"]) {
+    assert.doesNotMatch(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), /\/Mac\/\.test\(navigator\.platform\)/, file);
+  }
+  assert.equal(hostPlatform({ platform: "Win32", userAgentData: { platform: "macOS" } }), "macOS", "userAgentData wins, as the shortcut labels already assume");
+});
