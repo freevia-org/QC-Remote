@@ -116,6 +116,8 @@ export class QcCommandCoordinator {
   private readonly scalarIntents = new Map<ScalarKey, ScalarIntent>();
   private footswitchBase?: FootswitchBase;
   private nextId = 1;
+  /** The newest command that touched each scalar key or bypass address. */
+  private readonly lastIssued = new Map<string, number>();
   private intentPreset?: PresetAddress;
   private bypassScene?: number;
   private bypassGeneration = 0;
@@ -131,6 +133,7 @@ export class QcCommandCoordinator {
     this.bypassScene = undefined;
     this.bypassGeneration++;
     this.bypassEvidenceGenerations.clear();
+    this.lastIssued.clear();
   }
 
   private observePreset(address: PresetAddress): void {
@@ -213,7 +216,10 @@ export class QcCommandCoordinator {
     // Commands can complete out of order after their optimistic intent has
     // already been replaced and cleared. A stale success then needs one
     // authoritative refresh even though no intent remains to schedule one.
-    const superseded = token.id < this.nextId - 1;
+    // Only a later command on the same field supersedes this one; an unrelated command
+    // must not force a full authoritative read.
+    const superseded = token.scalarRollbacks.some((rollback) => (this.lastIssued.get(rollback.key) ?? 0) > token.id)
+      || token.bypassRollbacks.some((rollback) => (this.lastIssued.get(rollback.address) ?? 0) > token.id);
     for (const rollback of token.scalarRollbacks) {
       const intent = this.scalarIntents.get(rollback.key);
       if (!intent || intent.id === token.id || intent.issuedAt < token.issuedAt) continue;
@@ -394,6 +400,7 @@ export class QcCommandCoordinator {
     const base = this.scalarIntents.get(key)?.base ?? { ...scalarState(before, key), observedAt: PRE_INTENT };
     const rollback: ScalarRollback = { ...stripObservedAt(base), applied: scalarState(after, key) };
     const token: QcCommandToken = { id: this.nextId++, issuedAt, scalarRollbacks: [rollback], bypassRollbacks: [] };
+    this.lastIssued.set(key, token.id);
     this.scalarIntents.set(key, { id: token.id, key, target: scalarValue(after, key), applied: scalarState(after, key), issuedAt, base } as ScalarIntent);
     return { snapshot: after, token };
   }
@@ -420,6 +427,7 @@ export class QcCommandCoordinator {
       if (scalarValue(before, key) === scalarValue(after, key)) continue;
       const base = this.scalarIntents.get(key)?.base ?? { ...scalarState(before, key), observedAt: PRE_INTENT };
       scalarRollbacks.push({ ...stripObservedAt(base), applied: scalarState(after, key) });
+      this.lastIssued.set(key, id);
       this.scalarIntents.set(key, { id, key, target: scalarValue(after, key), applied: scalarState(after, key), issuedAt, base } as ScalarIntent);
     }
 
@@ -431,6 +439,7 @@ export class QcCommandCoordinator {
       if (previous === block.bypassed || block.bypassed === undefined) continue;
       if (!this.bypassIntents.has(address)) this.bypassBases.set(address, { bypassed: previous, observedAt: PRE_INTENT });
       bypassRollbacks.push({ address, evidenceGeneration: this.bypassEvidenceGenerations.get(address) ?? 0, row: block.row, column: block.column, previous: this.bypassBases.get(address)?.bypassed ?? previous, target: block.bypassed });
+      this.lastIssued.set(address, id);
       this.bypassIntents.set(address, { bypassed: block.bypassed, issuedAt, commandId: id });
     }
     return {

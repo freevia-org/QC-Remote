@@ -981,3 +981,22 @@ test("transport methods reject instead of throwing synchronously when the preset
   assert.doesNotThrow(() => { pending = transport.setTempo(120, unidentified); });
   await assert.rejects(pending!);
 });
+
+test("acknowledge reports a command superseded only by a later command on the same field", () => {
+  const base = { ...demoSnapshot, blocks: demoSnapshot.blocks.map((block) => block.id === "amp" ? { ...block, bypassed: false } : block) };
+  const coordinator = new QcCommandCoordinator();
+  const scene = coordinator.beginScene(base, 2, 1_000);
+  const tempo = coordinator.beginTempo(scene.snapshot, 150, 1_010);
+  assert.equal(coordinator.acknowledge(scene.token), false, "a tempo change does not supersede a scene change");
+  const sceneAgain = coordinator.beginScene(tempo.snapshot, 3, 1_020);
+  assert.equal(coordinator.acknowledge(scene.token), true, "a newer scene command supersedes the older one");
+  coordinator.settle(sceneAgain.token);
+  assert.equal(coordinator.acknowledge(scene.token), true, "still superseded after the newer intent was cleared");
+
+  const other = new QcCommandCoordinator();
+  const amp = other.beginBypass(base, "amp", true, 2_000);
+  const cab = other.beginBypass(amp.snapshot, "cab", true, 2_010);
+  assert.equal(other.acknowledge(amp.token), false, "bypass of another block does not supersede");
+  other.beginBypass(cab.snapshot, "amp", false, 2_020);
+  assert.equal(other.acknowledge(amp.token), true);
+});
