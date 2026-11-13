@@ -46,13 +46,42 @@ import { fileURLToPath } from 'node:url';
 
 const defaultRepositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-function git(cwd, args) {
+function git(cwd, args, input) {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    ...(input === undefined ? { stdio: ['ignore', 'pipe', 'pipe'] } : { input, stdio: ['pipe', 'pipe', 'pipe'] }),
   });
+}
+
+// Author email, committer name, committer email and full message of every listed
+// commit from ONE git process instead of one per commit. Fields are NUL-separated
+// and records end with RS (0x1e). A message that contained RS would shift the
+// records; the result is therefore cross-checked against the requested list and
+// the audit fails (it never silently skips a commit) if anything does not line up.
+export function commitMetadata(cwd, commits) {
+  if (commits.length === 0) return new Map();
+  const output = git(
+    cwd,
+    ['log', '--no-walk=unsorted', '--stdin', '--format=%H%x00%ae%x00%cn%x00%ce%x00%B%x1e'],
+    `${commits.join('\n')}\n`,
+  );
+  const wanted = new Set(commits);
+  const metadata = new Map();
+  for (const record of output.split('\x1e')) {
+    const text = record.replace(/^\r?\n/, '');
+    if (text === '') continue;
+    const [hash, authorEmail, committerName, committerEmail, ...rest] = text.split('\0');
+    if (rest.length === 0 || !wanted.has(hash) || metadata.has(hash)) {
+      throw new Error('could not parse commit metadata reliably (unexpected record); refusing to pass');
+    }
+    metadata.set(hash, { authorEmail, committerName, committerEmail, messageLines: rest.join('\0').split(/\r?\n/) });
+  }
+  if (metadata.size !== commits.length) {
+    throw new Error(`read metadata for ${metadata.size} of ${commits.length} commits; refusing to pass`);
+  }
+  return metadata;
 }
 
 export const forbiddenPaths = [
@@ -227,9 +256,9 @@ export function auditHistory({ cwd = defaultRepositoryRoot, base, head = 'HEAD',
   const warnings = [];
   const identityFindings = identity === 'advisory' ? warnings : errors;
 
+  const metadata = commitMetadata(cwd, commits);
   for (const commit of commits) {
-    const metadata = git(cwd, ['show', '-s', '--format=%ae%n%cn%n%ce%n%B', commit]);
-    const [authorEmail, committerName, committerEmail, ...messageLines] = metadata.split(/\r?\n/);
+    const { authorEmail, committerName, committerEmail, messageLines } = metadata.get(commit);
     for (const error of identityErrors({ authorEmail, committerName, committerEmail })) {
       if (!isPublishedIdentityException(commit, error)) identityFindings.push(`${commit}: ${error}`);
     }
