@@ -9,8 +9,8 @@
     "./footswitch": "./src/footswitch.ts"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test tests/core.test.ts tests/preset-address.test.ts",
-    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --experimental-strip-types --test tests/core.test.ts tests/preset-address.test.ts tests/mcp-adapter.test.ts",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.tests.json",
     "test:mcp-adapter": "node --experimental-strip-types --test tests/mcp-adapter.test.ts"
   },
   "dependencies": {

@@ -505,7 +505,7 @@ test("parameter editor helpers share open-close and draft rules", () => {
     parameters: [
       { index: 0, name: "Gain", normalizedValue: 0.5, displayValue: "5.0", units: "", type: "float", minimum: 0, maximum: 10, steps: null, sceneMode: false, options: [], writable: true },
       { index: 1, name: "Meter", normalizedValue: null, displayValue: "", units: "", type: "meter", minimum: 0, maximum: 1, steps: null, sceneMode: false, options: [], writable: false }
-    ]
+    ] as unknown as BlockDetails["parameters"]
   };
   assert.deepEqual(parameterDrafts(details), { 0: 0.5 });
   assert.equal(updateBlockParameter(details, 0, 0.75).parameters[0].normalizedValue, 0.75);
@@ -881,7 +881,7 @@ test("a failed preset step restores the loaded preset's identity and name", () =
 test("consecutive failed preset steps each restore the original preset", () => {
   const loaded = { ...demoSnapshot, presetPosition: 3, presetIdentity: "x", presetName: "Loaded", presetLocation: "1D" };
   const coordinator = new QcCommandCoordinator();
-  let current = loaded;
+  let current: typeof demoSnapshot = loaded;
   for (const delta of [1, -1] as const) {
     const move = coordinator.beginPresetMove(current, delta, "Other", 1_000);
     current = coordinator.fail(move.snapshot, move.token);
