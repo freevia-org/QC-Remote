@@ -808,6 +808,8 @@ public class QcUsbPlugin extends Plugin {
                             android.util.Log.w(
                                 "QcUsbPlugin", "Automatic QC USB reconnect failed: " + error.getMessage());
                             if (!exhausted) scheduleAutomaticReconnect(detail, recoveryGeneration);
+                            // Out of budget: do not leave a failed session claimed and open.
+                            else closeConnection(null, false);
                         } else if (isReady() && stateDecoder.sessionSynchronized() && currentSetlist != null) {
                             publishConnectionProgress(requestId, attempt, "ready",
                                 "Quad Cortex reconnected and synchronized over USB.", null);
@@ -2605,8 +2607,17 @@ public class QcUsbPlugin extends Plugin {
                 lastError = "QC lifecycle " + status.phase + ": " + status.error;
                 if (flight != null) flight.event("startup-" + status.phase);
                 synchronized (this) {
-                    if (connection != null && generation == connectionGeneration.get())
+                    if (connection != null && generation == connectionGeneration.get()) {
+                        // A terminal startup error is the outcome of the open that is
+                        // waiting for it. Waiting out the 35 s ready deadline only held
+                        // the claimed interface and hid the cause behind a generic timeout.
+                        QcPendingOperations.Entry<PendingReady> waiting = pendingReady;
+                        if (waiting != null) {
+                            if (pendingReady == waiting) pendingReady = null;
+                            pendingOperations.fail(waiting, new RelayException("USB_CONNECT_FAILED", lastError));
+                        }
                         scheduleAutomaticReconnect(lastError);
+                    }
                 }
                 return;
             }

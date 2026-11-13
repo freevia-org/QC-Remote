@@ -205,6 +205,7 @@ public final class ReconnectHarness {
   }
   check("error".equals(lastProgressPhase) && "USB_RECOVERY_EXHAUSTED".equals(lastProgressError),
    "exhausted recovery did not publish a terminal actionable error");
+  check(closes == 1, "exhausted recovery left the failed transport claimed and open");
   check(lastProgressMessage.contains("stopped after 5 attempts") && lastProgressMessage.contains("tap Retry"),
    "exhausted recovery did not explain how to continue");
   connectionProgressAttempt = 0; // the explicit Connect path resets this before opening
