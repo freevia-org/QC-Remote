@@ -1303,6 +1303,13 @@ struct DesktopAppSearch {
     /// CLI on `PATH` - LM Studio ships `lms.exe` - would otherwise be resolved
     /// as the app and then started in its place.
     executable_names: &'static [&'static str],
+    /// Whether `executable_names` may also be looked up where any program of
+    /// that name answers: a Store execution alias, `App Paths` and `PATH`.
+    /// False for Claude Desktop, whose `claude.exe` is also the Claude Code
+    /// CLI: found there it was reported as the desktop app, paired against
+    /// and launched in its place. Its default locations, the `Uninstall`
+    /// registry and the MSIX registration still find the real application.
+    ambient_lookup: bool,
     /// Paths relative to each root in [`installation_roots`], in preference
     /// order: the first candidate that names a file wins, across every root,
     /// so a provider states its preference here rather than depending on the
@@ -1320,6 +1327,17 @@ struct DesktopAppSearch {
     /// apply, and a family name is not worth guessing.
     package_prefixes: &'static [&'static str],
     package_executables: &'static [&'static str],
+}
+
+impl DesktopAppSearch {
+    /// The names that may be looked up in `App Paths` and on `PATH`.
+    fn ambient_names(&self) -> &'static [&'static str] {
+        if self.ambient_lookup {
+            self.executable_names
+        } else {
+            &[]
+        }
+    }
 }
 
 /// An application's own note of where it put itself.
@@ -1895,12 +1913,13 @@ fn resolve_desktop_app_in(
         })
         .or_else(|| {
             local_app_data
+                .filter(|_| search.ambient_lookup)
                 .and_then(|local| store_alias_path(local, search.executable_names))
                 .map(|path| (InstallationMechanism::StoreAlias, path))
         })
         .or_else(|| {
             search
-                .executable_names
+                .ambient_names()
                 .iter()
                 .copied()
                 .find_map(registered_app_path)
@@ -1908,7 +1927,7 @@ fn resolve_desktop_app_in(
         })
         .or_else(|| {
             search
-                .executable_names
+                .ambient_names()
                 .iter()
                 .copied()
                 .flat_map(where_command)
@@ -2173,6 +2192,7 @@ fn spawn_desktop_command(command: Command) -> Result<(), String> {
 
 const CLAUDE_DESKTOP_SEARCH: DesktopAppSearch = DesktopAppSearch {
     executable_names: &["claude.exe"],
+    ambient_lookup: false,
     relative_candidates: &[r"AnthropicClaude\claude.exe", r"Claude\Claude.exe"],
     display_names: &["Claude", "Claude Desktop"],
     self_records: &[],
@@ -2187,6 +2207,7 @@ const CHATGPT_DESKTOP_SEARCH: DesktopAppSearch = DesktopAppSearch {
     // Keep Codex.exe in the known desktop and MSIX locations below, but never
     // accept an arbitrary PATH/App Paths/Store alias match as the desktop UI.
     executable_names: &["ChatGPT.exe"],
+    ambient_lookup: true,
     relative_candidates: &[
         r"ChatGPT\ChatGPT.exe",
         r"OpenAI\ChatGPT\ChatGPT.exe",
@@ -2206,6 +2227,7 @@ const CHATGPT_DESKTOP_SEARCH: DesktopAppSearch = DesktopAppSearch {
 
 const ANTIGRAVITY_SEARCH: DesktopAppSearch = DesktopAppSearch {
     executable_names: &["Antigravity.exe"],
+    ambient_lookup: true,
     relative_candidates: &[
         r"Antigravity\Antigravity.exe",
         r"Google\Antigravity\Antigravity.exe",
@@ -2232,6 +2254,7 @@ const ANTIGRAVITY_SEARCH: DesktopAppSearch = DesktopAppSearch {
 /// installer build that does register one.
 const LM_STUDIO_SEARCH: DesktopAppSearch = DesktopAppSearch {
     executable_names: &["Bionic.exe", "LM Studio.exe"],
+    ambient_lookup: true,
     relative_candidates: &[
         r"Bionic\Bionic.exe",
         r"LM Studio\LM Studio.exe",
@@ -2289,6 +2312,7 @@ const LM_STUDIO_SUPPORTED_VERSIONS: &[AppVersionSeries] = &[
 #[cfg(any(target_os = "windows", target_os = "macos", test))]
 const JAN_SEARCH: DesktopAppSearch = DesktopAppSearch {
     executable_names: &["Jan.exe"],
+    ambient_lookup: true,
     relative_candidates: &[r"Jan\Jan.exe"],
     display_names: &["Jan"],
     self_records: &[],
@@ -5575,6 +5599,21 @@ pub fn open_chatgpt_configuration() -> Result<(), String> {
     Err("opening the MCP configuration is unsupported on this platform".to_owned())
 }
 
+/// Whether the managed route is fully in place. Only then is a live
+/// connection reported at all, so only then is it worth asking for one.
+fn antigravity_managed_current(integration: &AntigravityIntegration) -> bool {
+    let AntigravityIntegration {
+        route,
+        permission_current,
+        legacy_route_present,
+    } = integration;
+    route.configured
+        && route.launcher_current
+        && route.enabled
+        && *permission_current
+        && !legacy_route_present
+}
+
 fn antigravity_status_document(
     antigravity_installed: bool,
     integration: &AntigravityIntegration,
@@ -5589,8 +5628,7 @@ fn antigravity_status_document(
         legacy_route_present,
     } = integration;
     let available_version = env!("CARGO_PKG_VERSION");
-    let route_current = route.configured && route.launcher_current && route.enabled;
-    let managed_current = route_current && *permission_current && !legacy_route_present;
+    let managed_current = antigravity_managed_current(integration);
     let managed_update = route.configured
         && route.managed_version.is_some()
         && route.enabled
@@ -5641,11 +5679,13 @@ fn antigravity_status_document(
     })
 }
 
+/// The status read from files and the registry, assuming no live connection,
+/// and whether a live-connection probe could change that answer.
 fn antigravity_local_integration_status_blocking(
-    connection_active: bool,
     evidence: LocalClientEvidence,
-) -> Result<Value, String> {
+) -> Result<(Value, bool), String> {
     let installation = antigravity_installation();
+    let antigravity_installation_present = installation.is_some();
     let executable_path = antigravity_bridge_path()?;
     let config_path = antigravity_config_path();
     let settings_path = antigravity_settings_path();
@@ -5704,27 +5744,37 @@ fn antigravity_local_integration_status_blocking(
         &integration,
         &skill_status,
         status_error,
-        connection_active,
+        false,
         evidence,
     );
+    let probe_could_matter =
+        antigravity_installation_present && antigravity_managed_current(&integration);
     if let Some(version) = installation.and_then(|value| value.version) {
         status["appVersion"] = Value::String(version);
     }
     status["routeRefresh"] = route_refresh_report(ANTIGRAVITY_ROUTE);
     #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
     annotate_folder_access(&mut status, "antigravity");
-    Ok(status)
+    Ok((status, probe_could_matter))
 }
 
 #[tauri::command]
 pub async fn antigravity_local_integration_status() -> Result<Value, String> {
     let deadline = Instant::now() + CLIENT_INSPECTION_TIMEOUT;
     let evidence = antigravity_bridge_evidence();
-    let connection_active = antigravity_runtime_connected_until(deadline).await;
-    inspect_client_until(deadline, move || {
-        antigravity_local_integration_status_blocking(connection_active, evidence)
+    let (mut status, probe_could_matter) = inspect_client_until(deadline, move || {
+        antigravity_local_integration_status_blocking(evidence)
     })
-    .await
+    .await?;
+    // The process scan behind the probe runs a PowerShell and a WMI query. It
+    // used to run before anything was known, on every poll, and its answer
+    // was discarded unless the managed route was current.
+    if probe_could_matter && antigravity_runtime_connected_until(deadline).await {
+        status["connectionActive"] = Value::Bool(true);
+        status["bridgeAttached"] = Value::Bool(true);
+        status["connectionPending"] = Value::Bool(false);
+    }
+    Ok(status)
 }
 
 fn open_antigravity_blocking() -> Result<(), String> {
