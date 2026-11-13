@@ -248,6 +248,27 @@ jobs:
         run: python3 -m unittest scripts.test_select_cargo_test_executable
         if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_012.outputs.ready == 'true') }}
         timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_012.outputs.minutes || '1') || 360 }}
+      - name: Check remaining execution budget (13)
+        id: runner_budget_013
+        if: ${{ contains(runner.name, '-i5-') && (success()) }}
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
+          CI_STEP_LIMIT: 360
+        run: *runner_budget_guard_native_linux
+      # The generated header-glyph catalogue must be the deterministic output of
+      # the pinned font, licence and fontTools version. fontTools is installed
+      # into a throwaway directory (--target also bypasses the system-package
+      # guard), never into the runner's Python.
+      - name: Check the header glyph catalogue and its generator tests
+        run: |
+          python3 -m pip install --quiet --target "$RUNNER_TEMP/font-authoring" -r scripts/requirements-font-authoring.txt
+          export PYTHONPATH="$RUNNER_TEMP/font-authoring"
+          python3 scripts/generate-coros-header-font.py --check
+          python3 -m unittest scripts.test_generate_coros_header_font
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_013.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_013.outputs.minutes || '1') || 360 }}
 
   linux-tray-startup-probe:
     name: Disconnected tray startup under AppArmor
