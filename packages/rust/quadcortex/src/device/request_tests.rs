@@ -885,6 +885,132 @@ fn preview_parameter_is_the_real_write_with_host_local_no_readback_policy() {
     assert!(error.contains("no synchronized numeric value"));
 }
 
+#[test]
+fn a_text_parameter_write_plans_the_text_command_without_a_numeric_verification() {
+    let mut state = crate::device::state_runtime::DeviceStateRuntime::new();
+    state
+        .ingest(
+            profile::MESSAGE_TYPE_RECALL_PRESET,
+            &pa::RecallPresetMessage {
+                action: pa::message_action::Enum::Update as i32,
+                preset: Some(pa::recall_preset_message::Preset::Preset(BinaryPreset {
+                    name: Some(binary_preset::Name::Name("Live".into())),
+                    chains: vec![Chain {
+                        row: Some(chain::Row::Row(2)),
+                        models: vec![Model {
+                            hash: Some(model::Hash::Hash(41)),
+                            column: Some(model::Column::Column(5)),
+                            params: vec![Param {
+                                index: Some(param::Index::Index(7)),
+                                param_values: vec![ParamValue {
+                                    value: Some(param_value::Value::FloatValue(0.25)),
+                                }],
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        )
+        .unwrap();
+    let plan = plan_gateway_write_with_state(
+        "device.setParameter",
+        &json!({
+            "row": 2, "column": 5, "parameterIndex": 7, "text": "Option B", "value": "Option B",
+            "expectedValue": null, "expectedScene": 0,
+            "expectedModelId": 41, "expectedPresetName": "Live"
+        }),
+        &state,
+    )
+    .unwrap();
+    assert!(matches!(
+        plan.write,
+        PlannedWrite::HidCommand(DeviceCommand::SetParameterText { .. })
+    ));
+    // Verifying against 0.0 would pass for option 0 whatever was written.
+    assert_eq!(plan.verification, GatewayVerification::None);
+}
+
+#[test]
+fn preview_parameter_guard_compares_the_selected_option_like_set_parameter() {
+    let mut state = crate::device::state_runtime::DeviceStateRuntime::new();
+    state
+        .ingest(
+            profile::MESSAGE_TYPE_RECALL_PRESET,
+            &pa::RecallPresetMessage {
+                action: pa::message_action::Enum::Update as i32,
+                preset: Some(pa::recall_preset_message::Preset::Preset(BinaryPreset {
+                    name: Some(binary_preset::Name::Name("Live".into())),
+                    chains: vec![Chain {
+                        row: Some(chain::Row::Row(2)),
+                        models: vec![Model {
+                            hash: Some(model::Hash::Hash(41)),
+                            column: Some(model::Column::Column(5)),
+                            params: vec![
+                                // Option 1 of 4, stored as index / (count - 1).
+                                Param {
+                                    index: Some(param::Index::Index(7)),
+                                    param_values: vec![ParamValue {
+                                        value: Some(param_value::Value::FloatValue(0.333_333_34)),
+                                    }],
+                                    dynamic_steps: vec![
+                                        "A".into(),
+                                        "B".into(),
+                                        "C".into(),
+                                        "D".into(),
+                                    ],
+                                    ..Default::default()
+                                },
+                                // A continuous parameter keeps the flat tolerance.
+                                Param {
+                                    index: Some(param::Index::Index(8)),
+                                    param_values: vec![ParamValue {
+                                        value: Some(param_value::Value::FloatValue(0.25)),
+                                    }],
+                                    ..Default::default()
+                                },
+                            ],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        )
+        .unwrap();
+    let preview = |index: u32, expected: f64| {
+        plan_gateway_write_with_state(
+            "device.previewParameter",
+            &json!({
+                "row": 2, "column": 5, "parameterIndex": index, "value": 0.5,
+                "expectedValue": expected, "expectedScene": 0,
+                "expectedModelId": 41, "expectedPresetName": "Live"
+            }),
+            &state,
+        )
+    };
+    // A three-decimal expectation selects the same option, so it plans.
+    preview(7, 0.333).unwrap();
+    // A different option is still stale, and so is a missing parameter.
+    assert!(preview(7, 0.667).unwrap_err().contains("parameter changed"));
+    assert!(preview(99, 0.333)
+        .unwrap_err()
+        .contains("no synchronized numeric value"));
+    // The continuous parameter is compared at 1e-5, not by option.
+    preview(8, 0.25).unwrap();
+    assert!(preview(8, 0.2501)
+        .unwrap_err()
+        .contains("parameter changed"));
+}
+
 /// While a Delay block's SYNC toggle is engaged the device reports TIME
 /// disabled and takes timing from SYNC NOTE; what the unit would do with a
 /// numeric write to the disabled control is BELIEVED (a 2026-09-11
@@ -7638,27 +7764,36 @@ fn backup_validation_and_naming_are_shared_by_native_hosts() {
 
 #[test]
 fn user_supplied_names_and_library_keys_reject_path_injection() {
+    // Name validation is the workflow planner's, and it runs before any catalog
+    // or active-setlist check, so the refusal names the name rather than a
+    // missing catalog.
+    let library = PresetLibrary::default();
     for method in ["device.createSetlist", "device.deleteSetlist"] {
         for name in ["../Tour", "Tour/Encore", "Tour\\Encore", "My Presets"] {
-            assert!(plan_gateway_write(method, &json!({"name": name}), None).is_err());
+            let error =
+                plan_preset_mutation(method, &json!({"name": name}), None, &library).unwrap_err();
+            assert!(
+                error.contains("setlist name"),
+                "{method} {name:?} must fail name validation, got {error}"
+            );
         }
     }
 
-    let deletion = plan_gateway_write("device.deleteSetlist", &json!({"name": "Tour"}), None)
-        .expect("valid deletion plan");
-    assert_eq!(deletion.verification, GatewayVerification::None);
-    assert!(matches!(
-        deletion.write,
-        PlannedWrite::HidOperation(DeviceOperation::DeleteSetlist { ref name })
-            if name == "Tour"
-    ));
-
-    for name in ["../Stage", "Stage/Lead", "Stage\nLead"] {
-        assert!(operation(
-            "deletePreset",
-            &json!({"setlistKey": "/media/p4/Presets/Live", "name": name}),
-        )
-        .is_err());
+    // The stateless planner no longer plans these persistent workflows at all,
+    // whatever the arguments, so none can bypass the workflow guards.
+    for (method, params) in [
+        ("device.createSetlist", json!({"name": "Tour"})),
+        ("device.deleteSetlist", json!({"name": "Tour"})),
+        (
+            "device.deletePreset",
+            json!({"setlistKey": "/media/p4/Presets/Live", "position": 1}),
+        ),
+    ] {
+        let error = plan_gateway_write(method, &params, None).unwrap_err();
+        assert!(error.contains("not supported"), "{method}: {error}");
+    }
+    for name in ["createSetlist", "deleteSetlist", "deletePreset"] {
+        assert!(operation(name, &json!({"name": "Tour"})).is_err());
     }
 
     for key in [
