@@ -349,8 +349,8 @@ impl SessionRuntime {
 
     /// Cancels preparation `id` if it is the current preparation. A preparation still in
     /// progress fails. One already `Ready` also ends the workflow it installed, unless that
-    /// workflow has already finished: a host that stops polling after `Ready` has abandoned
-    /// it, and nothing else would ever end it before a session wipe, so it would refuse
+    /// workflow has finished or was already admitted (its native operation issued). A host that
+    /// stops polling after `Ready` without admitting has abandoned it, and nothing else would ever end it before a session wipe, so it would refuse
     /// every later preset workflow. A native call still in flight keeps refusing admission
     /// until its report is finished, exactly as for any other workflow.
     pub fn cancel_preset_preparation(&mut self, id: u64) {
@@ -370,16 +370,22 @@ impl SessionRuntime {
         let Some(workflow_id) = installed else {
             return;
         };
-        entry.status = PreparationStatus::Failed(REASON.into());
-        if let Some(workflow) = self
-            .preset_workflow
-            .as_mut()
-            .filter(|workflow| workflow.id == workflow_id && !workflow.runtime.is_terminal())
-        {
-            workflow
-                .runtime
-                .invalidate("QC preset workflow was abandoned by its host".into());
-            drop(workflow.early_file_observations.take());
+        // An admitted workflow (its native operation was issued) belongs to the host that is
+        // delivering it and survives the preparation's cancellation, with its `Ready`
+        // preparation intact; only one that was never issued is abandoned.
+        let Some(workflow) = self.preset_workflow.as_mut().filter(|workflow| {
+            workflow.id == workflow_id
+                && !workflow.runtime.is_terminal()
+                && workflow.native.is_none()
+        }) else {
+            return;
+        };
+        workflow
+            .runtime
+            .invalidate("QC preset workflow was abandoned by its host".into());
+        drop(workflow.early_file_observations.take());
+        if let Some(entry) = self.preset_preparation.as_mut() {
+            entry.status = PreparationStatus::Failed(REASON.into());
         }
     }
 
