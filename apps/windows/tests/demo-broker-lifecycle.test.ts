@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDemoBrokerInstanceObservation, createDemoBrokerRecovery, createDemoBrokerLifecycle, demoRegistrationNeverAttempted, observeDemoSelectionHold, rebindDemoBrokerFromObservation, waitForDemoBrokerRegistration } from "../src/demo-broker-lifecycle.ts";
+import { createDemoBrokerInstanceObservation, createDemoBrokerRecovery, createDemoBrokerLifecycle, demoRegistrationNeverAttempted, observeDemoSelectionHold, rebindDemoBrokerFromObservation, waitForDemoBrokerRegistration, answerDemoRequest, attachAll } from "../src/demo-broker-lifecycle.ts";
 
 test("an adopted Demo hold binds its broker and only a confirmed replacement ends it", () => {
   const adopted = observeDemoSelectionHold({ held: false }, { held: true, instance: "broker-A" });
@@ -256,4 +256,37 @@ test("failed IPC startup is cleaned up without replaying registration or device 
   assert.equal(starts, 1);
   assert.deepEqual(stopped, ["worker-1"]);
   assert.equal(failures.length, 1);
+});
+
+test("a failed Grid refresh after a successful demo write still answers with the result (WF-5)", async () => {
+  const answer = await answerDemoRequest({
+    invoke: async () => ({ applied: true }),
+    refresh: async () => { throw new Error("snapshot read failed"); },
+    changed: () => assert.fail("no snapshot to publish")
+  });
+  assert.deepEqual(answer, { result: { applied: true } });
+});
+
+test("a successful request publishes the refreshed snapshot, and a failed one answers with the provider's code (WF-5)", async () => {
+  const published: string[] = [];
+  assert.deepEqual(await answerDemoRequest({ invoke: async () => 1, refresh: async () => "grid", changed: snapshot => published.push(snapshot) }), { result: 1 });
+  assert.deepEqual(published, ["grid"]);
+  const refused = await answerDemoRequest({
+    invoke: async () => { throw Object.assign(new Error("not allowed"), { code: "READ_ONLY" }); },
+    refresh: async () => { published.push("must not refresh"); return "x"; },
+    changed: () => undefined
+  });
+  assert.deepEqual(refused, { error: { code: -32002, message: "not allowed", data: { code: "READ_ONLY", retryable: false } } });
+  assert.deepEqual(published, ["grid"]);
+});
+
+test("when the second listener fails to attach, the first is stopped before the failure surfaces (WF-9)", async () => {
+  const stopped: string[] = [];
+  await assert.rejects(attachAll([
+    async () => () => { stopped.push("status"); },
+    async () => { throw new Error("listen refused"); }
+  ]), /listen refused/);
+  assert.deepEqual(stopped, ["status"]);
+  const ok = await attachAll([async () => () => undefined, async () => () => undefined]);
+  assert.equal(ok.length, 2);
 });
