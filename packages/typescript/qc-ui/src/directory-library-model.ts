@@ -241,13 +241,16 @@ export function filterLibraryEntries(entries: readonly LibraryEntry[], query: st
   return entries.filter((entry) => `${entry.name} ${entry.author ?? ""}`.toLocaleLowerCase().includes(needle));
 }
 
+/** One collator for the whole sort: `localeCompare` with options builds a new one per comparison. Same ordering. */
+const LIBRARY_NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 /** The unit lists captures and impulse responses by name, digits and symbols first, so the A-Z scrubber has an order to jump through. */
 export function sortLibraryEntries<T extends { name: string }>(entries: readonly T[]): T[] {
   const bucket = (name: string) => { const first = name.trim().charAt(0).toLocaleUpperCase(); return first >= "A" && first <= "Z" ? first : "#"; };
   return [...entries].sort((left, right) => {
     const a = bucket(left.name), b = bucket(right.name);
     if (a !== b) return a === "#" ? -1 : b === "#" ? 1 : a < b ? -1 : 1;
-    return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
+    return LIBRARY_NAME_COLLATOR.compare(left.name, right.name);
   });
 }
 

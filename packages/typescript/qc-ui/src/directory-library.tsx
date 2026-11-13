@@ -1,4 +1,4 @@
-import { useRef, type CSSProperties, type ReactNode } from "react";
+import { useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import type { LibraryEntry } from "@qc-remote/client";
 import { alphaIndexTarget, DIRECTORY_ALPHA_INDEX, DIRECTORY_CATEGORIES, displayLibraryEntries, entryDetail, filterLibraryEntries, isCloudSignedOut, isDownloadFolder, libraryFolderRows, libraryRowCount, sortLibraryEntries, type DirectoryCategory, type DirectoryLibraryKind, type DirectoryLibraryState } from "./directory-library-model";
 import { QcDeviceCategoryGlyph } from "./device-category-glyph";
@@ -82,8 +82,12 @@ function ReadStatus({ kind, library, label }: { kind: DirectoryLibraryKind; libr
 function LibraryBrowser({ kind, library, folderKey, onSelectFolder, query, searchField, cloudSignedIn }: { kind: "captures" | "irs"; library: DirectoryLibraryState; folderKey?: string; onSelectFolder: (key: string | undefined) => void; query: string; searchField?: ReactNode; cloudSignedIn?: boolean }) {
   const result = library[kind];
   const isCapture = kind === "captures";
-  const folderRows = libraryFolderRows(result, folderKey);
-  const entries = sortLibraryEntries(filterLibraryEntries(displayLibraryEntries(result, folderKey), query));
+  // The real library is thousands of records: derive rows only when the result or folder changes, not on every host render or keystroke.
+  // Sorting before filtering gives the same order as filtering first (the sort is stable and the filter keeps order).
+  const folderRows = useMemo(() => libraryFolderRows(result, folderKey), [result, folderKey]);
+  const sortedEntries = useMemo(() => sortLibraryEntries(displayLibraryEntries(result, folderKey)), [result, folderKey]);
+  const entries = useMemo(() => filterLibraryEntries(sortedEntries, query), [sortedEntries, query]);
+  const rowCount = useMemo(() => result ? libraryRowCount(result) : 0, [result]);
   const status = ReadStatus({ kind, library, label: isCapture ? "NEURAL CAPTURES" : "IMPULSE RESPONSES" });
   const listRef = useRef<HTMLDivElement>(null);
   const jumpTo = (letter: string) => {
@@ -94,7 +98,7 @@ function LibraryBrowser({ kind, library, folderKey, onSelectFolder, query, searc
     <nav className="directory-folders qc-scroll-rail" aria-label={isCapture ? "Capture folders" : "Impulse response folders"}>
       {isCapture && <DirectoryProviderRow kind="download" label="Downloads" signedOut={isCloudSignedOut(cloudSignedIn)} />}
       <DirectoryProviderRow kind="cloud" label={isCapture ? "Cloud Captures" : "Cloud IRs"} signedOut={isCloudSignedOut(cloudSignedIn)} />
-      <button type="button" className={!folderKey ? "is-active" : undefined} onClick={() => onSelectFolder(undefined)}><span><QcLibraryIcon kind="capture-library" /></span>{isCapture ? "Captures Library" : "IRs Library"}{result && <b className="directory-count">{libraryRowCount(result)}</b>}</button>
+      <button type="button" className={!folderKey ? "is-active" : undefined} onClick={() => onSelectFolder(undefined)}><span><QcLibraryIcon kind="capture-library" /></span>{isCapture ? "Captures Library" : "IRs Library"}{result && <b className="directory-count">{rowCount}</b>}</button>
       {folderRows.map(({ folder, depth }) => <button type="button" key={folder.key} style={{ "--qc-directory-depth": depth } as CSSProperties} className={`is-child${folder.key === folderKey ? " is-active" : ""}`} onClick={() => onSelectFolder(folder.key)}><span><QcDirectoryIcon kind="folder-outline" />{isCapture && isDownloadFolder(folder) && <DirectoryDownloadBadge />}</span>{folder.name}{!folder.isFactory && <b className="directory-folder-more" aria-hidden="true"><QcUiIcon kind="more" /></b>}</button>)}
     </nav>
     <div className="directory-library-pane">
