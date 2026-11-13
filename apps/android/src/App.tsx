@@ -856,7 +856,7 @@ export function App({ appVersion = appPackage.version, appBuildNumber }: { appVe
     let cancelled = false;
     const poll = async () => {
       try {
-        const runtimeDiagnostics = await androidUsbRuntimeDiagnostics();
+        const runtimeDiagnostics = await androidUsbRuntimeDiagnostics({ includeFlightRecorder: false });
         if (cancelled) return;
         // The shared owner's record is authoritative: it clears with the
         // session, so a lost resume frame cannot leave the controls disabled

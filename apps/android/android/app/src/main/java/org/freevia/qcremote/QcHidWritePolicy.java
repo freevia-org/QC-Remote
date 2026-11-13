@@ -51,6 +51,13 @@ final class QcHidWritePolicy {
         return result == reportLength ? Outcome.DELIVERED : Outcome.TERMINAL;
     }
 
+    /** A failed control transfer that took about its whole timeout. A STALL returns at once, a
+     * timeout does not, but Android reports both as -1: this only feeds a diagnostic counter,
+     * it never changes the outcome. */
+    static boolean negativeResultTookFullTimeout(int result, long elapsedMs, int timeoutMs) {
+        return result < 0 && timeoutMs > 0 && elapsedMs >= Math.max(1, timeoutMs - 10);
+    }
+
     static Outcome classifyAndPropagate(
         int result,
         int reportLength,

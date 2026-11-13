@@ -1352,6 +1352,13 @@ test("Android surfaces a write-quarantine notice analogous to Windows App.tsx, w
   assert.match(servicesSource, /writesQuarantined: boolean; writeQuarantineReason\?: string;/);
 });
 
+test("the two-second write-health poll opts out of the flight recorder while the panel keeps it", () => {
+  assert.match(appSource, /androidUsbRuntimeDiagnostics\(\{ includeFlightRecorder: false \}\)/);
+  assert.match(appSource, /const runtimeDiagnostics = await androidUsbRuntimeDiagnostics\(\);/, "the panel read still includes it");
+  assert.match(javaSource, /Boolean\.FALSE\.equals\(call\.getBoolean\("includeFlightRecorder", true\)\)[\s\S]{0,80}result\.put\("flightRecorder", flight\.snapshot\(\)\)/);
+  assert.match(servicesSource, /diagnostics\(options\?: \{ includeFlightRecorder\?: boolean \}\)/);
+});
+
 test("remote deletions use initiating-client confirmation without a second phone prompt", () => {
   // The initiating AI app owns explicit persistent-write confirmation.
   for (const method of ["device.deletePreset", "device.deleteSetlist"]) {
@@ -1542,4 +1549,29 @@ test("MCP access presentation stays unconfirmed after ambiguous failure and reco
   assert.equal(view.disabled, false);
   assert.equal(view.readout, "full");
   assert.equal(controlAccessPresentation({ ...state, busy: true }).disabled, true);
+});
+
+test("USB detach closes off the main thread without goodbye frames, and the reset latch is read once", () => {
+  const detach = javaSource.slice(javaSource.indexOf("ACTION_USB_DEVICE_DETACHED.equals"), javaSource.indexOf('status.put("state", "disconnected")'));
+  assert.match(detach, /lifecycleTeardown\.execute\([\s\S]*closeConnection\(null, false\)/);
+  assert.doesNotMatch(detach, /closeConnection\(\);/, "a detach must not run the graceful, writing close on the main thread");
+  assert.match(javaSource, /CountDownLatch pendingResetReply = resetReply;[\s\S]{0,200}pendingResetReply\.countDown\(\)/);
+  assert.doesNotMatch(javaSource, /resetReply != null\) \{\s*resetReply\.countDown/);
+  assert.match(javaSource, /HID_READER_NULL_WAIT_LIMIT = 5/);
+  assert.match(javaSource, /\+\+nullWaits >= HID_READER_NULL_WAIT_LIMIT/);
+});
+
+test("negative HID writes keep their stall classification and only feed diagnostic counters", () => {
+  assert.match(hidWritePolicySource, /if \(result < 0\) return Outcome\.EXPECTED_STATUS_STALL/);
+  assert.match(javaSource, /negativeResultTookFullTimeout\(written, lastHidWriteDurationMs, reportTimeout\)\)\s*slowNegativeWrites\+\+/);
+  assert.match(javaSource, /result\.put\("slowNegativeWrites", slowNegativeWrites\)/);
+  assert.match(javaSource, /result\.put\("emptyReads", emptyReads\)/);
+  assert.match(javaSource, /result\.put\("malformedReports", malformedReports\)/);
+});
+
+test("pairing stays successful when only the relay service start is refused, and traffic cannot evict lifecycle events", () => {
+  assert.match(relayPluginSource, /try \{ startService\(\); \}\s*catch \(RuntimeException startRefused\) \{\s*relayState = "stopped";/);
+  const recorder = readFileSync(new URL("../android/app/src/main/java/org/freevia/qcremote/QcUsbFlightRecorder.java", import.meta.url), "utf8");
+  assert.match(recorder, /JSONObject evicted = evictionCandidate\(entries\);/);
+  assert.match(recorder, /static JSONObject evictionCandidate\(Iterable<JSONObject> entries\)/);
 });

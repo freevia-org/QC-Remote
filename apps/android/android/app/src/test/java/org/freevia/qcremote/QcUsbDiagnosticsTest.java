@@ -94,4 +94,16 @@ public class QcUsbDiagnosticsTest {
             assertTrue(pool.awaitTermination(2, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    public void cheapAccessorsAgreeWithTheSnapshot() {
+        QcUsbDiagnostics diagnostics = new QcUsbDiagnostics();
+        long epoch = diagnostics.beginSession();
+        diagnostics.messageReceived(epoch, 35);
+        diagnostics.messageReceived(epoch, 52);
+        assertEquals(epoch, diagnostics.sessionEpoch());
+        assertEquals(2, diagnostics.messagesReceived());
+        assertEquals(diagnostics.snapshot().messagesReceived, diagnostics.messagesReceived());
+        assertEquals(diagnostics.snapshot().sessionEpoch, diagnostics.sessionEpoch());
+    }
 }

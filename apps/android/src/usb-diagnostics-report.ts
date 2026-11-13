@@ -4,7 +4,7 @@ import type { AndroidUsbDiagnostics } from "./native-services.ts";
  * name: the native side never puts a preset, a device name or a payload in any of them. */
 const SCALAR_FIELDS = [
   "phase", "sessionEpoch", "connected", "synchronized", "messagesReceived", "messagesSent",
-  "rawReportsReceived", "decodeErrors", "expectedWriteStalls", "hidWriteTimeouts", "terminalHidWriteFailures",
+  "rawReportsReceived", "decodeErrors", "expectedWriteStalls", "slowNegativeWrites", "terminalHidWriteFailures",
   "emptyReads", "malformedReports", "lastMessageType", "readAttempts", "negativeReads",
   "interfaceId", "inputEndpointAddress", "inputMaxPacketSize", "reportBytes",
   "lastHidWriteResult", "lastHidWriteDurationMs", "maxHidWriteDurationMs", "lastHidWriteIncludedReportId",

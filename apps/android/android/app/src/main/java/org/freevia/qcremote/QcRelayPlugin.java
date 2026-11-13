@@ -331,8 +331,16 @@ public final class QcRelayPlugin extends Plugin {
                         // Pairing is durable even when the QC is not attached.
                         // The connectedDevice service starts after USB access
                         // is granted, never before Android's runtime prerequisite.
-                        if (QcUsbPlugin.relayForegroundServiceEligible() || QcUsbPlugin.relayDemoAvailable()) startService();
-                        else relayState = "stopped";
+                        // Pairing is already durable. Starting a service from the background
+                        // (the browser flow leaves the app there) can be refused by Android;
+                        // that must not read as a failed activation of a saved pairing.
+                        if (QcUsbPlugin.relayForegroundServiceEligible() || QcUsbPlugin.relayDemoAvailable()) {
+                            try { startService(); }
+                            catch (RuntimeException startRefused) {
+                                relayState = "stopped";
+                                android.util.Log.e("QcRelayPlugin", "The relay service could not start after pairing; it starts when the app is visible.", startRefused);
+                            }
+                        } else relayState = "stopped";
                         JSObject result = new JSObject(); result.put("paired", true); result.put("endpoint", endpoint); result.put("state", "paired");
                         if (payload.opt("previousDeviceReplacementPending") instanceof Boolean)
                             result.put("previousDeviceReplacementPending",payload.getBoolean("previousDeviceReplacementPending"));
