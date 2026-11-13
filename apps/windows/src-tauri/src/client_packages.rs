@@ -5085,7 +5085,7 @@ fn install_claude_desktop_extension_blocking() -> Result<Value, String> {
     write_package_bytes_with(
         &package_path,
         &claude_desktop_extension()?,
-        |file, bytes| std::io::Write::write_all(file, bytes),
+        std::io::Write::write_all,
     )
     .map_err(|error| format!("Could not prepare the Claude extension: {error}"))?;
 

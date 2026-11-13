@@ -1469,7 +1469,7 @@ fn chatgpt_msix_path_uses_the_package_install_location() {
 #[test]
 fn claude_desktop_search_never_accepts_the_claude_code_cli() {
     // `claude.exe` on PATH or in App Paths is the Claude Code CLI.
-    assert!(!CLAUDE_DESKTOP_SEARCH.ambient_lookup);
+    const { assert!(!CLAUDE_DESKTOP_SEARCH.ambient_lookup) };
     assert!(CLAUDE_DESKTOP_SEARCH.ambient_names().is_empty());
     assert_eq!(CLAUDE_DESKTOP_SEARCH.executable_names, &["claude.exe"]);
     assert_eq!(
