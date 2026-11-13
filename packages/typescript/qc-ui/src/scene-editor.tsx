@@ -119,7 +119,7 @@ export function CorOsSceneCommand(props: SceneCommandOverlayProps) {
       <p>{SCENE_COMMAND_PROMPT}</p>
       {/* Plain buttons in a labelled group: a listbox would promise arrow-key movement this list does not have. */}
       {mirrorsUnit ? null : <div className="scene-command-destinations qc-scroll-rail" role="group" aria-label="Destination scene">
-        {scenes.map((scene, index) => index === sourceScene ? null : <button type="button" key={scene} disabled={pending} onClick={() => onSelect(index)}><span>{sceneLetter(index)}</span>{scene}</button>)}
+        {scenes.map((scene, index) => index === sourceScene ? null : <button type="button" key={index} disabled={pending} onClick={() => onSelect(index)}><span>{sceneLetter(index)}</span>{scene}</button>)}
       </div>}
       <footer><button type="button" disabled={pending} onClick={dismiss}>CANCEL</button></footer>
     </section>
