@@ -76,6 +76,14 @@ fn target_guarded_tool(spec: &ActionSpec) -> Tool {
     tool
 }
 
+/// Every generated action as served: schema rewritten and target guard added.
+/// A pure function of compile-time data, so it is built once per process
+/// instead of deep-cloning every schema on each `tools/list` and lookup.
+fn guarded_action_tools() -> &'static [Tool] {
+    static TOOLS: OnceLock<Vec<Tool>> = OnceLock::new();
+    TOOLS.get_or_init(|| ACTIONS.iter().map(target_guarded_tool).collect())
+}
+
 fn take_target_guard(args: &mut Map<String, Value>) -> Result<Option<crate::BrokerTarget>, String> {
     let Some(value) = args.remove(TARGET_GUARD) else {
         return Ok(None);
@@ -277,9 +285,9 @@ impl QcMcp {
     }
 
     pub fn tools(&self) -> Vec<Tool> {
-        ACTIONS
+        guarded_action_tools()
             .iter()
-            .map(target_guarded_tool)
+            .cloned()
             .chain(std::iter::once(device_knowledge_search_tool()))
             .chain(self.session_target.as_ref().map(|_| session_status_tool()))
             .collect()
@@ -385,16 +393,43 @@ fn tool_result(name: &str, value: Value) -> CallToolResult {
     result
 }
 
+/// Counts serialized bytes without keeping them, and fails as soon as the
+/// total passes the limit so an oversize result stops being walked early.
+struct SizeLimit {
+    written: usize,
+    limit: usize,
+}
+
+impl std::io::Write for SizeLimit {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.written = self.written.saturating_add(buffer.len());
+        if self.written > self.limit {
+            return Err(std::io::Error::other("result exceeds the size limit"));
+        }
+        Ok(buffer.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn validate_backend_result(method: &str, result: &Value) -> Result<(), String> {
     const MAX_RESULT_BYTES: usize = 16 * 1024 * 1024;
-    if serde_json::to_vec(result)
-        .map_err(|_| format!("{method} returned a non-JSON result"))?
-        .len()
-        > MAX_RESULT_BYTES
-    {
-        return Err(format!(
-            "{method} returned a result larger than the gateway frame limit"
-        ));
+    validate_backend_result_within(method, result, MAX_RESULT_BYTES)
+}
+
+fn validate_backend_result_within(
+    method: &str,
+    result: &Value,
+    limit: usize,
+) -> Result<(), String> {
+    let mut counter = SizeLimit { written: 0, limit };
+    if serde_json::to_writer(&mut counter, result).is_err() {
+        return Err(if counter.written > limit {
+            format!("{method} returned a result larger than the gateway frame limit")
+        } else {
+            format!("{method} returned a non-JSON result")
+        });
     }
     generated_result_kinds::validate_result(method, result)
 }
@@ -410,7 +445,8 @@ fn sanitize_model_result(mut value: Value) -> Value {
             Value::Object(object) => {
                 object.retain(|name, _| {
                     !qc_relay_protocol::REMOVED_IDENTIFIER_FIELDS
-                        .contains(&name.to_ascii_lowercase().as_str())
+                        .iter()
+                        .any(|field| name.eq_ignore_ascii_case(field))
                 });
                 for child in object.values_mut() {
                     visit(child);
@@ -532,10 +568,10 @@ impl ServerHandler for QcMcp {
         if name == DEVICE_KNOWLEDGE_SEARCH_TOOL {
             return Some(device_knowledge_search_tool());
         }
-        ACTIONS
+        guarded_action_tools()
             .iter()
-            .find(|a| a.name == name)
-            .map(target_guarded_tool)
+            .find(|tool| tool.name == name)
+            .cloned()
     }
 
     async fn call_tool(
@@ -1068,6 +1104,41 @@ fn gateway_params(spec: &ActionSpec, args: Map<String, Value>) -> Map<String, Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cached_tool_list_matches_a_fresh_build_and_lookups_agree() {
+        let fresh: Vec<Tool> = ACTIONS.iter().map(target_guarded_tool).collect();
+        let cached = guarded_action_tools();
+        assert_eq!(cached.len(), fresh.len());
+        for (cached, fresh) in cached.iter().zip(&fresh) {
+            assert_eq!(
+                serde_json::to_value(cached).unwrap(),
+                serde_json::to_value(fresh).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn the_result_ceiling_accepts_exactly_the_limit_and_refuses_one_byte_more() {
+        // {"k":"<n x>"} serializes to n + 8 bytes.
+        let at_limit = json!({"k": "x".repeat(92)});
+        assert_eq!(serde_json::to_vec(&at_limit).unwrap().len(), 100);
+        assert!(validate_backend_result_within("system.status", &at_limit, 100).is_ok());
+        let over = json!({"k": "x".repeat(93)});
+        assert_eq!(
+            validate_backend_result_within("system.status", &over, 100),
+            Err("system.status returned a result larger than the gateway frame limit".into())
+        );
+    }
+
+    #[test]
+    fn identifier_fields_are_removed_regardless_of_key_case() {
+        let cleaned = sanitize_model_result(json!({
+            "Serial": "1", "DEVICENAME": "d", "deviceSerial": "s", "keep": 1,
+            "nested": [{"deviceName": "n", "SERIAL": "x", "keep": 2}]
+        }));
+        assert_eq!(cleaned, json!({"keep": 1, "nested": [{"keep": 2}]}),);
+    }
 
     struct SessionFenceBackend {
         status: Mutex<Value>,
