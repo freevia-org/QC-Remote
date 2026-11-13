@@ -152,6 +152,13 @@ export class PresetLifetime {
   }
 
   private notify(): void {
-    for (const listener of this.listeners) listener();
+    // Iterate a copy and isolate each listener, as DeviceMutationAdmission does: a throwing
+    // subscriber must not abort observe()/invalidate()/reset() or skip the other subscribers.
+    for (const listener of [...this.listeners]) {
+      try { listener(); }
+      catch (error) {
+        try { console.error("Preset lifetime listener failed:", error); } catch { /* Diagnostic only. */ }
+      }
+    }
   }
 }

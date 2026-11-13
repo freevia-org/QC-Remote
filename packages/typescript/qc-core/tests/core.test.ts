@@ -947,3 +947,25 @@ test("a scene colour update outside the eight scenes is ignored and a lone one y
   assert.equal(dense?.[3], "#ff0000");
   assert.equal(dense?.[0], "");
 });
+
+test("a non-finite tempo keeps the tempo pulse epoch instead of returning NaN", () => {
+  assert.equal(synchronizeTempoPulseEpoch(1000, 1500, 0, Number.NaN), 1000);
+  assert.equal(synchronizeTempoPulseEpoch(1000, 1500, 0, undefined as unknown as number), 1000);
+  assert.equal(synchronizeTempoPulseEpoch(undefined, 1500, 0, Number.NaN), 1500);
+});
+
+test("a throwing preset lifetime listener does not stop observation or the other listeners", async () => {
+  const { PresetLifetime } = await import("../src/preset-lifetime.ts");
+  const lifetime = new PresetLifetime({ setlistKey: "/a", presetPosition: 0 });
+  const errors = test.mock.method(console, "error", () => {});
+  let ran = 0;
+  lifetime.subscribe(() => { throw new Error("listener failed"); });
+  lifetime.subscribe(() => { ran++; });
+  lifetime.observe({ setlistKey: "/a", presetPosition: 1 });
+  assert.equal(ran, 1);
+  assert.equal(lifetime.version, 1);
+  lifetime.invalidate();
+  assert.equal(ran, 2);
+  assert.equal(errors.mock.callCount(), 2);
+  errors.mock.restore();
+});
