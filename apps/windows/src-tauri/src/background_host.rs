@@ -212,6 +212,8 @@ async fn run(
     let mut credential_snapshot = None;
     let mut listener = BackgroundListeners::default();
     let mut relay_host: Option<BackgroundRelay> = None;
+    let mut relay_backoff = crate::relay_task::RestartBackoff::default();
+    let mut relay_identity = String::new();
     let mut last_settings = Instant::now() - Duration::from_secs(5);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     let mut maintenance: Option<tokio::task::JoinHandle<()>> = None;
@@ -313,13 +315,36 @@ async fn run(
                     serde_json::to_string(&(&c.endpoint, &c.device_id, &c.device_credential)).ok()
                 })
                 .unwrap_or_default();
+            if relay_identity != identity {
+                relay_identity = identity.clone();
+                // A different pairing starts the schedule again.
+                relay_backoff.reset();
+            }
+            if let Some(host) = relay_host.as_ref() {
+                if *host.state.borrow() == ConnectionState::Connected && !host.task.is_finished() {
+                    relay_backoff.reset();
+                }
+            }
+            let finished_state = relay_host
+                .as_ref()
+                .filter(|host| host.credential == identity && host.task.is_finished())
+                .map(|host| *host.state.borrow());
             if relay_host
                 .as_ref()
-                .is_some_and(|host| host.credential != identity || host.task.is_finished())
+                .is_some_and(|host| host.credential != identity)
             {
                 relay_host = None;
                 // The list belongs to the relay (and pairing) just dropped.
                 crate::remote_grants::clear();
+            } else if let Some(state) = finished_state {
+                // The same credential whose client already ended: a refusal
+                // is kept (and not retried) until the pairing changes; any
+                // other exit is retried on a capped, growing delay instead of
+                // a reconnect and credential write every settings pass.
+                if relay_backoff.may_restart(Instant::now(), state) {
+                    relay_host = None;
+                    crate::remote_grants::clear();
+                }
             }
             if remote_enabled && relay_host.is_none() {
                 if let Some(credentials) = credential {
