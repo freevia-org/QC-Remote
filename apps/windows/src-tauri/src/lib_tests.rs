@@ -5183,6 +5183,30 @@ fn a_write_failure_waits_for_the_delayed_release_reader_before_automatic_recover
 }
 
 #[test]
+fn a_dead_transport_in_a_guarded_requests_status_read_retires_the_connection() {
+    let (mut gateway, _peer, release_reader, _flag) =
+        gateway_with_a_failed_writer_and_gated_release_reader(false);
+    gateway.connected = true;
+    // The read that precedes every physical-only or target-guarded request
+    // (`preflight_status`) ends its connection through this step, as the
+    // request's own transport failure does. The health write that follows it
+    // needs the owned native test producer, so it is left out here.
+    assert!(matches!(
+        gateway
+            .process
+            .as_mut()
+            .unwrap()
+            .request_unchecked(rpc::RUNTIME_STATUS, json!({})),
+        Err(GatewayRequestFailure::Transport(_))
+    ));
+    gateway.end_connection_after_transport_failure();
+    assert!(gateway.process.is_none(), "the dead process stays attached");
+    assert!(gateway.retiring_process.is_some());
+    assert!(!gateway.connected);
+    release_reader.send(()).unwrap();
+}
+
+#[test]
 fn an_explicit_reconnect_supersedes_a_delayed_old_reader_generation() {
     let (mut gateway, _peer, release_reader, flag) =
         gateway_with_a_failed_writer_and_gated_release_reader(true);
@@ -10818,4 +10842,23 @@ fn array_result_keeps_its_demo_target_in_the_native_envelope() {
         process.last_broker_target.as_ref().unwrap().source,
         qc_relay_client::BrokerTargetSource::Demo
     );
+}
+
+#[test]
+fn installer_stop_helpers_are_waited_on_with_a_deadline() {
+    // `ExecWait` has no limit: a wedged resident host - the condition these
+    // hooks exist for - would hold a silent or /UPDATE install forever.
+    let hooks = include_str!("../windows/hooks.nsh");
+    let waits: Vec<&str> = hooks
+        .lines()
+        .filter(|line| line.trim_start().starts_with("ExecWait"))
+        .collect();
+    assert!(waits.is_empty(), "unbounded waits: {waits:?}");
+    for helper in ["--stop-for-install", "uninstall.exe\" /S"] {
+        let line = hooks
+            .lines()
+            .find(|line| line.contains(helper) && line.contains("nsExec::"))
+            .unwrap_or_else(|| panic!("no nsExec call runs {helper}"));
+        assert!(line.contains("/TIMEOUT="), "{line}");
+    }
 }

@@ -4449,12 +4449,9 @@ impl Gateway {
             self.publish_lock_free_reads();
         }
         let mut origin = None;
-        if let Some(expected) = &self.expected_broker_target {
-            let status = self
-                .process
-                .as_mut()
-                .ok_or_else(existing_connection_unavailable)?
-                .request_unchecked(rpc::RUNTIME_STATUS, json!({}))?;
+        if let Some(expected) = self.expected_broker_target.clone() {
+            let expected = &expected;
+            let status = self.preflight_status(method)?;
             let supported = status
                 .get("capabilities")
                 .and_then(Value::as_array)
@@ -4468,11 +4465,7 @@ impl Gateway {
             }
         }
         if self.physical_only && method != rpc::RUNTIME_STATUS {
-            let status = self
-                .process
-                .as_mut()
-                .ok_or_else(existing_connection_unavailable)?
-                .request_unchecked(rpc::RUNTIME_STATUS, json!({}))?;
+            let status = self.preflight_status(method)?;
             let supported = status
                 .get("capabilities")
                 .and_then(Value::as_array)
@@ -4677,6 +4670,42 @@ impl Gateway {
         self.publish_lock_free_reads();
         write_runtime_health(self, method, status, detail.as_deref());
         output
+    }
+
+    /// The status read that precedes a guarded request. A dead transport here
+    /// has to end the connection exactly as one on the request itself does:
+    /// returned straight out of the caller, the dead process stayed attached
+    /// and readiness stayed true, and every further guarded call repeated the
+    /// same failure until an unguarded one happened to reach the real path.
+    fn preflight_status(&mut self, method: &str) -> Result<Value, GatewayRequestFailure> {
+        let result = self
+            .process
+            .as_mut()
+            .ok_or_else(existing_connection_unavailable)?
+            .request_unchecked(rpc::RUNTIME_STATUS, json!({}));
+        if let Err(
+            GatewayRequestFailure::Transport(message)
+            | GatewayRequestFailure::UnansweredMutation(message),
+        ) = &result
+        {
+            let detail = message.clone();
+            self.end_connection_after_transport_failure();
+            write_runtime_health(self, method, "transport-error", Some(&detail));
+        }
+        result
+    }
+
+    fn end_connection_after_transport_failure(&mut self) {
+        self.intentional_release |= self.process.as_ref().is_some_and(|process| {
+            process
+                .intentional_release
+                .load(std::sync::atomic::Ordering::Acquire)
+        });
+        self.retire_current_process();
+        self.connected = false;
+        self.forget_device_session_if_disconnected();
+        publish_gateway_readiness(false);
+        self.publish_lock_free_reads();
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
