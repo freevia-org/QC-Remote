@@ -418,8 +418,8 @@ function createBridgeEnvelope(options = {}) {
     if (output.destroyed || output.writableEnded) throw fail(new Error("Bridge stdout is no longer available"));
     const bytes = Buffer.byteLength(JSON.stringify(message));
     const reserved = isControl(message);
-    if (bytes > (reserved ? controlBytes : requestBytes)) return undefined;
-    if ((reserved ? control : ordinary) >= (reserved ? controlCount : ordinaryCount)) return undefined;
+    if (bytes > (reserved ? controlBytes : requestBytes)) return { refused: "oversize", limit: reserved ? controlBytes : requestBytes };
+    if ((reserved ? control : ordinary) >= (reserved ? controlCount : ordinaryCount)) return { refused: "busy" };
     const retained = charge(2 * bytes);
     if (reserved) control++; else ordinary++;
     let held = true;
@@ -1521,6 +1521,39 @@ async function attemptAnnouncement(client, stopping) {
   return undefined;
 }
 
+const MAX_QUEUED_REFUSALS = 64;
+// Refusals are written one at a time. Queued all at once inside a single
+// batch they filled the stdout queue's headroom, and the overflow tore the
+// bridge down with every admitted call still in flight. Beyond a small cap a
+// refusal is dropped with a diagnostic instead of growing the queue.
+function refusalReplies(emit, diagnostics, state = refusalState) {
+  return (request, refusal, replyable) => {
+    if (!replyable) {
+      diagnostics.write(`[qc-remote-mcp] dropped ${request?.method ?? "a message"} that could not be admitted\n`);
+      return;
+    }
+    if (state.queued >= MAX_QUEUED_REFUSALS) {
+      diagnostics.write("[qc-remote-mcp] dropped a refusal reply: too many queued\n");
+      return;
+    }
+    const oversize = refusal?.refused === "oversize";
+    state.queued++;
+    state.chain = state.chain
+      .then(() => emit({ jsonrpc: "2.0", id: request.id, error: {
+        code: -32000,
+        message: oversize
+          ? `QC Remote request is larger than the ${refusal.limit} byte limit; it was not dispatched.`
+          : "QC Remote bridge is busy; this request was not dispatched.",
+        data: { requestSent: false, retryable: !oversize },
+      } }))
+      .finally(() => { state.queued--; });
+    // A failed write is the bridge's own failure; surface it where inFlight does.
+    state.chain.catch((error) => bridgeEnvelope?.fail(error));
+    state.chain = state.chain.catch(() => undefined);
+  };
+}
+const refusalState = { queued: 0, chain: Promise.resolve() };
+
 async function main(options = {}) {
   if (startedBridge) throw new Error("This bridge module already owns a main invocation");
   startedBridge = true;
@@ -1552,17 +1585,15 @@ async function main(options = {}) {
           // admitted tool. The whole line and each individual request are bounded.
           const batch = Array.isArray(message) ? message : [message];
           for (const single of batch) {
-            const release = bridgeEnvelope.admit(single);
-            if (release) { own(handle(single), release); continue; }
-            // Control overrun cannot silently lose a cancellation. A caller with
-            // no request id also cannot be told that refusal was delivered.
-            if (bridgeEnvelope.isControl(single) || !canReply(single)) {
+            const admitted = bridgeEnvelope.admit(single);
+            if (typeof admitted === "function") { own(handle(single), admitted); continue; }
+            // Only a cancellation cannot be refused quietly: losing it leaves an
+            // admitted call running that the client believes it stopped.
+            if (single?.method === "notifications/cancelled") {
               throw new Error("Bridge control admission headroom exhausted");
             }
-            own(emitJson({ jsonrpc:"2.0", id:single.id, error:{
-              code:-32000, message:"QC Remote bridge is busy; this request was not dispatched.",
-              data:{requestSent:false,retryable:true}
-            }}));
+            const reply = refusalReplies(emitJson, bridgeEnvelope.diagnostics);
+            reply(single, admitted, canReply(single));
           }
         });
       } catch (error) {
@@ -1589,6 +1620,7 @@ async function main(options = {}) {
     backgroundStop.abort(new Error("Bridge telemetry is stopping"));
     await Promise.allSettled([...backgroundOriginals]);
     await Promise.allSettled([...inFlight]);
+    await refusalState.chain;
     await releaseSession();
     try { await bridgeEnvelope.settleOutput(); }
     finally {
@@ -1597,7 +1629,7 @@ async function main(options = {}) {
   }
 }
 
-module.exports = { createBridgeEnvelope, main };
+module.exports = { createBridgeEnvelope, main, refusalReplies };
 // Claude's built-in Node host sets argv[1] to this entry point, then dynamically
 // imports it from its own bootstrap. In that host require.main is NOT this
 // module. Still keep ordinary library imports inert for embedded/test callers.
