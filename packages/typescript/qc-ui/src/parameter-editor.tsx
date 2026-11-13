@@ -930,5 +930,10 @@ export function CorOsParameterEditor(props: CorOsParameterEditorProps) {
   if (owner.current.context !== props.editorContextKey || owner.current.target !== target) {
     owner.current = { context: props.editorContextKey, target, generation: owner.current.generation + 1 };
   }
-  return <CorOsParameterEditorSession key={owner.current.generation} {...props} />;
+  // The app's "open with menu" flag belongs to the editor it opened: a later remount (another scene) must not re-open the menu.
+  const menuFlagOwner = useRef<number | undefined>(undefined);
+  if (!props.initialMenuOpen) menuFlagOwner.current = undefined;
+  else if (menuFlagOwner.current === undefined) menuFlagOwner.current = owner.current.generation;
+  const initialMenuOpen = Boolean(props.initialMenuOpen) && menuFlagOwner.current === owner.current.generation;
+  return <CorOsParameterEditorSession key={owner.current.generation} {...props} initialMenuOpen={initialMenuOpen} />;
 }
