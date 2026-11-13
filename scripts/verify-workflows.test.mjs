@@ -79,3 +79,16 @@ test('every job in every workflow declares timeout-minutes', () => {
     }
   }
 });
+
+// A Python test module or generator check that no workflow runs is a gate that
+// silently does not exist.
+test('every Python test module and the header-glyph generator check is run by a workflow', () => {
+  const all = readdirSync(workflows)
+    .filter((entry) => /\.ya?ml$/.test(entry))
+    .map((entry) => readFileSync(path.join(workflows, entry), 'utf8'))
+    .join('\n');
+  for (const file of readdirSync(path.join(root, 'scripts')).filter((entry) => /^test_.*\.py$/.test(entry))) {
+    assert.ok(all.includes(`scripts.${file.replace(/\.py$/, '')}`), `${file} is not run by any workflow`);
+  }
+  assert.match(all, /python3 scripts\/generate-coros-header-font\.py --check/);
+});
