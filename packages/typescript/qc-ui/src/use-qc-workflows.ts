@@ -1,4 +1,4 @@
-import { bindDeviceCommandScope } from "./device-command-ownership.ts";
+import { bindDeviceCommandScope, deviceCommandBusy } from "./device-command-ownership.ts";
 import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import type { ConnectionSource, GatewayTransport, PresetSnapshot } from "@qc-remote/client";
 import { SupersededPresetOperation, type QcDeviceTransport } from "@qc-remote/core";
@@ -225,7 +225,8 @@ export function useQcWorkflows(options: UseQcWorkflowsOptions) {
     grid.closeAddPicker();
     history.clear();
     preset.closeSave();
-    options.setPending(false);
+    // A device-wide command another hook still holds keeps its busy flag.
+    if (!deviceCommandBusy(options.setPending)) options.setPending(false);
   };
   useEffect(() => controller.lifetime.subscribe(() => invalidate.current()), [controller.lifetime]);
   // A clipboard names a preset address, or holds settings read, on the
