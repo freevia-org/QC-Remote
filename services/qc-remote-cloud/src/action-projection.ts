@@ -95,7 +95,7 @@ export function projectAction(actionName: string, suppliedParams: Record<string,
     if (!allowed.has(key)) actionInputError(`\"${key}\" is not accepted by ${action.name}`);
   }
   for (const key of action.required) {
-    if (!(key in rawParams) || rawParams[key] === undefined) actionInputError(`\"${key}\" is required for ${action.name}`);
+    if (!Object.hasOwn(rawParams, key) || rawParams[key] === undefined) actionInputError(`\"${key}\" is required for ${action.name}`);
   }
   // Names were once the whole check here, so a tempo of 100000 and a scene
   // index of 99 both reached the device. The contract publishes the ranges,
@@ -115,7 +115,7 @@ export function projectAction(actionName: string, suppliedParams: Record<string,
   for (const argument of gatewayMethod.args ?? []) {
     const target = typeof argument === "string" ? argument : argument.name;
     const source = actionSourceFor(action.name, target);
-    if (source in rawParams) {
+    if (Object.hasOwn(rawParams, source)) {
       params[target] = rawParams[source];
     } else if (target.startsWith("confirm")) {
       // Confirmation arguments which are not action inputs (currently

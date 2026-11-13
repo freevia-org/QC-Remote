@@ -144,19 +144,19 @@ export function schemaViolations(schema: Schema, value: unknown, path = ""): Sch
     const properties = (schema.properties ?? {}) as Record<string, Schema>;
     if (Array.isArray(schema.required)) {
       for (const key of schema.required as string[]) {
-        if (!(key in object) || object[key] === undefined) problems.push({ path: at(path, key), message: "is required" });
+        if (!Object.hasOwn(object, key) || object[key] === undefined) problems.push({ path: at(path, key), message: "is required" });
       }
     }
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(object)) {
-        if (!(key in properties)) problems.push({ path: at(path, key), message: "is not accepted here" });
+        if (!Object.hasOwn(properties, key)) problems.push({ path: at(path, key), message: "is not accepted here" });
       }
     }
     // JSON Schema applies `properties` only to keys that are present, which is
     // what makes the `anyOf` branches below able to say "when the port is 4,
     // impedance must be null" without also demanding impedance.
     for (const [key, subschema] of Object.entries(properties)) {
-      if (key in object && object[key] !== undefined) {
+      if (Object.hasOwn(object, key) && object[key] !== undefined) {
         problems.push(...schemaViolations(subschema, object[key], at(path, key)));
       }
     }
