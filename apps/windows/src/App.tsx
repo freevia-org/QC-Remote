@@ -20,7 +20,7 @@ import { saveOpenedWorkspaceCopy } from "./workspace-copy";
 import { captureGatewaySession } from "@qc-remote/ui";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
 import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegrationPresentation, claudeExtensionPresentation, lmStudioAppName, lmStudioEnableSwitch, localAccessNotice, localActionFailure, localPairOutcome, managedMcpIntegrationPresentation, type LocalActionOutcome } from "./local-integration-presentation";
-import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, qcBackgroundDeviceLive, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, waitForSynchronizedQc, qcReconcilePhysicalDevices, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
+import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, qcBackgroundDeviceLive, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, waitForSynchronizedQc, qcReconcilePhysicalDevices, qcKeepRuntime, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
 import { DEFAULT_BROKER_TRAY_STATUS, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
 import { callTauri } from "./tauri-invoke.ts";
@@ -816,7 +816,7 @@ export function App() {
     const attempt = connectionAttempts.capture();
     void tauriTransport.runtimeStatus().then((status) => {
       if (!attempt.current()) return;
-      setRuntime(status);
+      setRuntime((current) => qcKeepRuntime(current, status));
       setConnectionEvents((current) => [...current, { at: new Date().toISOString(), event: "runtime-ready", result: status.gatewayAvailable ? "success" : "warning", detail: status.message || (status.gatewayAvailable ? "Device gateway is available." : "Device gateway is unavailable.") }]);
     }).catch((error: Error) => { if (attempt.current()) setNotice(error.message); });
     return () => {
@@ -838,7 +838,7 @@ export function App() {
       try {
         const status = await tauriTransport.runtimeStatus();
         if (cancelled || !attempt.current()) return;
-        setRuntime(status);
+        setRuntime((current) => qcKeepRuntime(current, status));
         if (connectionRef.current.phase === "ready" && !connectionRef.current.demo && connectionRef.current.source === "device") {
           if (!runtimeHasSynchronizedQc(status)) {
             beginLiveRecovery(status.usbDiagnostics?.detail || status.message || "The Quad Cortex is not synchronized");
@@ -1446,7 +1446,7 @@ export function App() {
         if (!runtimeHasSynchronizedQc(verifiedRuntime)) {
           throw new Error(verifiedRuntime.usbDiagnostics?.detail || "The Quad Cortex preset is not synchronized");
         }
-        setRuntime(verifiedRuntime);
+        setRuntime((current) => qcKeepRuntime(current, verifiedRuntime));
         setSnapshot(synchronized);
         setSelectedBlockId("");
         await finishSyncProgress(attempt);
@@ -1545,7 +1545,7 @@ export function App() {
           }
           const current = await tauriTransport.currentSnapshot();
           if (!attempt.current() || !operationCurrent()) return;
-          setRuntime(verifiedRuntime);
+          setRuntime((current) => qcKeepRuntime(current, verifiedRuntime));
           clearUndo();
           presetWorkflow.resetCache();
           setSnapshot(current);
@@ -1832,7 +1832,7 @@ export function App() {
         const current = await tauriTransport.currentSnapshot();
         if (!attempt.current() || !operationCurrent()) return;
         demoDeviceSession.useDevice();
-        setRuntime(verifiedRuntime);
+        setRuntime((current) => qcKeepRuntime(current, verifiedRuntime));
         clearUndo();
         presetWorkflow.resetCache();
         nativeStateAvailable.current = false;

@@ -11,7 +11,7 @@ test("USB loss and failed Connect expose Disconnected, never a ready Demo sessio
     assert.equal(connection.detail, `Disconnected. ${reason}`);
   }
 });
-import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, QC_FOLLOW_RETRY_MAX_MS, QC_FOLLOW_RETRY_MIN_MS, QC_FOLLOW_STABLE_LIVE_MS, QC_ORPHANED_DISCOVERING_MS, QC_SESSION_LEFT_OPEN_NOTICE, qcAutomaticConnectHeld, qcBackgroundDeviceLive, qcConnectionDuringBrokerPhase, qcDisconnectClosedSession, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcFollowRetryDelay, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcReconcilePhysicalDevices, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcShouldFollowDevicePhase, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, qcWatchConnectStall, waitForSynchronizedQc, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect } from "../src/qc-readiness.ts";
+import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, QC_FOLLOW_RETRY_MAX_MS, QC_FOLLOW_RETRY_MIN_MS, QC_FOLLOW_STABLE_LIVE_MS, QC_ORPHANED_DISCOVERING_MS, QC_SESSION_LEFT_OPEN_NOTICE, qcAutomaticConnectHeld, qcBackgroundDeviceLive, qcConnectionDuringBrokerPhase, qcDisconnectClosedSession, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcFollowRetryDelay, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcKeepRuntime, qcSameRuntimeView, qcReconcilePhysicalDevices, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcShouldFollowDevicePhase, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, qcWatchConnectStall, waitForSynchronizedQc, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect } from "../src/qc-readiness.ts";
 
 test("connect waits for transient broker synchronization before reporting its physical result", async () => {
   const waiting = { gatewayAvailable: true, platform: "Linux", message: "", usbDiagnostics: { phase: "ready", connected: true, synchronized: false, detail: "Preset sync pending" } };
@@ -773,4 +773,37 @@ test("the watchdog leaves every other state alone, a user's Disconnect included"
     const dog = watchdog({ connection, connect: null, otherWorkPending: false });
     assert.equal(ticksUntilAbandon(dog, 500), Infinity, `${connection.source} ${connection.phase}`);
   }
+});
+
+test("a runtime status that differs only in counters is the same view (WF-1)", () => {
+  const base = { gatewayAvailable: true, platform: "Windows", message: "", usbDiagnostics: { phase: "ready", connected: true, synchronized: true, detail: "", messagesReceived: 1, messagesSent: 1, updaterRelay: { requestsSeen: 1 } } };
+  const counted = { ...base, usbDiagnostics: { ...base.usbDiagnostics, messagesReceived: 900, messagesSent: 700, lastMessageType: 9 } };
+  assert.equal(qcSameRuntimeView(base, counted), true);
+  assert.equal(qcKeepRuntime(base, counted), base, "the held object is kept");
+  const changes = [
+    { ...base, usbDiagnostics: { ...base.usbDiagnostics, synchronized: false } },
+    { ...base, usbDiagnostics: { ...base.usbDiagnostics, writesQuarantined: true } },
+    { ...base, usbDiagnostics: { ...base.usbDiagnostics, updaterRelay: { requestsSeen: 2 } } },
+    { ...base, usbDiagnostics: { ...base.usbDiagnostics, deviceSuspended: true, suspension: { suspensionsObserved: 1 } } },
+    { ...base, message: "gateway restarted" },
+    { ...base, gatewayAvailable: false },
+    { ...base, usbDiagnostics: undefined }
+  ];
+  for (const changed of changes) {
+    assert.equal(qcSameRuntimeView(base, changed as never), false);
+    assert.equal(qcKeepRuntime(base, changed as never), changed);
+  }
+  assert.equal(qcKeepRuntime(undefined, base), base);
+});
+
+test("an unchanged device inventory returns the array already held (WF-1)", () => {
+  const row = { id: "a", name: "Quad Cortex", connected: true, phase: "ready" };
+  const held = [row];
+  assert.equal(qcReconcilePhysicalDevices([{ ...row }], "a", held), held);
+  assert.notEqual(qcReconcilePhysicalDevices([{ ...row, phase: "syncing" }], "a", held), held);
+  assert.notEqual(qcReconcilePhysicalDevices([{ ...row }, { id: "b", name: "Quad Cortex", connected: false, phase: "disconnected" }], "a", held), held);
+  // A stale placeholder is stable across polls, and not renamed twice.
+  const replacement = { id: "b", name: "Quad Cortex", connected: true, phase: "ready" };
+  const first = qcReconcilePhysicalDevices([replacement], "a", held);
+  assert.equal(qcReconcilePhysicalDevices([{ ...replacement }], "a", first), first);
 });

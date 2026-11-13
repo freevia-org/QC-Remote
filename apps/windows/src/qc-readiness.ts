@@ -1,4 +1,5 @@
 import type { ConnectionState, RuntimeStatus } from "@qc-remote/client";
+import { summarizeUpdaterRelay } from "./app-window-content.ts";
 
 /**
  * `gatewayAvailable` only means the local Rust process answered. Newer
@@ -14,6 +15,69 @@ export function runtimeHasSynchronizedQc(runtime?: RuntimeStatus): boolean {
     && usb.phase === "ready"
     && usb.connected
     && usb.synchronized);
+}
+
+/**
+ * The part of a runtime status the window draws or decides from. The status
+ * itself is re-read four times a second and carries message counters, so it
+ * is never identical between two reads; these fields change only when
+ * something the user can see changes.
+ */
+export interface QcRuntimeView {
+  platform: string;
+  gatewayAvailable: boolean;
+  message: string;
+  usb: {
+    phase: string;
+    connected: boolean;
+    synchronized: boolean;
+    detail: string;
+    writesQuarantined: boolean;
+    writeQuarantineReason: string | undefined;
+    suspensionReported: boolean;
+    deviceSuspended: boolean;
+    /** The Settings row's summary of the update relay, as text. */
+    updaterRelay: string;
+  } | null;
+}
+
+export function qcRuntimeView(status: RuntimeStatus): QcRuntimeView {
+  const usb = status.usbDiagnostics;
+  return {
+    platform: status.platform,
+    gatewayAvailable: status.gatewayAvailable,
+    message: status.message,
+    usb: usb ? {
+      phase: usb.phase,
+      connected: usb.connected,
+      synchronized: usb.synchronized,
+      detail: usb.detail,
+      writesQuarantined: Boolean(usb.writesQuarantined),
+      writeQuarantineReason: usb.writeQuarantineReason,
+      suspensionReported: usb.suspension !== undefined,
+      deviceSuspended: Boolean(usb.deviceSuspended),
+      updaterRelay: JSON.stringify(summarizeUpdaterRelay(usb.updaterRelay))
+    } : null
+  };
+}
+
+/** Whether two runtime statuses would draw and decide the same. */
+export function qcSameRuntimeView(left: RuntimeStatus, right: RuntimeStatus): boolean {
+  const a = qcRuntimeView(left);
+  const b = qcRuntimeView(right);
+  if (a.platform !== b.platform || a.gatewayAvailable !== b.gatewayAvailable || a.message !== b.message) return false;
+  if (a.usb === null || b.usb === null) return a.usb === b.usb;
+  const keys = Object.keys(a.usb) as (keyof NonNullable<QcRuntimeView["usb"]>)[];
+  return keys.every((key) => a.usb![key] === b.usb![key]);
+}
+
+/**
+ * The runtime status to keep in state: the one already there while the newly
+ * read one shows nothing different, so a poll that changed only counters does
+ * not re-render the window.
+ */
+export function qcKeepRuntime(current: RuntimeStatus | undefined, next: RuntimeStatus): RuntimeStatus {
+  return current && qcSameRuntimeView(current, next) ? current : next;
 }
 
 /**
@@ -70,10 +134,28 @@ export function qcReconcilePhysicalDevices<Row extends { id: string; name: strin
   selectedId: string | undefined,
   previous: readonly Row[]
 ): Row[] {
+  const next = reconciledPhysicalDevices(inventory, selectedId, previous);
+  // The inventory is polled every two seconds. Rows that read the same are
+  // returned as the array already held, as qcInventoryWhenUnreachable does,
+  // so an unchanged poll does not re-render the window.
+  const unchanged = next.length === previous.length && next.every((row, index) => {
+    const before = previous[index]!;
+    return row.id === before.id && row.name === before.name && row.connected === before.connected && row.phase === before.phase;
+  });
+  return unchanged ? previous as Row[] : next;
+}
+
+function reconciledPhysicalDevices<Row extends { id: string; name: string; connected?: boolean; phase?: string }>(
+  inventory: readonly Row[],
+  selectedId: string | undefined,
+  previous: readonly Row[]
+): Row[] {
   if (!selectedId || inventory.some((device) => device.id === selectedId)) return [...inventory];
   const stale = previous.find((device) => device.id === selectedId);
   if (!stale) return [...inventory];
-  const name = inventory.some((device) => device.name === stale.name) ? `${stale.name} (not detected)` : stale.name;
+  // A placeholder already marked keeps its name; marking it again would append the suffix twice.
+  const marked = stale.connected === false && stale.phase === "disconnected" && stale.name.endsWith(" (not detected)");
+  const name = !marked && inventory.some((device) => device.name === stale.name) ? `${stale.name} (not detected)` : stale.name;
   return [...inventory, { ...stale, name, connected: false, phase: "disconnected" }];
 }
 
