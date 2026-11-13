@@ -790,9 +790,21 @@ pub struct BackupFrameShape {
 }
 
 impl BackupAssembler {
+    #[cfg(test)]
+    pub(crate) fn document_capacity(&self) -> usize {
+        self.document.capacity()
+    }
+
+    /// Frees the partially assembled document but keeps the counters and the started flag, so a
+    /// failed transfer still reports how far it got.
+    pub(crate) fn release_document(&mut self) {
+        self.document = String::new();
+    }
+
     /// Discards any partially assembled document and all counters, ready for a new transfer.
     pub fn reset(&mut self) {
-        self.document.clear();
+        // Drop the allocation, not just the contents: a stalled transfer can hold up to 32 MiB.
+        self.document = String::new();
         self.started = false;
         self.chunks = 0;
         self.ignored_prefix_chunks = 0;
@@ -945,13 +957,17 @@ impl BackupAssembler {
     }
 }
 
+/// The [`ResponseDecodeError::Mismatch`] text of [`decode_tempo_clock`] for a frame whose action
+/// is not UPDATE.
+pub(crate) const TEMPO_CLOCK_NOT_UPDATE: &str = "tempo-clock action is not UPDATE";
+
 /// Decodes a metronome clock push.
 ///
 /// Returns `Ok(None)` for a reply that carries a request id (a reply to a request rather than a push) or that has
 /// no metronome status. Fails if the payload cannot be decoded or the message action is not UPDATE.
 pub fn decode_tempo_clock(payload: &[u8]) -> Result<Option<TempoClock>, ResponseDecodeError> {
     let message: pa::GlobalTempoMessage = decode_reply(payload)?;
-    require_update_action(message.action, "tempo-clock action is not UPDATE")?;
+    require_update_action(message.action, TEMPO_CLOCK_NOT_UPDATE)?;
     if message.request_id.is_some() {
         return Ok(None);
     }

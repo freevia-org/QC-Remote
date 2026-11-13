@@ -16,7 +16,7 @@ use crate::responses::{
     merge_general_settings_publication, merge_io_settings_publication,
     settings_publication_is_retainable,
 };
-use crate::responses::{decode_tempo_clock, TempoClock};
+use crate::responses::{decode_tempo_clock, ResponseDecodeError, TempoClock};
 use crate::state::{
     decode_file_message, BlockDetails, BlockParameter, ModelCatalog, ModelList,
     PresetFolderListing, StateDecodeError, StateDecoder, StateUpdate,
@@ -198,7 +198,18 @@ impl DeviceStateRuntime {
         }
         self.reconcile_current_preset_identity();
         let tempo_clock = if message_type == profile::MESSAGE_TYPE_GLOBAL_TEMPO {
-            decode_tempo_clock(payload).map_err(|error| error.to_string())?
+            match decode_tempo_clock(payload) {
+                Ok(clock) => clock,
+                // A non-UPDATE frame is no clock reading. The state decoder and the
+                // preflight already treat it as a no-op; it must not turn a
+                // reduction that succeeded into an error.
+                Err(ResponseDecodeError::Mismatch(reason))
+                    if reason == crate::responses::TEMPO_CLOCK_NOT_UPDATE =>
+                {
+                    None
+                }
+                Err(error) => return Err(error.to_string()),
+            }
         } else {
             None
         };
@@ -1172,6 +1183,25 @@ mod tests {
             global_observation(&runtime),
             serde_json::json!({"mode": "PRESET", "globalBpm": GLOBAL_BPM})
         );
+    }
+
+    #[test]
+    fn a_non_update_global_tempo_frame_is_a_no_op_not_an_error() {
+        let mut runtime = DeviceStateRuntime::new();
+        let read = pa::GlobalTempoMessage {
+            action: pa::message_action::Enum::Read as i32,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let observation = runtime
+            .ingest(profile::MESSAGE_TYPE_GLOBAL_TEMPO, &read)
+            .expect("a non-UPDATE tempo frame must not fail the reduction");
+        assert!(observation.states.is_empty());
+        assert!(observation.tempo_clock.is_none());
+        // A genuinely undecodable body still fails.
+        assert!(runtime
+            .ingest(profile::MESSAGE_TYPE_GLOBAL_TEMPO, &[0xff, 0xff, 0xff])
+            .is_err());
     }
 
     #[test]
