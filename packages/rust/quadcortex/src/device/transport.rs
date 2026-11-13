@@ -523,12 +523,20 @@ impl TransportRuntime {
     }
 
     /// Discards all session, framing and telemetry state and starts over as
-    /// [`TransportRuntime::new`] would.
+    /// [`TransportRuntime::new`] would. The two cloud switches are host
+    /// configuration, not session state, so they survive a reset.
     pub fn reset(&mut self, now_ms: u64) {
         let key_generation = self.key_generation.wrapping_add(1);
+        #[cfg(feature = "cloud-forward")]
+        let (forward, answers) = (self.cloud_forward_enabled, self.cloud_answers_enabled);
         *self = Self::new(now_ms);
         // A generation must never repeat within one host process.
         self.key_generation = key_generation;
+        #[cfg(feature = "cloud-forward")]
+        {
+            self.cloud_forward_enabled = forward;
+            self.cloud_answers_enabled = answers;
+        }
     }
 
     /// Current connection phase.
@@ -1335,6 +1343,21 @@ mod tests {
         runtime.reset(6_000);
         assert_eq!(runtime.cloud_answer_key(9_000), CloudAnswerKey::NotReady);
         assert_ne!(runtime.key_generation, second, "a reset never repeats one");
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn reset_keeps_the_host_set_cloud_switches() {
+        let mut runtime = TransportRuntime::new(0);
+        runtime.set_cloud_forward_enabled(true);
+        runtime.set_cloud_account_answers_enabled(true);
+        runtime.reset(10);
+        assert!(runtime.cloud_forward_enabled);
+        assert!(runtime.cloud_answers_enabled);
+        runtime.set_cloud_forward_enabled(false);
+        runtime.reset(20);
+        assert!(!runtime.cloud_forward_enabled);
+        assert!(runtime.cloud_answers_enabled);
     }
 
     #[cfg(feature = "cloud-forward")]
