@@ -591,6 +591,26 @@ test("rotary value rejects a newly disabled operand without retaining hidden dra
   assert.equal(drafts.at(-1), .21, "one healthy step starts at the displayed .2, not a rejected hidden .23");
   assert.equal(commits.at(-1), .21);
 });
+test("rotary value commits only a release that moved the value (TU-6)", (t) => {
+  let rotary: any;
+  const commits: number[] = [];
+  function Harness() {
+    rotary = components.useRotaryValue({ value: .2, step: .01, quantize: (value: number) => Math.round(value * 100) / 100,
+      pixelsPerStep: 7, onDraftChange: () => {}, onCommit: (value: number) => { commits.push(value); } });
+    return null;
+  }
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(React.createElement(Harness)); });
+  t.after(() => act(() => renderer.unmount()));
+  const target = { setPointerCapture() {}, hasPointerCapture: () => false };
+  const pointer = (y: number) => ({ pointerId: 1, clientY: y, pointerType: "touch", currentTarget: target });
+  act(() => { rotary.onPointerDown(pointer(100)); rotary.onPointerUp(pointer(100)); });
+  assert.deepEqual(commits, [], "a tap that never moved the value commits nothing");
+  act(() => { rotary.onPointerDown(pointer(100)); rotary.onPointerMove(pointer(79)); rotary.onPointerUp(pointer(79)); });
+  assert.equal(commits.length, 1, "a drag commits once");
+  act(() => { rotary.onPointerDown(pointer(100)); rotary.onPointerUp(pointer(100)); });
+  assert.equal(commits.length, 1, "the next tap is not a stale move");
+});
 test("unit mirror retires the old owner picture and delayed capture across physical sessions", async (t) => {
   const header = Buffer.alloc(24); header.write("PNG", 1); header.writeUInt32BE(800, 16); header.writeUInt32BE(480, 20);
   const frame = (name: string) => ({ pngBase64: Buffer.concat([header, Buffer.from(name)]).toString("base64") });

@@ -188,8 +188,11 @@ export function useRotaryValue<E extends Element = HTMLButtonElement>(options: R
   latest.current = options;
   const valueRef = useRef(value);
   useEffect(() => { valueRef.current = value; }, [value]);
+  // A release that never moved the value (a tap) is not an edit: committing it would dirty the preset and write the unchanged value.
+  const moved = useRef(false);
   const set = useMemo(() => (next: number) => {
     const quantized = latest.current.quantize(next);
+    moved.current = true;
     valueRef.current = quantized;
     latest.current.onDraftChange(quantized);
     return quantized;
@@ -197,7 +200,11 @@ export function useRotaryValue<E extends Element = HTMLButtonElement>(options: R
   const handlers = useRotaryGesture<E>({
     ...gesture,
     onRotate: (steps) => { if (!latest.current.disabled) set(valueRef.current + steps * latest.current.step); },
-    onSettle: () => latest.current.onCommit(valueRef.current)
+    onSettle: () => {
+      if (!moved.current) return;
+      moved.current = false;
+      latest.current.onCommit(valueRef.current);
+    }
   });
   return useMemo(() => ({ ...handlers, set }), [handlers, set]);
 }
