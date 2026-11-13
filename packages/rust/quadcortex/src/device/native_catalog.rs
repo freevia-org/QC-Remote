@@ -73,25 +73,37 @@ impl NativePresetCatalog {
     /// freshness or persistence; the session owner must retain those separately.
     pub fn apply(&mut self, message: &pa::FileMessage) -> Result<NativeCatalogChange, String> {
         self.health()?;
-        // A single bounded frame may update either or both folder models. Stage
-        // the complete bounded next fold so overflow cannot publish one side or
-        // remove a rename source before refusing the destination. The old fold
-        // remains available for diagnostics, but health stays failed until reset.
-        let mut next = Self {
-            folders: self.folders.clone(),
-            error: None,
-        };
-        let result = next.apply_inner(message).and_then(|change| {
-            next.check_byte_capacity()?;
+        // A single bounded frame may update either or both folder models, and
+        // overflow must not publish one side or remove a rename source before
+        // refusing the destination. Apply in place and keep an undo record of
+        // the (at most two) folders the message can touch, instead of cloning
+        // the whole catalog for every File frame. The restored fold remains
+        // available for diagnostics, but health stays failed until reset.
+        let undo: Vec<(String, Option<PresetFolderListing>)> = touched_keys(message)
+            .into_iter()
+            .map(|key| {
+                let saved = self.folders.get(&key).cloned();
+                (key, saved)
+            })
+            .collect();
+        let result = self.apply_inner(message).and_then(|change| {
+            self.check_byte_capacity()?;
             Ok(change)
         });
-        if result.is_ok() {
-            self.folders = next.folders;
-        }
         if let Err(error) = &result {
-            // Only the staged fold can exceed the ceiling. Keep the unchanged,
-            // already-bounded old fold for diagnostics, never for planning:
-            // health remains failed until an explicit clear/reset.
+            for (key, saved) in undo {
+                match saved {
+                    Some(folder) => {
+                        self.folders.insert(key, folder);
+                    }
+                    None => {
+                        self.folders.remove(&key);
+                    }
+                }
+            }
+            // Keep the unchanged, already-bounded old fold for diagnostics,
+            // never for planning: health remains failed until an explicit
+            // clear/reset.
             self.invalidate(error.clone());
         }
         result
@@ -344,6 +356,26 @@ impl NativePresetCatalog {
     }
 }
 
+/// Keys of the folders one File message can change: its source folder and its
+/// destination folder, trimmed the way [`eligible`] keys them. A superset of
+/// what the reducer actually touches is harmless; the keys only say what to save.
+fn touched_keys(message: &pa::FileMessage) -> Vec<String> {
+    let key_of = |folder: &pa::FolderInfo| match &folder.key {
+        Some(pa::folder_info::Key::Key(key)) if !key.is_empty() => {
+            Some(key.trim_end_matches('/').to_string())
+        }
+        _ => None,
+    };
+    let mut keys = Vec::new();
+    if let Some(pa::file_message::Folder::Folder(source)) = &message.folder {
+        keys.extend(key_of(source));
+    }
+    if let Some(pa::file_message::ToFolder::ToFolder(destination)) = &message.to_folder {
+        keys.extend(key_of(destination).filter(|key| !keys.contains(key)));
+    }
+    keys
+}
+
 fn eligible(folder: &pa::FolderInfo, file_type: Option<i32>) -> Option<PresetFolderListing> {
     let mut listing = project_preset_folder(folder, file_type)?;
     if !PresetLibrary::is_preset_setlist_listing(&listing) {
@@ -415,6 +447,39 @@ mod tests {
             catalog.folder(SOURCE).unwrap().files[0].author.as_deref(),
             Some("normal")
         );
+    }
+
+    #[test]
+    fn a_paired_update_that_overflows_the_cap_changes_neither_folder() {
+        let mut catalog = NativePresetCatalog::default();
+        let large = "a".repeat(512 * 1024);
+        for index in 0..63 {
+            let mut row = product(index, Some(&format!("key-{index}")), "Name");
+            row.author = Some(pa::product_data::Author::Author(large.clone()));
+            catalog
+                .apply(&event(pa::message_action::Enum::Update, TARGET, vec![row]))
+                .unwrap();
+        }
+        let before = catalog.folder(TARGET).unwrap().clone();
+        let mut oversized = product(100, Some("key-100"), "Big");
+        oversized.author = Some(pa::product_data::Author::Author("b".repeat(600 * 1024)));
+        let mut paired = event(
+            pa::message_action::Enum::Update,
+            SOURCE,
+            vec![product(0, Some("source-zero"), "Zero")],
+        );
+        paired.to_folder = Some(pa::file_message::ToFolder::ToFolder(folder(
+            TARGET,
+            vec![oversized],
+        )));
+        let error = catalog.apply(&paired).unwrap_err();
+        assert!(error.contains("retained-byte capacity"), "{error}");
+        // The source side, applied first, is rolled back with the destination.
+        assert!(catalog.folder(SOURCE).is_none());
+        assert_eq!(catalog.folder(TARGET).unwrap(), &before);
+        assert!(catalog.health().is_err());
+        catalog.clear();
+        assert!(catalog.folder(TARGET).is_none());
     }
 
     #[test]
