@@ -5080,8 +5080,14 @@ fn install_claude_desktop_extension_blocking() -> Result<Value, String> {
     fs::create_dir_all(&integration_directory)
         .map_err(|error| format!("Could not prepare the Claude integration: {error}"))?;
     let package_path = integration_directory.join(CLAUDE_EXTENSION_FILE);
-    fs::write(&package_path, claude_desktop_extension()?)
-        .map_err(|error| format!("Could not prepare the Claude extension: {error}"))?;
+    // Replaced atomically: a second Pair while Claude's installer still reads
+    // the first package must not truncate it under the reader.
+    write_package_bytes_with(
+        &package_path,
+        &claude_desktop_extension()?,
+        |file, bytes| std::io::Write::write_all(file, bytes),
+    )
+    .map_err(|error| format!("Could not prepare the Claude extension: {error}"))?;
 
     // Claude Desktop owns extension validation, confirmation, and replacement.
     // Passing the MCPB path invokes that supported install/update flow.
