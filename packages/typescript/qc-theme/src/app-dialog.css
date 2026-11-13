@@ -18,63 +18,7 @@
  * QcTextPrompt, whose rules lived only in that shell until they joined this
  * file; the four values under its footer buttons are the palette tokens those
  * aliases resolved to, so the Windows appearance is unchanged. */
-.qc-confirm-wash {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: grid;
-  place-items: center;
-  background: var(--qc-palette-050608c7);
-  backdrop-filter: blur(5px);
-}
-
-.qc-confirm-dialog {
-  display: grid;
-  gap: 12px;
-  width: min(360px, calc(100vw - 32px));
-  padding: 16px;
-  border: 1px solid var(--qc-palette-4a5059);
-  border-radius: 8px;
-  background: var(--qc-palette-1c2025);
-  box-shadow: 0 20px 55px var(--qc-palette-000c);
-}
-
-.qc-confirm-dialog p {
-  margin: 0;
-  color: var(--qc-palette-eff1f3);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.qc-confirm-dialog footer {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-
-.qc-confirm-dialog footer button {
-  min-height: 34px;
-  border: 1px solid var(--qc-palette-4a5059);
-  border-radius: 6px;
-  background: var(--qc-palette-171a1e);
-  color: var(--qc-palette-eff1f3);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.qc-confirm-dialog footer button:hover { background: var(--qc-palette-1c2025); }
-
-.qc-confirm-dialog footer button.primary {
-  border-color: var(--qc-palette-3b7b64);
-  background: var(--qc-palette-20553f);
-  color: var(--qc-palette-d9ffec);
-}
-
-.qc-confirm-dialog footer button:focus-visible {
-  outline: 2px solid var(--qc-palette-3b7b64);
-  outline-offset: 1px;
-}
-
+.qc-confirm-wash,
 .qc-text-prompt-wash {
   position: fixed;
   inset: 0;
@@ -85,6 +29,7 @@
   backdrop-filter: blur(5px);
 }
 
+.qc-confirm-dialog,
 .qc-text-prompt-dialog {
   display: grid;
   gap: 12px;
@@ -94,6 +39,49 @@
   border-radius: 8px;
   background: var(--qc-palette-1c2025);
   box-shadow: 0 20px 55px var(--qc-palette-000c);
+}
+
+.qc-confirm-dialog footer,
+.qc-text-prompt-dialog footer {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.qc-confirm-dialog footer button,
+.qc-text-prompt-dialog footer button {
+  min-height: 34px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.qc-confirm-dialog p {
+  margin: 0;
+  color: var(--qc-palette-eff1f3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.qc-confirm-dialog footer button {
+  border: 1px solid var(--qc-palette-4a5059);
+  background: var(--qc-palette-171a1e);
+  color: var(--qc-palette-eff1f3);
+}
+
+.qc-confirm-dialog footer button:hover { background: var(--qc-palette-1c2025); }
+
+.qc-confirm-dialog footer button.primary,
+.qc-text-prompt-dialog footer button.primary {
+  border-color: var(--qc-palette-3b7b64);
+  background: var(--qc-palette-20553f);
+  color: var(--qc-palette-d9ffec);
+}
+
+.qc-confirm-dialog footer button:focus-visible,
+.qc-text-prompt-dialog input:focus-visible {
+  outline: 2px solid var(--qc-palette-3b7b64);
+  outline-offset: 1px;
 }
 
 .qc-text-prompt-dialog strong {
@@ -118,37 +106,16 @@
   font-size: 12px;
 }
 
-.qc-text-prompt-dialog input:focus-visible {
-  outline: 2px solid var(--qc-palette-3b7b64);
-  outline-offset: 1px;
-}
-
-.qc-text-prompt-dialog footer {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-
 /* --qc-app-button-border / -surface / -text, resolved to the shared tokens. */
 .qc-text-prompt-dialog footer button {
-  min-height: 34px;
   border: 1px solid var(--qc-palette-69717d);
-  border-radius: 6px;
   background: var(--qc-palette-414852);
   color: var(--qc-palette-eceef1);
-  font-size: 11px;
-  font-weight: 700;
 }
 
 /* --qc-app-button-surface-hover. */
 .qc-text-prompt-dialog footer button:hover:not(:disabled) {
   background: var(--qc-palette-515967);
-}
-
-.qc-text-prompt-dialog footer button.primary {
-  border-color: var(--qc-palette-3b7b64);
-  background: var(--qc-palette-20553f);
-  color: var(--qc-palette-d9ffec);
 }
 
 .qc-text-prompt-dialog footer button.primary:disabled {
