@@ -74,7 +74,9 @@ export const SHIPPED_NPM_ROOTS = ['apps/windows', 'apps/android'];
 const ALL_CARGO_MANIFESTS = ['Cargo.toml', 'apps/windows/src-tauri/Cargo.toml'];
 
 /** Licenses that raise a source-availability obligation for a distributed binary. */
-export const COPYLEFT = /MPL-2\.0|GPL|LGPL|AGPL/i;
+// MPL, the GPL family (LGPL and AGPL contain "GPL"), and the other licences that
+// oblige a distributor of binaries to offer the component's source.
+export const COPYLEFT = /MPL-|GPL|EPL-|CDDL|EUPL|OSL-|CECILL/i;
 
 export const SHIPPED_SECTION = '## Shipped components';
 export const DEVELOPMENT_SECTION = '## Development tooling (not distributed)';

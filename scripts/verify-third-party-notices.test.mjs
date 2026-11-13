@@ -179,6 +179,13 @@ test('the source offer lists exactly the shipped copyleft components at their ex
   assert.ok(sourceOfferErrors(offerInventory, good.replace('Selection rule', 'Rule')).some((error) => error.includes('selection rule')));
 });
 
+test('the source offer gate also covers EPL, CDDL, EUPL, OSL and CeCILL components', () => {
+  for (const license of ['EPL-2.0', 'CDDL-1.1', 'EUPL-1.2', 'OSL-3.0', 'CECILL-2.1', 'MPL-1.1']) {
+    const inventory = { components: [component('gradle', 'org.example:thing', '1.0', license)], sourceAvailabilityNotice: [] };
+    assert.ok(sourceOfferErrors(inventory, offer([])).some((error) => error.includes('copyleft components are') && error.includes('org.example:thing')), license);
+  }
+});
+
 test('license-text digests verify bundled bodies and reject changed or missing text', () => {
   const body = 'Permission to use this example.\nKeep this notice.';
   const hash = createHash('sha256').update(body).digest('hex');
