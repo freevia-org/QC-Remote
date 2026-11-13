@@ -576,21 +576,21 @@ impl SessionRuntime {
         now_ms: u64,
     ) -> Option<(usize, bool)> {
         let accepts = |ticket: &ObservationTicket| self.accepts_observation_for(fence, ticket);
-        let (catalog, _) = self
+        // Headers answer both questions; no slot record is copied.
+        let headers = self
             .catalog_observations
-            .retained_catalog(accepts, now_ms)?;
+            .retained_headers(accepts, now_ms)?;
         let active = self.state.snapshot();
         let lookup = if method == "device.listPresetSlots" {
             active.setlist_key.as_str()
         } else {
             key
         };
-        let listed = catalog.contains_key(lookup.trim_end_matches('/'));
-        let mut library = crate::device::PresetLibrary::default();
-        for listing in catalog.into_values() {
-            library.ingest(listing);
-        }
-        Some((library.observed_folders().len(), listed))
+        let listed = self.catalog_observations.contains_folder(lookup);
+        let setlists = headers
+            .filter(|header| crate::device::PresetLibrary::is_preset_setlist_listing(header))
+            .count();
+        Some((setlists, listed))
     }
 
     /// The one projection behind both the read and its explanation.
@@ -623,7 +623,7 @@ impl SessionRuntime {
         }
         self.state.native_preset_catalog().health()?;
         let accepts = |ticket: &ObservationTicket| self.accepts_observation_for(fence, ticket);
-        let Some((catalog, _)) = self.catalog_observations.retained_catalog(accepts, now_ms) else {
+        let Some(headers) = self.catalog_observations.retained_headers(accepts, now_ms) else {
             use catalog_observations::RetainedCatalogGap as Gap;
             let reason = match self.catalog_observations.retention_gate(accepts, now_ms) {
                 Err(Gap::NoOrigin) if self.catalog_observations.rebuild_discarded_frames() > 0 => {
@@ -636,25 +636,34 @@ impl SessionRuntime {
             };
             return Ok(Err(reason));
         };
-        let mut library = crate::device::PresetLibrary::default();
-        for listing in catalog.into_values() {
-            library.ingest(listing);
-        }
+        // Folder lists need headers only and a listing needs the records of
+        // the one requested setlist; nothing else is copied under the lock.
+        use crate::device::PresetLibrary;
         let projected = match method {
             "device.listPresetFolders" => {
-                let folders = library.observed_folders();
+                let folders = PresetLibrary::project_folders(headers);
                 return Ok(if folders.is_empty() {
                     Err(PresetCatalogAbsenceReason::NoFolders)
                 } else {
                     Ok(serde_json::json!({"folders": folders}))
                 });
             }
-            "device.listPresets" => library
-                .observed_list(key, active)
+            "device.listPresets" => self
+                .catalog_observations
+                .retained_listing(key)
+                .map(|listing| {
+                    PresetLibrary::project_list(
+                        &listing,
+                        active,
+                        PresetLibrary::project_folders(headers),
+                    )
+                })
                 .map(serde_json::to_value)
                 .transpose(),
-            "device.listPresetSlots" => library
-                .observed_slots(active)
+            "device.listPresetSlots" => self
+                .catalog_observations
+                .retained_listing(&active.setlist_key)
+                .and_then(|listing| PresetLibrary::project_slots(&listing, active))
                 .map(serde_json::to_value)
                 .transpose(),
             _ => unreachable!(),

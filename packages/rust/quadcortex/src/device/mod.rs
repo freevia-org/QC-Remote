@@ -257,7 +257,7 @@ impl PresetLibrary {
         Self::project_folders(self.observed_listings.values())
     }
 
-    fn project_folders<'a>(
+    pub(crate) fn project_folders<'a>(
         listings: impl Iterator<Item = &'a PresetFolderListing>,
     ) -> Vec<PresetFolder> {
         let mut folders = listings
@@ -381,7 +381,7 @@ impl PresetLibrary {
         Self::project_slots(listing, active)
     }
 
-    fn project_slots(
+    pub(crate) fn project_slots(
         listing: &PresetFolderListing,
         active: &GatewaySnapshot,
     ) -> Option<PresetSlotList> {
