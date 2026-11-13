@@ -13,38 +13,6 @@ export function bypassAddress(row: number, column: number): string {
   return `${row}:${column}`;
 }
 
-/** Record the latest optimistic state so an older device echo cannot undo it. */
-export function markPendingBypass(pending: PendingBypassIntents, row: number, column: number, bypassed: boolean, issuedAt = Date.now()): void {
-  pending.set(bypassAddress(row, column), { bypassed, issuedAt });
-}
-
-/** Record every bypass transition produced by one optimistic snapshot update. */
-export function recordPendingBypassChanges(
-  before: PresetSnapshot,
-  after: PresetSnapshot,
-  pending: PendingBypassIntents,
-  issuedAt = Date.now()
-): string[] {
-  const beforeByAddress = new Map(before.blocks.map((block) => [bypassAddress(block.row, block.column), block]));
-  const changed: string[] = [];
-  for (const block of after.blocks) {
-    const key = bypassAddress(block.row, block.column);
-    const previous = beforeByAddress.get(key);
-    if (previous && previous.bypassed !== block.bypassed && block.bypassed !== undefined) {
-      markPendingBypass(pending, block.row, block.column, block.bypassed, issuedAt);
-      changed.push(key);
-    }
-  }
-  return changed;
-}
-
-/** Clear only the intents belonging to a failed command, preserving newer taps. */
-export function clearPendingBypassChanges(pending: PendingBypassIntents, addresses: readonly string[], issuedAt: number): void {
-  for (const address of addresses) {
-    if (pending.get(address)?.issuedAt === issuedAt) pending.delete(address);
-  }
-}
-
 /**
  * Acknowledges matching device state and suppresses contradictory state that
  * predates a newer local command. An expired contradiction is accepted so the

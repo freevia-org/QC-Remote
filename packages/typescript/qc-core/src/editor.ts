@@ -29,15 +29,6 @@ export function parameterDrafts(details: BlockDetails): Record<number, number> {
   );
 }
 
-export function updateBlockParameter(details: BlockDetails, parameterIndex: number, value: number): BlockDetails {
-  return {
-    ...details,
-    parameters: details.parameters.map((parameter) => parameter.index === parameterIndex
-      ? { ...parameter, normalizedValue: value }
-      : parameter)
-  };
-}
-
 export function updateBlockParameters(details: BlockDetails, values: Readonly<Record<number, number>>): BlockDetails {
   return {
     ...details,
