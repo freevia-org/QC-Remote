@@ -21,6 +21,7 @@
 // Environment (read from the shell only): CLOUDFLARE_API_TOKEN,
 // CLOUDFLARE_ACCOUNT_ID, QCRC_OAUTH_KV_NAMESPACE_ID.
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export function parseArguments(argv) {
@@ -62,8 +63,12 @@ export async function inventory(api, subject) {
   const tokens = await collect(prefixes.token);
   const rows = [];
   for (const name of grants) {
+    // A failed read must fail the report: recording it as a grant without an
+    // expiry would overstate "grants without expiry" in what a reviewer approves.
+    // Only a value that is missing or not JSON counts as having no readable expiry.
+    const text = await api.get(name);
     let parsed = null;
-    try { parsed = JSON.parse((await api.get(name)) ?? "null"); } catch { parsed = null; }
+    try { parsed = JSON.parse(text ?? "null"); } catch { parsed = null; }
     rows.push({
       key: keyHash(name),
       expiresAt: typeof parsed?.expiresAt === "number" ? parsed.expiresAt : null,
@@ -87,8 +92,17 @@ export async function run(argv, api, print = (line) => console.log(line)) {
   print(JSON.stringify({ mode: options.execute ? "execute" : "dry-run", ...printable }, null, 2));
   if (!options.execute) return { deleted: 0 };
   let deleted = 0;
-  for (const name of [...keys.tokens, ...keys.grants]) { await api.delete(name); deleted += 1; }
-  print(JSON.stringify({ deleted, authorization: options.authorization }));
+  let failedAt = null;
+  try {
+    for (const name of [...keys.tokens, ...keys.grants]) {
+      try { await api.delete(name); } catch (error) { failedAt = keyHash(name); throw error; }
+      deleted += 1;
+    }
+  } finally {
+    // Printed even when a delete failed, so the operator knows how far it got
+    // and which key (by its short hash) stopped it.
+    print(JSON.stringify({ deleted, failedAt, authorization: options.authorization }));
+  }
   return { deleted };
 }
 
@@ -99,26 +113,49 @@ function cloudflareApi(environment = process.env) {
   if (!token || !account || !namespace) throw new Error("CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID and QCRC_OAUTH_KV_NAMESPACE_ID are required");
   const base = `https://api.cloudflare.com/client/v4/accounts/${account}/storage/kv/namespaces/${namespace}`;
   const headers = { authorization: `Bearer ${token}` };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  /** Every request has a deadline; 429, 5xx and network errors are retried with backoff. */
+  async function request(url, init = {}, { attempts = 4, timeoutMs = 20_000, wait = sleep } = {}) {
+    let lastError;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (attempt > 0) await wait(500 * 2 ** (attempt - 1));
+      try {
+        const response = await fetch(url, { ...init, headers, signal: AbortSignal.timeout(timeoutMs) });
+        if (response.status === 429 || response.status >= 500) { lastError = new Error(`Cloudflare API answered ${response.status}`); continue; }
+        return response;
+      } catch (error) { lastError = error; }
+    }
+    throw lastError;
+  }
   return {
     async list(prefix, cursor) {
       const url = new URL(`${base}/keys`);
       url.searchParams.set("prefix", prefix);
       if (cursor) url.searchParams.set("cursor", cursor);
-      const body = await (await fetch(url, { headers })).json();
+      const body = await (await request(url)).json();
       if (!body.success) throw new Error("Cloudflare KV list failed");
       return { keys: body.result, cursor: body.result_info?.cursor || undefined };
     },
     async get(name) {
-      const response = await fetch(`${base}/values/${encodeURIComponent(name)}`, { headers });
-      return response.ok ? response.text() : null;
+      const response = await request(`${base}/values/${encodeURIComponent(name)}`);
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(`Cloudflare KV read failed (${response.status})`);
+      return response.text();
     },
     async delete(name) {
-      const response = await fetch(`${base}/values/${encodeURIComponent(name)}`, { method: "DELETE", headers });
+      const response = await request(`${base}/values/${encodeURIComponent(name)}`, { method: "DELETE" });
       if (!response.ok) throw new Error("Cloudflare KV delete failed");
     },
   };
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+/** True when this file is the script being run, however it was reached (a
+ * symlink, a junction, a different drive-letter case). */
+export function isEntryPoint(argv1 = process.argv[1], moduleUrl = import.meta.url) {
+  if (!argv1) return false;
+  try { return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl)); } catch { return false; }
+}
+
+if (isEntryPoint()) {
   run(process.argv.slice(2), cloudflareApi()).catch((error) => { console.error(error.message); process.exit(1); });
 }
