@@ -48,7 +48,7 @@ const PHASE_EVENT_POLL: Duration = Duration::from_millis(100);
 ///
 /// Only the fields a host needs to tell "still looking" from "a Quad Cortex
 /// answered" travel here; the full record stays behind `system.status`.
-fn phase_notification(status: &BrokerStatus) -> Value {
+fn phase_notification(status: &crate::worker::PhaseProjection) -> Value {
     json!({
         "jsonrpc": "2.0",
         "method": "device.phase",
@@ -74,20 +74,14 @@ fn publish_phase_changes<W: Write>(
     output: &Mutex<W>,
     stop: &AtomicBool,
 ) {
-    let mut published: Option<(String, String, bool, bool)> = None;
+    let mut published: Option<crate::worker::PhaseProjection> = None;
     while !stop.load(Ordering::Acquire) {
-        let status = controller.status();
-        let observed = (
-            status.phase.clone(),
-            status.detail.clone(),
-            status.connected,
-            status.synchronized,
-        );
+        let observed = controller.phase_projection();
         if published.as_ref() != Some(&observed) {
             let Ok(mut output) = output.lock() else {
                 return;
             };
-            if write_response(&mut *output, &phase_notification(&status)).is_err() {
+            if write_response(&mut *output, &phase_notification(&observed)).is_err() {
                 return;
             }
             published = Some(observed);
@@ -5418,28 +5412,25 @@ fn serve_registered_tcp_connection(
                 .spawn_scoped(scope, move || {
                     let mut published = None;
                     while !stop.load(Ordering::Acquire) {
-                        let Ok(mut writer) = output.lock() else {
-                            return;
-                        };
+                        // The comparison reads the short status lock only and
+                        // happens before this connection's writer lock is
+                        // taken, so a reply waiting to be written is never
+                        // queued behind a status build (RC-23).
                         let selected = shared.controller_for(Some(connection_id));
-                        let status = selected.status();
-                        let observed = (
-                            selected.device_id(),
-                            status.phase.clone(),
-                            status.detail.clone(),
-                            status.connected,
-                            status.synchronized,
-                        );
+                        let projection = selected.phase_projection();
+                        let observed = (selected.device_id(), projection.clone());
                         if published.as_ref() != Some(&observed) {
-                            let mut notification = phase_notification(&status);
+                            let mut notification = phase_notification(&projection);
                             notification["params"]["deviceId"] = json!(selected.device_id());
+                            let Ok(mut writer) = output.lock() else {
+                                return;
+                            };
                             if write_tcp_response(&mut writer, &notification).is_err() {
                                 let _ = writer.shutdown(std::net::Shutdown::Both);
                                 return;
                             }
                             published = Some(observed);
                         }
-                        drop(writer);
                         thread::sleep(PHASE_EVENT_POLL);
                     }
                 });
@@ -9863,6 +9854,49 @@ mod tcp_tests {
         );
         drop(status_lock);
         test_support::finish(&handle);
+    }
+
+    /// RC-23: phase-event threads poll ten times a second. They must read the
+    /// status lock only, never the session owner the HID reader needs per
+    /// report, and a notification must still be delivered while that owner is
+    /// busy.
+    #[test]
+    fn phase_events_never_wait_for_the_session_owner() {
+        let shared = Arc::new(broker_shared_for_test());
+        {
+            let mut status = shared.controller.hold_status_lock_for_test();
+            status.phase = "syncing".into();
+            status.detail = "Opening session".into();
+        }
+        let owner = shared.controller.hold_session_lock_for_test();
+        let (projected, projection) = mpsc::channel();
+        let probe = Arc::clone(&shared);
+        let probing = thread::spawn(move || {
+            let _ = projected.send(probe.controller.phase_projection());
+        });
+        let projection = projection
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the projection waited for the session owner");
+        probing.join().unwrap();
+        assert_eq!(projection.phase, "syncing");
+        assert_eq!(projection.detail, "Opening session");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let id = accept_client(&shared.clients).unwrap();
+        let connection_shared = Arc::clone(&shared);
+        let job = test_support::FixtureJob::spawn_plain(move || {
+            serve_broker_tcp_connection(server, &connection_shared, id, true);
+            connection_shared.detach_client(id);
+        });
+        let shutdown = ShutdownSocket(client.try_clone().unwrap());
+        let first = read_notification(&mut client, "device.phase")
+            .expect("the notification arrives while the session owner is held");
+        assert_eq!(first["params"]["phase"], "syncing");
+        drop(owner);
+        drop(shutdown);
+        job.join().unwrap();
     }
 
     #[test]
