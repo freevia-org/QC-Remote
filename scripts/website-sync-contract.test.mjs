@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { validateWebsiteSync } from './website-sync-contract.mjs';
+import { getWithRetry, validateWebsiteSync } from './website-sync-contract.mjs';
 
 const screenshots = [
   'https://freevia.org/assets/qcremote/windows.png',
@@ -97,4 +97,34 @@ test('website sync checks the complete Linux suffix when versions are unified', 
     'https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.1-linux',
   ]);
   assert.throws(() => validateWebsiteSync(unifiedReadme, unifiedPage.replace(releaseUrls[1].replace('v0.1.186', 'v1.0.1-linux'), '')), /stable release and Linux preview notes/);
+});
+
+test('getWithRetry retries network errors and 5xx answers, then succeeds', async () => {
+  const answers = [new Error('socket hang up'), { ok: false, status: 503 }, { ok: true, status: 200 }];
+  const sleeps = [];
+  const response = await getWithRetry('https://freevia.org/x', {
+    fetchImpl: async () => {
+      const next = answers.shift();
+      if (next instanceof Error) throw next;
+      return next;
+    },
+    sleep: async (ms) => sleeps.push(ms),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(sleeps, [1000, 2000]);
+});
+
+test('getWithRetry never retries a 4xx answer and gives up after the last attempt', async () => {
+  let calls = 0;
+  await assert.rejects(
+    getWithRetry('https://freevia.org/x', { fetchImpl: async () => { calls += 1; return { ok: false, status: 404 }; }, sleep: async () => {} }),
+    /HTTP 404/,
+  );
+  assert.equal(calls, 1);
+  calls = 0;
+  await assert.rejects(
+    getWithRetry('https://freevia.org/x', { fetchImpl: async () => { calls += 1; throw new Error('boom'); }, sleep: async () => {} }),
+    /boom/,
+  );
+  assert.equal(calls, 3);
 });

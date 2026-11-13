@@ -42,3 +42,29 @@ export function validateWebsiteSync(readme, page) {
 
   return { imageUrls, downloadUrls, releaseUrls: uniqueReleaseUrls };
 }
+
+// GET with a bounded number of attempts. Network errors, timeouts and 5xx answers
+// are retried (with backoff) because one transient failure of the live site must
+// not fail the check; a 4xx answer or a persistent failure still throws.
+export async function getWithRetry(
+  url,
+  { fetchImpl = fetch, attempts = 3, timeoutMs = 20_000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {},
+) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let retryable = true;
+    try {
+      const response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+      if (response.ok) return response;
+      lastError = new Error(`${url}: HTTP ${response.status}`);
+      retryable = response.status >= 500;
+      // Release the connection of an answer we are discarding.
+      await response.body?.cancel?.().catch(() => {});
+    } catch (error) {
+      lastError = error;
+    }
+    if (!retryable) throw lastError;
+    if (attempt < attempts) await sleep(1000 * 2 ** (attempt - 1));
+  }
+  throw lastError;
+}
