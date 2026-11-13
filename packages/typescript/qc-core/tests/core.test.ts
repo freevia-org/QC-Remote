@@ -864,3 +864,42 @@ test("a model preset catalog event survives the controller's frame reconciliatio
   }
 
 }
+
+test("a failed preset step restores the loaded preset's identity and name", () => {
+  const loaded = { ...demoSnapshot, presetPosition: 3, presetIdentity: "x", presetName: "Loaded", presetLocation: "1D" };
+  const coordinator = new QcCommandCoordinator();
+  const move = coordinator.beginPresetMove(loaded, 1, "Next", 1_000);
+  assert.equal(move.snapshot.presetIdentity, undefined);
+  assert.equal(move.snapshot.presetName, "Next");
+  const failed = coordinator.fail(move.snapshot, move.token);
+  assert.equal(failed.presetPosition, 3);
+  assert.equal(failed.presetLocation, "1D");
+  assert.equal(failed.presetIdentity, "x");
+  assert.equal(failed.presetName, "Loaded");
+});
+
+test("consecutive failed preset steps each restore the original preset", () => {
+  const loaded = { ...demoSnapshot, presetPosition: 3, presetIdentity: "x", presetName: "Loaded", presetLocation: "1D" };
+  const coordinator = new QcCommandCoordinator();
+  let current = loaded;
+  for (const delta of [1, -1] as const) {
+    const move = coordinator.beginPresetMove(current, delta, "Other", 1_000);
+    current = coordinator.fail(move.snapshot, move.token);
+    assert.equal(current.presetPosition, 3);
+    assert.equal(current.presetIdentity, "x");
+    assert.equal(current.presetName, "Loaded");
+  }
+});
+
+test("a suppressed position observation becomes the preset step's rollback identity", () => {
+  const loaded = { ...demoSnapshot, presetPosition: 3, presetIdentity: "x", presetName: "Loaded" };
+  const coordinator = new QcCommandCoordinator();
+  const move = coordinator.beginPresetMove(loaded, 1, "Next", 1_000);
+  const frame = coordinator.reconcileFrame(move.snapshot, [
+    { kind: "position", position: 5, presetIdentity: "other", observedAt: 1_005 }
+  ], 1_010);
+  assert.equal(frame.states.length, 0, "the contradicting echo is suppressed");
+  const failed = coordinator.fail(frame.snapshot, move.token);
+  assert.equal(failed.presetPosition, 5);
+  assert.equal(failed.presetIdentity, "other");
+});
