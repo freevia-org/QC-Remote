@@ -372,9 +372,8 @@ impl QcBackend for LocalBackend {
                 false,
             ));
         }
-        let access = self
-            .adapter
-            .effective_access_mode()
+        let access = effective_access_off_the_listener(&self.adapter)
+            .await
             .unwrap_or(*self.access.borrow());
         if !local_access_permits(access, rpc) {
             return Err(backend_error(
@@ -3081,15 +3080,50 @@ pub(crate) fn acquire_document_lease(
         .map_err(|error| error.to_string())?;
     let started = std::time::Instant::now();
     loop {
-        match file.try_lock() {
-            Ok(()) => return Ok(file),
-            Err(error) if started.elapsed() >= timeout => {
-                return Err(format!(
-                    "Another process owns the local MCP {role} lease: {error}"
-                ));
-            }
-            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        match lease_attempt(file.try_lock(), role, started.elapsed() >= timeout) {
+            LeaseAttempt::Held => return Ok(file),
+            LeaseAttempt::Refused(message) => return Err(message),
+            LeaseAttempt::Retry => std::thread::sleep(Duration::from_millis(10)),
         }
+    }
+}
+
+/// The policy read walks several ACL queries and file opens. This listener
+/// runs on one thread for every connection, so the read goes to a blocking
+/// worker; a worker that cannot report fails closed to read-only.
+async fn effective_access_off_the_listener(
+    adapter: &Arc<dyn DeviceAdapter>,
+) -> Option<qc_relay_client::AccessMode> {
+    let adapter = adapter.clone();
+    tokio::task::spawn_blocking(move || adapter.effective_access_mode())
+        .await
+        .unwrap_or(Some(qc_relay_client::AccessMode::ReadOnly))
+}
+
+enum LeaseAttempt {
+    Held,
+    Retry,
+    Refused(String),
+}
+
+/// Only a lock another handle holds is contention worth waiting for and worth
+/// telling the user about ("another copy is running"). Any other error - a
+/// filesystem without lock support, an IO fault - fails at once and says so,
+/// rather than being reported as a second instance that does not exist.
+fn lease_attempt(
+    attempt: Result<(), std::fs::TryLockError>,
+    role: &str,
+    timed_out: bool,
+) -> LeaseAttempt {
+    match attempt {
+        Ok(()) => LeaseAttempt::Held,
+        Err(std::fs::TryLockError::WouldBlock) if timed_out => LeaseAttempt::Refused(format!(
+            "Another process owns the local MCP {role} lease: the lease is held"
+        )),
+        Err(std::fs::TryLockError::WouldBlock) => LeaseAttempt::Retry,
+        Err(std::fs::TryLockError::Error(error)) => LeaseAttempt::Refused(format!(
+            "Could not lock the local MCP {role} lease: {error}"
+        )),
     }
 }
 
@@ -4221,6 +4255,70 @@ mod tests {
             let clients = BTreeMap::from([(current_client_id("jan"), 200)]);
             store_attach_history(&path, &clients).unwrap();
         }
+    }
+
+    #[test]
+    fn a_slow_policy_read_does_not_stall_the_listener_thread() {
+        struct SlowPolicy(std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>);
+        #[async_trait]
+        impl DeviceAdapter for SlowPolicy {
+            async fn ready(&self) -> bool {
+                true
+            }
+            async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> {
+                Ok(Value::Null)
+            }
+            fn effective_access_mode(&self) -> Option<AccessMode> {
+                if let Some(gate) = self.0.lock().unwrap().take() {
+                    let _ = gate.recv_timeout(Duration::from_secs(10));
+                }
+                Some(AccessMode::Full)
+            }
+        }
+        let (release, gate) = std::sync::mpsc::channel();
+        let adapter: Arc<dyn DeviceAdapter> =
+            Arc::new(SlowPolicy(std::sync::Mutex::new(Some(gate))));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let read =
+                tokio::spawn(async move { effective_access_off_the_listener(&adapter).await });
+            // The same single thread still serves other work while the read blocks.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            })
+            .await
+            .expect("the listener thread was blocked by the policy read");
+            assert!(!read.is_finished());
+            release.send(()).unwrap();
+            assert_eq!(read.await.unwrap(), Some(AccessMode::Full));
+        });
+    }
+
+    #[test]
+    fn only_real_contention_is_reported_as_another_instance() {
+        use std::fs::TryLockError::{Error, WouldBlock};
+        assert!(matches!(
+            lease_attempt(Ok(()), "publisher", true),
+            LeaseAttempt::Held
+        ));
+        assert!(matches!(
+            lease_attempt(Err(WouldBlock), "publisher", false),
+            LeaseAttempt::Retry
+        ));
+        let LeaseAttempt::Refused(busy) = lease_attempt(Err(WouldBlock), "publisher", true) else {
+            panic!("a timed-out wait is refused");
+        };
+        assert!(busy.starts_with("Another process owns"));
+        let io = std::io::Error::other("locking unsupported");
+        let LeaseAttempt::Refused(failed) = lease_attempt(Err(Error(io)), "publisher", false)
+        else {
+            panic!("an IO error is refused at once, without waiting");
+        };
+        assert!(failed.starts_with("Could not lock"));
+        assert!(!failed.starts_with("Another process owns"));
     }
 
     #[test]
