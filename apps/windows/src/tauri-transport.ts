@@ -5,6 +5,7 @@ import { DEFAULT_BROKER_TRAY_STATUS, type AppWindowKind, type BrokerTrayStatus, 
 import { normalizeBrokerConnection } from "./qc-readiness.ts";
 import type { VirtualDeviceStorage } from "@qc-remote/ui";
 import { callTauri } from "./tauri-invoke.ts";
+import { listenScoped } from "./scoped-listener.ts";
 
 export { publicRelay, publicRelayBrowserPairing } from "./public-relay-transport.ts";
 
@@ -185,13 +186,9 @@ export const FEEDBACK_ISSUE_KIND_EVENT = TAURI_EVENTS.feedbackIssueKind;
  */
 export function onFeedbackIssueKind(handler: (kind: IssueKind) => void): () => void {
   if (!window.__TAURI_INTERNALS__) return () => undefined;
-  let disposed = false;
-  let unlisten: (() => void) | undefined;
-  void listenTauri<string>(FEEDBACK_ISSUE_KIND_EVENT, ({ payload }) => {
-    if (!disposed && (payload === "bug" || payload === "feature")) handler(payload);
-  }).then((stop) => { if (disposed) stop(); else unlisten = stop; })
-    .catch((error: unknown) => { console.error(`QC Remote could not listen for ${FEEDBACK_ISSUE_KIND_EVENT}:`, error); });
-  return () => { disposed = true; unlisten?.(); };
+  return listenScoped<string>(listenTauri, FEEDBACK_ISSUE_KIND_EVENT, ({ payload }) => {
+    if (payload === "bug" || payload === "feature") handler(payload);
+  });
 }
 
 /** The native broker's own session phase, pushed whenever it changes. */
@@ -213,13 +210,7 @@ export interface DevicePhaseEvent {
  */
 export function onDevicePhase(handler: (event: DevicePhaseEvent) => void): () => void {
   if (!window.__TAURI_INTERNALS__) return () => undefined;
-  let disposed = false;
-  let unlisten: (() => void) | undefined;
-  void listenTauri<DevicePhaseEvent>(TAURI_EVENTS.devicePhase, ({ payload }) => {
-    if (!disposed) handler(payload);
-  }).then((stop) => { if (disposed) stop(); else unlisten = stop; })
-    .catch((error: unknown) => { console.error("QC Remote could not listen for qc-device-phase:", error); });
-  return () => { disposed = true; unlisten?.(); };
+  return listenScoped<DevicePhaseEvent>(listenTauri, TAURI_EVENTS.devicePhase, ({ payload }) => handler(payload));
 }
 
 /**
@@ -526,12 +517,9 @@ export function serveAppWindowRequests(handlers: {
   saveWorkspaceCopy: (documentId: unknown) => Promise<string>;
 }): () => void {
   if (!window.__TAURI_INTERNALS__) return () => undefined;
-  let disposed = false;
   const unlisteners: Array<() => void> = [];
   const on = (event: string, run: () => void) => {
-    void listenTauri<unknown>(event, () => { if (!disposed) run(); })
-      .then((unlisten) => { if (disposed) unlisten(); else unlisteners.push(unlisten); })
-      .catch((error: unknown) => { console.error(`QC Remote could not answer ${event}:`, error); });
+    unlisteners.push(listenScoped<unknown>(listenTauri, event, run, (error) => { console.error(`QC Remote could not answer ${event}:`, error); }));
   };
   on(DEVICE_INFO_EVENTS.stateRequest, () => publishWindowState(DEVICE_INFO_EVENTS, handlers.deviceInfoState()));
   on(WORKSPACE_EVENTS.stateRequest, () => publishWindowState(WORKSPACE_EVENTS, handlers.workspaceState()));
@@ -545,7 +533,7 @@ export function serveAppWindowRequests(handlers: {
     { request: SETTINGS_EVENTS.updaterRelayRequest, result: SETTINGS_EVENTS.updaterRelayResult, run: handlers.setUpdaterRelayEnabled },
     { request: WORKSPACE_EVENTS.saveCopyRequest, result: WORKSPACE_EVENTS.saveCopyResult, run: handlers.saveWorkspaceCopy }
   ]);
-  return () => { disposed = true; stopAnswering(); for (const unlisten of unlisteners) unlisten(); };
+  return () => { stopAnswering(); for (const unlisten of unlisteners) unlisten(); };
 }
 
 /** What an app window says when the main window never answers its state request. */
