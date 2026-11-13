@@ -1204,6 +1204,18 @@ impl DeviceOperation {
             }
         };
 
+        // A saved preset's instrument is one of the codes the desktop offers;
+        // the gateway parser holds the same range for `savePreset`. A rename
+        // passes the stored value through unchanged, so it is not bounded here.
+        if let Self::SavePreset { instrument, .. } = self {
+            if !PRESET_INSTRUMENTS.contains(instrument) {
+                return Err(CommandEncodeError::UnsupportedValue {
+                    field: "preset instrument",
+                    value: instrument.to_string(),
+                });
+            }
+        }
+
         match self {
             Self::AddBlock { row, column, .. }
             | Self::ReplaceBlock { row, column, .. }
@@ -1301,6 +1313,14 @@ impl DeviceOperation {
                 screen_coordinate("screen y", *y, 480.0)?;
                 screen_coordinate("screen destination x", *to_x, 800.0)?;
                 screen_coordinate("screen destination y", *to_y, 480.0)?;
+                // A drag that ends where it starts is no drag; the gateway
+                // parser refuses it for the same reason.
+                if (x - to_x).abs() < f32::EPSILON && (y - to_y).abs() < f32::EPSILON {
+                    return Err(CommandEncodeError::UnsupportedValue {
+                        field: "screen drag endpoints",
+                        value: format!("({x}, {y}) to ({to_x}, {to_y})"),
+                    });
+                }
             }
             Self::ScreenDragSteps {
                 x,
@@ -1411,6 +1431,16 @@ impl DeviceOperation {
                         value: input_port_id.to_string(),
                     });
                 }
+                if level.is_none()
+                    && impedance.is_none()
+                    && input_type.is_none()
+                    && ground_lift.is_none()
+                {
+                    return Err(CommandEncodeError::UnsupportedValue {
+                        field: "input port settings",
+                        value: "no setting supplied".into(),
+                    });
+                }
                 for (field, value, valid) in [
                     (
                         "normalized input level",
@@ -1452,8 +1482,30 @@ impl DeviceOperation {
                 });
             }
             Self::SetOutputPort {
-                level, ground_lift, ..
+                output_port_id,
+                level,
+                ground_lift,
+                mute,
             } => {
+                if level.is_none() && ground_lift.is_none() && mute.is_none() {
+                    return Err(CommandEncodeError::UnsupportedValue {
+                        field: "output port settings",
+                        value: "no setting supplied".into(),
+                    });
+                }
+                // Per-port availability, as the gateway parser enforces it.
+                if ground_lift.is_some() && !matches!(*output_port_id, 1 | 4 | 5) {
+                    return Err(CommandEncodeError::UnsupportedValue {
+                        field: "output ground lift port",
+                        value: output_port_id.to_string(),
+                    });
+                }
+                if mute.is_some() && !matches!(*output_port_id, 1 | 2 | 4..=7) {
+                    return Err(CommandEncodeError::UnsupportedValue {
+                        field: "output mute port",
+                        value: output_port_id.to_string(),
+                    });
+                }
                 for (field, value, valid) in [
                     (
                         "output level dB",
@@ -1486,6 +1538,12 @@ impl DeviceOperation {
                 dry_wet,
                 ..
             } => {
+                if level.is_none() && headphones_source.is_none() && dry_wet.is_none() {
+                    return Err(CommandEncodeError::UnsupportedValue {
+                        field: "USB port settings",
+                        value: "no setting supplied".into(),
+                    });
+                }
                 for (field, value, valid) in [
                     (
                         "normalized USB level",
@@ -1512,6 +1570,15 @@ impl DeviceOperation {
                         });
                     }
                 }
+            }
+            Self::SetOutputPairing {
+                xlr12_linked: None,
+                out34_linked: None,
+            } => {
+                return Err(CommandEncodeError::UnsupportedValue {
+                    field: "output pairing",
+                    value: "no pair supplied".into(),
+                });
             }
             Self::SetGlobalEqParameters(parameters) => {
                 for (index, value) in parameters {
@@ -1760,6 +1827,17 @@ impl DeviceOperation {
                 return Err(CommandEncodeError::UnsupportedValue {
                     field: "parameter target column",
                     value: column.to_string(),
+                });
+            }
+            // Same rule as `SetParameterSceneMode` and the gateway parser: the
+            // splitter and mixer exist only on rows 0 and 2. Guarded so the
+            // pedal and range checks below still run for every other value.
+            Self::SetParameterExpression { row, column, .. }
+                if *column >= domain::GRID_COLUMNS && row % 2 != 0 =>
+            {
+                return Err(CommandEncodeError::UnsupportedValue {
+                    field: "splitter/mixer parameter row",
+                    value: row.to_string(),
                 });
             }
             Self::MovePreset { position, .. }
@@ -5490,6 +5568,95 @@ mod tests {
                 let unchecked = operation.clone().encode_unchecked().unwrap();
                 assert_eq!(operation.try_encode().unwrap(), unchecked);
             }
+        }
+    }
+
+    /// `try_encode` holds the rules the gateway parser already enforced, so a
+    /// host that builds an operation directly cannot bypass them.
+    #[test]
+    fn checked_encoding_matches_the_gateway_parsers_rules_without_frames() {
+        let expression = |row, column| DeviceOperation::SetParameterExpression {
+            row,
+            column,
+            parameter_index: 0,
+            pedal: 1,
+            minimum: 0.0,
+            maximum: 1.0,
+        };
+        // Splitter and mixer exist only on rows 0 and 2.
+        for column in [8, 9] {
+            for row in [1, 3] {
+                assert!(expression(row, column).try_encode().is_err());
+            }
+            for row in [0, 2] {
+                assert!(expression(row, column).try_encode().is_ok());
+            }
+        }
+        assert!(expression(1, 7).try_encode().is_ok());
+
+        let drag = |x, y, to_x, to_y| DeviceOperation::ScreenDrag { x, y, to_x, to_y };
+        assert!(drag(10.0, 20.0, 10.0, 20.0).try_encode().is_err());
+        assert!(drag(10.0, 20.0, 11.0, 20.0).try_encode().is_ok());
+
+        let save = |instrument| DeviceOperation::SavePreset {
+            setlist_key: "/media/p4/Presets/Live".into(),
+            position: 1,
+            name: "Name".into(),
+            instrument,
+        };
+        for instrument in [-1, 6, i32::MAX] {
+            assert!(save(instrument).try_encode().is_err());
+        }
+        for instrument in PRESET_INSTRUMENTS {
+            assert!(save(instrument).try_encode().is_ok());
+        }
+
+        // Nothing to set is a refusal, never a successful zero-frame encoding.
+        for operation in [
+            DeviceOperation::SetInputPort {
+                input_port_id: 1,
+                level: None,
+                impedance: None,
+                input_type: None,
+                ground_lift: None,
+            },
+            DeviceOperation::SetOutputPort {
+                output_port_id: 1,
+                level: None,
+                ground_lift: None,
+                mute: None,
+            },
+            DeviceOperation::SetUsbPort {
+                level: None,
+                headphones_source: None,
+                dry_wet: None,
+            },
+            DeviceOperation::SetOutputPairing {
+                xlr12_linked: None,
+                out34_linked: None,
+            },
+        ] {
+            assert!(operation.try_encode().is_err());
+        }
+        assert!(DeviceOperation::SetOutputPairing {
+            xlr12_linked: Some(true),
+            out34_linked: None,
+        }
+        .try_encode()
+        .is_ok());
+
+        // Per-port output rules: ground lift on 1, 4, 5; mute on 1, 2, 4..=7.
+        let output = |port, ground_lift, mute| DeviceOperation::SetOutputPort {
+            output_port_id: port,
+            level: None,
+            ground_lift,
+            mute,
+        };
+        for port in [1, 2, 4, 5, 6, 7, 8, 9] {
+            let lift_ok = matches!(port, 1 | 4 | 5);
+            let mute_ok = matches!(port, 1 | 2 | 4..=7);
+            assert_eq!(output(port, Some(1.0), None).try_encode().is_ok(), lift_ok);
+            assert_eq!(output(port, None, Some(true)).try_encode().is_ok(), mute_ok);
         }
     }
 
