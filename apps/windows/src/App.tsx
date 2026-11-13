@@ -452,16 +452,8 @@ export function App() {
   const { undoAvailable: deviceUndoAvailable, redoAvailable: deviceRedoAvailable, undo: undoLastAction, redo: redoLastAction } = deviceUndo;
   const demoSession = connection.demo || connection.source === "virtual";
   const expressionWorkflow = useExpressionAssignment({
-    commandSessionKey: deviceWorkflowSession.commandSessionKey,
-    lifetime: qcController.lifetime,
+    ...deviceWorkflowSession,
     gateway: activeGateway,
-    sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
-    captureSessionCurrent: () => {
-      const attempt = connectionAttempts.capture();
-      const source = demoDeviceSession.source;
-      const stream = nativeStateStream.current;
-      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
-    },
     snapshot,
     connected: sessionReady,
     pending: commandPending,
@@ -472,17 +464,12 @@ export function App() {
     fail: actionFailed
   });
   const deviceSettingsWorkflow = useDeviceSettingsWorkflow({
-    lifetime: qcController.lifetime,
+    ...deviceWorkflowSession,
     ioSettingsError: snapshot.ioSettingsError,
-    commandSessionKey: deviceWorkflowSession.commandSessionKey,
     gateway: activeGateway,
+    // Hardware-keyed on purpose, unlike the shared key: these are the unit's own
+    // settings, so they follow the live device (deviceReady), not Demo readiness.
     sessionKey: `${connection.source}:${snapshot.stateVersion?.session ?? ""}:${deviceReady}:${nativeStateStream.current ?? ""}`,
-    captureSessionCurrent: () => {
-      const attempt = connectionAttempts.capture();
-      const source = demoDeviceSession.source;
-      const stream = nativeStateStream.current;
-      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
-    },
     connected: sessionReady,
     pending: commandPending,
     setPending: setWorkflowPending,
@@ -501,12 +488,7 @@ export function App() {
   const tunerWorkflow = useTunerWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setWorkflowPending, notice: setNotice, fail: actionFailed });
   const looperWorkflow = useLooperXWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setWorkflowPending, notice: setNotice, fail: actionFailed });
   const midiOutWorkflow = usePresetMidiOutWorkflow({ lifetime: qcController.lifetime, gateway: activeGateway, snapshot, demo: connection.demo || connection.source === "virtual", onSaved: reconcileWorkflowSnapshot,
-    captureSessionCurrent: () => {
-      const attempt = connectionAttempts.capture();
-      const source = demoDeviceSession.source;
-      const stream = nativeStateStream.current;
-      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
-    }
+    captureSessionCurrent: deviceWorkflowSession.captureSessionCurrent
   });
   const modesWorkflow = useModesConfigurationWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setWorkflowPending, notice: setNotice, fail: actionFailed });
   const ioEqWorkflow = useIoEqWorkflows({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setWorkflowPending, notice: setNotice, fail: actionFailed, snapshot });
