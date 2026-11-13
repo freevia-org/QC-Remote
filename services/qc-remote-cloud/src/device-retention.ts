@@ -111,6 +111,22 @@ export async function touchDeviceLastUse(storage: RetentionStorage, deviceId: st
   });
 }
 
+/** Remove a device record and queue its KV directory entry for deletion in one
+ * transaction (the same queue the expiry sweep and re-pair use), so an explicit
+ * revoke whose KV delete fails or never runs still converges. Returns false
+ * when there was no record. */
+export async function removeDeviceRecord(storage: RetentionStorage, deviceId: string, now: number): Promise<boolean> {
+  return storage.transaction(async (transaction) => {
+    const key = `${DEVICE_RECORD_PREFIX}${deviceId}`;
+    if (await transaction.get(key) === undefined) return false;
+    await transaction.delete(key);
+    const queued = await transaction.get<string[]>(DIRECTORY_CLEANUP_KEY) ?? [];
+    await transaction.put(DIRECTORY_CLEANUP_KEY, [...new Set([...queued, deviceId])]);
+    await scheduleRetentionWork(transaction, now + DIRECTORY_CLEANUP_RETRY_MS);
+    return true;
+  });
+}
+
 export type SweepResult = { deleted: string[]; nextSweepAt: number | null };
 
 /** Delete every record past its deadline and queue its KV entry for deletion,
@@ -134,6 +150,16 @@ export async function sweepExpiredDevices(storage: RetentionStorage, now: number
     if (cleanup.length > 0) await transaction.put(DIRECTORY_CLEANUP_KEY, cleanup);
     for (const [key, reservation] of await transaction.list<PairingReservation>({ prefix: PAIRING_RESERVATION_PREFIX })) {
       const deviceId = key.slice(PAIRING_RESERVATION_PREFIX.length);
+      const abandonAt = abandonDue(reservation);
+      if (abandonAt !== null) {
+        // An admitted attempt whose own offer lapsed (plus the margin) can no
+        // longer commit: redemption needs the live offer. It stops counting
+        // toward the open cap; like any abandoned attempt it decides nothing
+        // about KV, queues and deletes nothing, and keeps its id refused.
+        if (abandonAt <= now) await transaction.put(key, { ...reservation, state: "abandoned", abortedAt: now } satisfies PairingReservation);
+        else next = earliestDeadline(next, abandonAt);
+        continue;
+      }
       const due = compactionDue(reservation, records.has(`${DEVICE_RECORD_PREFIX}${deviceId}`) && !deleted.includes(deviceId), cleanup.includes(deviceId), now);
       if (due.drop) await transaction.delete(key);
       else next = earliestDeadline(next, due.at);
@@ -495,7 +521,8 @@ export const MAX_OPEN_PAIRING_ATTEMPTS = 4;
  * alarm's delete is acknowledged it is `cleanup-acked` and compactable. A
  * `committed` one frees once its record is gone (retention, revocation or
  * replacement). Only `admitted` (an unknown or in-flight put) and
- * `abandoned` ones never free on their own. So a full account may or may not
+ * `abandoned` ones never free on their own (an `admitted` one becomes
+ * `abandoned` when its offer has lapsed plus the margin). So a full account may or may not
  * free up with time, depending on what fills it. */
 export const MAX_PAIRING_RESERVATIONS = 2048;
 /** A provisional value, open to change. How long after the offer an
@@ -503,6 +530,9 @@ export const MAX_PAIRING_RESERVATIONS = 2048;
  * compaction (`compactionDue`, run by `sweepExpiredDevices`). Covers clock skew between the
  * Worker and this object; correctness rests on the offer, not on this. */
 export const PAIRING_COMPACTION_MARGIN_MS = 10 * 60_000;
+/** The lifetime of a pairing offer (index.ts OFFER_TTL_MS); only a fallback
+ * for a reservation recorded without its offer's expiry. */
+const OFFER_LIFETIME_MS = 10 * 60_000;
 
 /** Whether a terminal reservation may be dropped, and when it may next be.
  * Never: `admitted` (an unknown or in-flight put, whatever its age) and
@@ -517,6 +547,14 @@ export const PAIRING_COMPACTION_MARGIN_MS = 10 * 60_000;
  * an admitted reservation for exactly its attempt, and a delayed resolve finds
  * no live offer of its own and writes nothing. The id could be admitted again
  * only by a new attempt minting the same random UUID. */
+/** When an `admitted` reservation can no longer commit and may be marked
+ * `abandoned` by the sweep, or null for any other state. */
+function abandonDue(reservation: PairingReservation): number | null {
+  if (reservation.state !== "admitted") return null;
+  const offerEnd = typeof reservation.offerExpiresAt === "number" ? reservation.offerExpiresAt : reservation.admittedAt + OFFER_LIFETIME_MS;
+  return offerEnd + PAIRING_COMPACTION_MARGIN_MS;
+}
+
 function compactionDue(reservation: PairingReservation, hasRecord: boolean, queued: boolean, now: number): { drop: boolean; at: number | null } {
   const terminal = reservation.state === "cleanup-acked" || reservation.state === "fenced" || (reservation.state === "committed" && !hasRecord);
   if (!terminal || queued) return { drop: false, at: null };
@@ -535,9 +573,9 @@ export const PAIRING_REFUSAL_MESSAGES: Record<PairingRefusal, string> = {
 /** How the pair route answers each capacity refusal, through the public
  * failure allowlist (http-security.ts `publicCodes`). The codes are stable;
  * the messages name no account, id or count.
- *  - open attempts: 429 with Retry-After, because a resolution or an
- *    abandonment frees capacity; the wait matches the pairing rate limit's
- *    60 s period.
+ *  - open attempts: 409, not 429: an unresolved attempt frees only when its
+ *    offer has lapsed plus the margin (the retention sweep then abandons it,
+ *    `abandonDue`) or an operator releases it, so no Retry-After is promised.
  *  - total reservations: 409, not 429: capacity frees only as finished
  *    reservations are compacted after their offer expired plus the margin
  *    (aborted ones once their queued cleanup is acknowledged, committed ones
@@ -549,7 +587,7 @@ export const PAIRING_REFUSAL_MESSAGES: Record<PairingRefusal, string> = {
  * The device-reserved refusal stays internal (it never follows from a fresh
  * id) and keeps the route's generic fallback. */
 export const PAIRING_REFUSAL_RESPONSES: Readonly<Record<string, { code: string; status: number; retryAfterSeconds?: number }>> = {
-  [PAIRING_REFUSAL_MESSAGES["open-attempts"]]: { code: "pairing_attempts_unresolved", status: 429, retryAfterSeconds: 60 },
+  [PAIRING_REFUSAL_MESSAGES["open-attempts"]]: { code: "pairing_attempts_unresolved", status: 409 },
   [PAIRING_REFUSAL_MESSAGES.reservations]: { code: "pairing_limit_reached", status: 409 },
   [PAIRING_REFUSAL_MESSAGES["offer-closed"]]: { code: "pairing_offer_closed", status: 409 },
 };
@@ -668,13 +706,25 @@ type DirectoryMetadata = { refreshedAt?: number; persistent?: boolean };
  * Object accepted its credential. `stillPaired` is asked after the write, so a
  * revocation that raced it is followed by a delete instead of leaving a
  * resurrected pointer. */
-export async function refreshDeviceDirectory(kv: DirectoryKv, deviceId: string, owner: string, now: number, stillPaired: () => Promise<boolean>): Promise<boolean> {
+export async function refreshDeviceDirectory(kv: DirectoryKv, deviceId: string, owner: string, now: number, stillPaired: () => Promise<boolean>, queueCleanup?: () => Promise<void>): Promise<boolean> {
   const key = deviceDirectoryKey(deviceId);
   const { value, metadata } = await kv.getWithMetadata<{ owner?: string }, DirectoryMetadata>(key, "json");
   if (!value || value.owner !== owner) return false;
   if (metadata?.persistent) return false;
   await kv.put(key, JSON.stringify({ owner }), { metadata: { refreshedAt: now, persistent: true } });
-  if (!await stillPaired()) {
+  let paired: boolean;
+  try { paired = await stillPaired(); } catch (reason) {
+    // Unknown, and the entry now has no TTL: hand it to the owner's queue,
+    // whose drain keeps it when a live record still holds the id.
+    if (!queueCleanup) throw reason;
+    try { await queueCleanup(); } catch { throw reason; }
+    return false;
+  }
+  if (!paired) {
+    // The record was revoked meanwhile. Queue the delete with the owner so a
+    // failure is retried by its alarm instead of leaving a pointer with no TTL
+    // and no owner; with no queue available, delete inline as before.
+    if (queueCleanup) { try { await queueCleanup(); return false; } catch { /* fall back to the inline delete */ } }
     await kv.delete(key);
     return false;
   }
