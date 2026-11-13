@@ -194,13 +194,10 @@ export function useTempoWorkflow(options: TempoWorkflowOptions) {
   const setSound = useCallback((value: NonNullable<TempoSettings["sound"]>) =>
     commit(`Metronome Sound ${value}`, (gateway) => gateway.setTempoMetronome(null, null, null, null, null, null, value, null, null)), [commit, gateway]);
 
-  // The one metronome field that confirms before writing: ROUTING moves the
-  // metronome's audio to a different physical output, the same "changes
-  // device-wide signal routing immediately" reasoning use-device-settings-
-  // workflow.ts's own setGlobalBypass already confirms for - and the same
-  // "Audio may be interrupted" wording use-routing-workflow.ts already uses
-  // for a routing write. Every other setter above matches the rest of that
-  // same hook's precedent ("every other setter does not [confirm]").
+  // ROUTING moves the metronome's audio to a different physical output. This
+  // setter writes without a confirmation, like every other metronome setter
+  // above; whether routing should ask first (as use-routing-workflow.ts does
+  // for a routing write) is an open owner decision, not behaviour to assume.
   const setRouting = useCallback(async (value: NonNullable<TempoSettings["routing"]>) => {
     await commit(`Metronome Routing ${value}`, (gateway) => gateway.setTempoMetronome(null, null, null, null, null, null, null, value, null));
   }, [commit, gateway]);
@@ -210,10 +207,12 @@ export function useTempoWorkflow(options: TempoWorkflowOptions) {
 
   const setGlobalBpm = useCallback((bpm: number) => {
     const clamped = Math.max(QC_MINIMUM_TEMPO_BPM, Math.min(QC_MAXIMUM_TEMPO_BPM, Math.round(bpm)));
-    const expectedMode = settings?.mode ?? "GLOBAL";
-    const expectedGlobalBpm = settings?.globalBpm ?? clamped;
+    // The guard names the value the unit last reported; the value being written is not evidence of it.
+    if (settings?.mode === undefined || settings.globalBpm === undefined) { notice("Refresh Tempo Settings before changing the global tempo."); return Promise.resolve(); }
+    const expectedMode = settings.mode;
+    const expectedGlobalBpm = settings.globalBpm;
     return commit(`Global Tempo ${clamped} BPM`, (gateway) => gateway.setGlobalTempo(clamped, expectedMode, expectedGlobalBpm));
-  }, [commit, gateway, settings]);
+  }, [commit, gateway, notice, settings]);
 
   return {
     open: currentState && open, returnFocusTarget: currentState ? returnFocusTarget : undefined, openTempo, close, loading: currentState && loading, pending,
