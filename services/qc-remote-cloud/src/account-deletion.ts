@@ -100,6 +100,10 @@ export const PROVIDER_0_10_4_MAX_LIFETIME_MS = (600 + LEGACY_REFRESH_TOKEN_TTL_S
  * 60 s plus any cacheTtl and is not guaranteed. */
 export const KV_VISIBILITY_MARGIN_MS = 10 * 60_000;
 export const LEGACY_RECONCILE_INTERVAL_MS = 60 * 60_000;
+/** While a reconciliation cannot complete (no drain attestation, or an unknown
+ * expiry), clean passes back off from the interval above, doubling with the
+ * time since the last delete or failure, up to this cap. */
+export const LEGACY_RECONCILE_MAX_INTERVAL_MS = 24 * 60 * 60_000;
 /** Refusal texts that cross the Durable Object RPC boundary; matched by text. */
 export const ACCOUNT_DELETION_PENDING_MESSAGE = "This remote account is being deleted. Finish or wait for the deletion at https://qcrc.freevia.org/account/delete before signing in again.";
 export const STALE_GENERATION_MESSAGE = "This AI app was signed in to a remote account that has since been deleted. Remove QC Remote from the app and connect it again.";
@@ -579,7 +583,11 @@ export function fenceProviderKv<T extends { put: KvPut; delete(key: string): Pro
         // code/refresh exchange. Upgrade still-valid legacy grants here,
         // after validation, through the same revocation/generation fence.
         if (typeof grant.refreshTokenId === "string") {
-          if (typeof grant.clientId === "string") refreshClientId = grant.clientId;
+          // Only a put that actually upgrades a legacy grant (one that still
+          // carries an expiry) migrates its client; every later refresh
+          // rotation writes an unexpiring grant and must cost no extra KV work.
+          const legacy = typeof grant.expiresAt === "number" || putExpiry(options, now()) !== undefined;
+          if (legacy && typeof grant.clientId === "string") refreshClientId = grant.clientId;
           delete grant.expiresAt;
           value = JSON.stringify(grant);
           options = undefined;
@@ -597,10 +605,14 @@ export function fenceProviderKv<T extends { put: KvPut; delete(key: string): Pro
       // Existing dynamic registrations also carried a 90-day KV TTL. Only
       // migrate a client used by a validated, admitted refresh grant. Client
       // deletion revokes its grants, whose tombstones remain authoritative.
+      // Best effort: the grant is written and kept, so a failure here must not
+      // fail the exchange; the next legacy grant write for the client retries.
       if (refreshClientId && kv.get) {
-        const clientKey = `client:${refreshClientId}`;
-        const client = await kv.get(clientKey);
-        if (client !== null) await kv.put(clientKey, client);
+        try {
+          const clientKey = `client:${refreshClientId}`;
+          const client = await kv.get(clientKey);
+          if (client !== null) await kv.put(clientKey, client);
+        } catch { /* retried on the next legacy grant write */ }
       }
       return result;
     }
@@ -827,7 +839,15 @@ export async function reconcileLegacy(storage: DeletionStorage, registry: Connec
       await scheduleSharedAlarm(transaction, receipt.retainUntil);
       return { status: "deleted", operationId: receipt.operationId, deletedAt: now };
     }
-    const retryAt = Math.max(now + 1_000, Math.min(now + LEGACY_RECONCILE_INTERVAL_MS, done ?? Number.POSITIVE_INFINITY));
+    // A clean pass that cannot complete backs off with the time since the last
+    // delete or failure (so 1 h, 2 h, 4 h ... up to the cap); anything found or
+    // failed resets it to one hour. A completable reconciliation keeps the
+    // fixed interval and its completion time.
+    const stuck = !failed && found === 0 && done === null;
+    const interval = stuck
+      ? Math.min(LEGACY_RECONCILE_MAX_INTERVAL_MS, Math.max(LEGACY_RECONCILE_INTERVAL_MS, now - current.lastLegacyDeleteAt))
+      : LEGACY_RECONCILE_INTERVAL_MS;
+    const retryAt = Math.max(now + 1_000, Math.min(now + interval, done ?? Number.POSITIVE_INFINITY));
     await transaction.put(ACCOUNT_DELETION_KEY, { ...current, lastLegacyDeleteAt, seenLegacy, retryAt } satisfies ReconcilingAccountDeletion);
     await scheduleSharedAlarm(transaction, retryAt);
     return { status: "pending", operationId: current.operationId, step: "legacy-reconciliation" };
