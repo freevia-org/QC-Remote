@@ -31,6 +31,24 @@ pub struct StatePublication {
     pub tempo_clock: Option<TempoClock>,
 }
 
+/// Byte length of `value`'s JSON encoding, counted without materialising it.
+/// Equal to `serde_json::to_vec(value)?.len()`, including its errors.
+fn encoded_len<T: Serialize>(value: &T) -> Result<usize, serde_json::Error> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value)?;
+    Ok(count.0)
+}
+
 #[derive(Default)]
 pub(crate) struct StatePublications {
     pending: VecDeque<StatePublication>,
@@ -50,9 +68,8 @@ impl StatePublications {
         if publication.states.is_empty() && publication.tempo_clock.is_none() {
             return Ok(());
         }
-        let bytes = serde_json::to_vec(&publication)
-            .map_err(|error| format!("Could not encode native state publication: {error}"))?
-            .len();
+        let bytes = encoded_len(&publication)
+            .map_err(|error| format!("Could not encode native state publication: {error}"))?;
         if self.pending.len() >= MAX_PUBLICATIONS
             || bytes > MAX_PUBLICATION_BYTES.saturating_sub(self.bytes)
         {
@@ -101,6 +118,23 @@ mod tests {
             observed_at: sequence,
             states: vec![state],
             tempo_clock: None,
+        }
+    }
+
+    #[test]
+    fn counted_length_equals_the_materialised_encoding() {
+        let long = "y".repeat(70_000);
+        for label in [
+            "",
+            "x",
+            "multi\nline \"quoted\" \u{e9}\u{1f3b8}",
+            long.as_str(),
+        ] {
+            let publication = publication(7, label.to_string());
+            assert_eq!(
+                encoded_len(&publication).unwrap(),
+                serde_json::to_vec(&publication).unwrap().len()
+            );
         }
     }
 
