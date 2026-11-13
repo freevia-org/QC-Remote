@@ -77,3 +77,16 @@ test("a menu opened by the app's route starts open and closes with the editor", 
   assert.deepEqual(log, ["menu:true", "menu:false"]);
   t.diagnostic("closing the editor reports the menu closed, so the unit's follows");
 });
+
+test("the open-with-menu flag is consumed by the editor it opened, not by a scene-change remount (TU-7)", (t) => {
+  const log: string[] = [];
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(React.createElement(CorOsParameterEditor, props(log, { initialMenuOpen: true }))); });
+  t.after(() => act(() => renderer.unmount()));
+  assert.equal(renderer.root.findAllByProps({ role: "menu" }).length > 0, true);
+  act(() => renderer.update(React.createElement(CorOsParameterEditor, props(log, { initialMenuOpen: true, activeScene: 1, scenes: ["A", "B"] }))));
+  assert.equal(renderer.root.findAllByProps({ role: "menu" }).length, 0, "the remounted editor starts closed");
+  act(() => renderer.update(React.createElement(CorOsParameterEditor, props(log, { initialMenuOpen: false, activeScene: 1, scenes: ["A", "B"] }))));
+  act(() => renderer.update(React.createElement(CorOsParameterEditor, props(log, { initialMenuOpen: true, activeScene: 0, scenes: ["A", "B"] }))));
+  assert.equal(renderer.root.findAllByProps({ role: "menu" }).length > 0, true, "a fresh request after the host reset the flag opens it again");
+});
