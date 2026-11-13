@@ -20,7 +20,7 @@ pub enum CatalogInvalidation {
     IngressTimingInverted,
 }
 
-/// Which retention gate kept [`CatalogObservations::retained_catalog`] empty,
+/// Which retention gate kept [`CatalogObservations::retained_catalog_where`] empty,
 /// checked in the same order that function checks them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetainedCatalogGap {
@@ -38,6 +38,16 @@ pub enum RetainedCatalogGap {
 struct FolderObservation {
     header: PresetFolderListing,
     slots: BTreeMap<u32, PresetFileListing>,
+}
+
+impl FolderObservation {
+    /// The header with its slot records in position order.
+    fn listing(&self) -> PresetFolderListing {
+        // The header carries the first-seen sequence number assigned at insertion.
+        let mut listing = self.header.clone();
+        listing.files = self.slots.values().cloned().collect();
+        listing
+    }
 }
 
 #[derive(Default)]
@@ -115,7 +125,7 @@ impl CatalogObservations {
             .map(|epoch| epoch.revision())
     }
 
-    /// The gate that [`Self::retained_catalog`] fails, or `Ok(())` when it
+    /// The gate that [`Self::retained_catalog_where`] fails, or `Ok(())` when it
     /// would return a catalog. Both share this check so they cannot disagree.
     pub fn retention_gate(
         &self,
@@ -142,22 +152,43 @@ impl CatalogObservations {
     /// contributed to it must nevertheless belong to this session and have
     /// ordered ingress. Unknown provenance invalidates planning until reset;
     /// later partial updates cannot repair the provenance of inherited fields.
-    pub fn retained_catalog(
+    ///
+    /// The retained catalog restricted to the folders `wanted` selects by
+    /// retained key, behind [`Self::retention_gate`]; only the selected folders and their
+    /// slot records are copied.
+    pub fn retained_catalog_where(
         &self,
         accepts: impl Fn(&ObservationTicket) -> bool,
         now_ms: u64,
+        wanted: impl Fn(&str) -> bool,
     ) -> Option<(BTreeMap<String, PresetFolderListing>, u64)> {
         self.retention_gate(accepts, now_ms).ok()?;
         Some((
             self.folders
-                .keys()
-                .filter_map(|key| {
-                    self.retained_listing(key)
-                        .map(|folder| (key.clone(), folder))
-                })
+                .iter()
+                .filter(|(key, _)| wanted(key))
+                .map(|(key, folder)| (key.clone(), folder.listing()))
                 .collect(),
             self.retained_until_ms,
         ))
+    }
+
+    /// The retained folder headers in key order, with no slot record, or
+    /// `None` when [`Self::retention_gate`] fails. Each header's `files` is
+    /// empty; use [`Self::retained_listing`] for one folder's records.
+    pub fn retained_headers(
+        &self,
+        accepts: impl Fn(&ObservationTicket) -> bool,
+        now_ms: u64,
+    ) -> Option<impl Iterator<Item = &PresetFolderListing>> {
+        self.retention_gate(accepts, now_ms).ok()?;
+        Some(self.folders.values().map(|folder| &folder.header))
+    }
+
+    /// Whether a folder is retained under `key`, ignoring trailing slashes.
+    /// Not gated: pair it with [`Self::retention_gate`].
+    pub fn contains_folder(&self, key: &str) -> bool {
+        self.folders.contains_key(key.trim_end_matches('/'))
     }
 
     fn invalidate(&mut self, reason: CatalogInvalidation) {
@@ -165,11 +196,7 @@ impl CatalogObservations {
     }
 
     pub fn retained_listing(&self, key: &str) -> Option<PresetFolderListing> {
-        let folder = self.folders.get(key.trim_end_matches('/'))?;
-        // The header carries the first-seen sequence number assigned at insertion.
-        let mut listing = folder.header.clone();
-        listing.files = folder.slots.values().cloned().collect();
-        Some(listing)
+        Some(self.folders.get(key.trim_end_matches('/'))?.listing())
     }
 
     pub fn observe(
@@ -396,6 +423,51 @@ mod tests {
         let change = native.apply(message).unwrap();
         observations.observe(&ticket(), message, &change, native);
         observations.retention_gate(|_| true, 1).unwrap();
+    }
+
+    #[test]
+    fn header_and_filtered_reads_agree_with_the_full_retained_catalog() {
+        let mut native = NativePresetCatalog::default();
+        let mut observations = CatalogObservations::default();
+        apply(
+            &mut native,
+            &mut observations,
+            &message(
+                pa::message_action::Enum::Create,
+                "Known",
+                false,
+                vec![product(Some("occupied"), "Author", "Date")],
+            ),
+        );
+        let (full, until) = observations
+            .retained_catalog_where(|_| true, 1, |_| true)
+            .unwrap();
+        let headers: Vec<_> = observations
+            .retained_headers(|_| true, 1)
+            .unwrap()
+            .collect();
+        assert_eq!(headers.len(), full.len());
+        for header in &headers {
+            assert!(header.files.is_empty(), "headers carry no slot records");
+            let mut expected = full[&header.key].clone();
+            expected.files.clear();
+            assert_eq!(**header, expected);
+        }
+        let (only, only_until) = observations
+            .retained_catalog_where(|_| true, 1, |key| key == KEY)
+            .unwrap();
+        assert_eq!((only, only_until), (full.clone(), until));
+        let (none, _) = observations
+            .retained_catalog_where(|_| true, 1, |_| false)
+            .unwrap();
+        assert!(none.is_empty());
+        assert!(observations.contains_folder(&format!("{KEY}/")));
+        assert!(!observations.contains_folder("/media/p4/Presets/Other"));
+        // The gate still applies to every accessor.
+        assert!(observations.retained_headers(|_| false, 1).is_none());
+        assert!(observations
+            .retained_catalog_where(|_| false, 1, |_| true)
+            .is_none());
     }
 
     #[test]
