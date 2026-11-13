@@ -5,7 +5,7 @@
 // process never loads device code, starts the broker, or opens USB.
 const { createHmac, randomBytes, randomUUID, timingSafeEqual } = require("node:crypto");
 const { open } = require("node:fs/promises");
-const { closeSync, fsyncSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } = require("node:fs");
+const { closeSync, fstatSync, fsyncSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } = require("node:fs");
 const path = require("node:path");
 const { PassThrough } = require("node:stream");
 
@@ -461,7 +461,11 @@ const MAX_SESSION_CACHE_BYTES = 16 * 1024 * 1024;
 async function readLocalText(file, maximum) {
   const held = await open(file, "r");
   try {
-    const bytes = Buffer.alloc(maximum + 1);
+    // Sized from the file, not the envelope: a 16 MiB buffer per read of a
+    // few kilobytes is what every request used to allocate.
+    const { size } = await held.stat();
+    if (size > maximum) throw new Error("Local MCP document exceeds its software envelope");
+    const bytes = Buffer.alloc(size + 1);
     let used = 0;
     while (used < bytes.length) {
       const { bytesRead } = await held.read(bytes, used, bytes.length - used, null);
@@ -475,7 +479,9 @@ async function readLocalText(file, maximum) {
 function readLocalTextSync(file, maximum) {
   const held = openSync(file, "r");
   try {
-    const bytes = Buffer.alloc(maximum + 1);
+    const { size } = fstatSync(held);
+    if (size > maximum) throw new Error("Local MCP document exceeds its software envelope");
+    const bytes = Buffer.alloc(size + 1);
     let used = 0;
     while (used < bytes.length) {
       const count = readSync(held, bytes, used, bytes.length - used, null);
@@ -1100,6 +1106,10 @@ async function ensureSession(current) {
   await withHandshake(current);
 }
 
+// The last catalog this process wrote, per file. Every online tools/list and
+// initialize reply used to rewrite the cache (stage, fsync, rename) on the
+// event loop before the reply went out, even when nothing had changed.
+const writtenSessions = new Map();
 function rememberSession(value) {
   const file = sessionCacheFile();
   if (!file) return;
@@ -1114,6 +1124,7 @@ function rememberSession(value) {
     // empty tool list for the rest of its session.
     const contents = JSON.stringify(value);
     if (Buffer.byteLength(contents) > MAX_SESSION_CACHE_BYTES) throw new Error("Local MCP session catalog exceeds its software envelope");
+    if (writtenSessions.get(file) === contents) return;
     for (let attempt = 0; attempt < 64; attempt++) {
       staged = `${file}.${process.pid}.${randomUUID()}.tmp`;
       try {
@@ -1131,6 +1142,7 @@ function rememberSession(value) {
     descriptor = undefined;
     renameSync(staged, file);
     owned = false;
+    writtenSessions.set(file, contents);
   } catch (error) {
     bridgeEnvelope.diagnostics.write(
       `[qc-remote-mcp] could not remember the local MCP session: ${error instanceof Error ? error.message : String(error)}\n`,
@@ -1629,7 +1641,7 @@ async function main(options = {}) {
   }
 }
 
-module.exports = { createBridgeEnvelope, main, refusalReplies };
+module.exports = { createBridgeEnvelope, main, refusalReplies, rememberSession, rememberedSession, readLocalTextSync };
 // Claude's built-in Node host sets argv[1] to this entry point, then dynamically
 // imports it from its own bootstrap. In that host require.main is NOT this
 // module. Still keep ordinary library imports inert for embedded/test callers.
