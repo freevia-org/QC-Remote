@@ -2012,6 +2012,7 @@ impl HeadlessMcpHost {
 /// stops the host. Runs until the host stops or turns itself off.
 fn refresh_headless_settings(
     settings: HeadlessHostSettings,
+    device: HeadlessDeviceAdapter,
     access: watch::Sender<AccessMode>,
     running: Arc<HostedListener>,
     disabled: Arc<AtomicBool>,
@@ -2025,6 +2026,11 @@ fn refresh_headless_settings(
             // for this bridge, and with nothing published that relay reports
             // QC Remote as offline - the behaviour before a bridge could host.
             disabled.store(true, Ordering::Release);
+            // Release the broker connection now, in `HeadlessMcpHost::stop`'s
+            // order: left to the next request or to process exit, an idle
+            // chat kept a gateway participant (and any broker it had spawned)
+            // for the life of the AI host.
+            device.stop();
             running.stop();
             return;
         }
@@ -2091,13 +2097,19 @@ pub(crate) fn attempt_headless_mcp_hosting(
             let (stop_tx, stop_rx) = std::sync::mpsc::channel();
             let original_refresh_permit = Arc::clone(&refresh_permit);
             let refresh = {
-                let (settings, running, disabled) =
-                    (settings.clone(), running.clone(), disabled.clone());
+                let (settings, running, disabled, device) = (
+                    settings.clone(),
+                    running.clone(),
+                    disabled.clone(),
+                    device.clone(),
+                );
                 std::thread::Builder::new()
                     .name("qc-headless-settings".into())
                     .spawn(move || {
                         let _refresh_permit = refresh_permit;
-                        refresh_headless_settings(settings, access_tx, running, disabled, stop_rx)
+                        refresh_headless_settings(
+                            settings, device, access_tx, running, disabled, stop_rx,
+                        )
                     })
             };
             let refresh = match refresh {
@@ -4923,6 +4935,14 @@ mod tests {
                 wait_for(Duration::from_secs(5), || hosted.is_disabled()),
                 "the host notices the switch"
             );
+            assert!(
+                wait_for(Duration::from_secs(5), || hosted
+                    .device
+                    .stopped
+                    .load(Ordering::Acquire)),
+                "and releases its broker connection without waiting for a request"
+            );
+            assert!(!hosted.device.gateway_attached());
             // `is_disabled()` flips in memory before the unpublish (a file
             // removal) necessarily lands on disk - under heavy disk contention
             // (e.g. many concurrent test runs on the same machine) there is a
