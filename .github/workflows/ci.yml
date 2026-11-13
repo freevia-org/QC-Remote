@@ -437,7 +437,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && (needs.changes.result != 'success' || needs.changes.outputs.cloud != 'false') }}
     runs-on: ${{ inputs.use_github_hosted && 'ubuntu-latest' || 'qc-remote-i5-linux' }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     # services/qc-remote-cloud is an npm workspace of the root package.json and
     # has no lockfile of its own: install from the root lock and run the
     # workspace's scripts with --workspace. (`npm ci` run from inside the
@@ -472,6 +472,11 @@ jobs:
       - run: npm ci
       - name: Types, tsc and dry-run deploy (placeholder KV id, no Cloudflare auth)
         run: npm run check --workspace @qc-remote/cloud
+      # The only suite that runs the account-deletion fence and provider-KV
+      # journal inside workerd. Local miniflare storage, mocked network: no
+      # Cloudflare account or network access (wrangler.kv-proxy-test.jsonc).
+      - name: Workers-runtime KV fence tests
+        run: npm run test:workers:kv-proxy --workspace @qc-remote/cloud
 
   android:
     name: Android app (debug build + unit tests)

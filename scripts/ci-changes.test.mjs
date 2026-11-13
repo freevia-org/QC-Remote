@@ -625,3 +625,7 @@ test('self-hosted Cargo jobs keep a persistent target directory and hosted jobs 
     }
   }
 });
+
+test('the relay job runs the Workers-runtime KV fence suite', () => {
+  assert.match(workflow('ci.yml'), /run: npm run test:workers:kv-proxy --workspace @qc-remote\/cloud/);
+});
