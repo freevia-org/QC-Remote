@@ -59,7 +59,7 @@ function showsDialog({ width, luma }: UnitFrameLuma): boolean {
 /** "copy" or "swap" from the title's first letter, or undefined when the frame does not show a title that reads clearly. */
 export function sceneCommandVerbFromLuma(frame: UnitFrameLuma): SceneCommandVerb | undefined {
   const { width, height, luma } = frame;
-  if (width !== 800 || height !== 480 || !showsDialog(frame)) return undefined;
+  if (width !== 800 || height !== 480 || luma.length < width * height || !showsDialog(frame)) return undefined;
   const lit = (x: number, y: number) => luma[y * width + x] > INK;
   let left = -1;
   for (let x = BAND.left; x < BAND.right && left < 0; x += 1) for (let y = BAND.top; y < BAND.bottom; y += 1) if (lit(x, y)) { left = x; break; }

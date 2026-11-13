@@ -35,6 +35,7 @@ test("a frame that does not show a readable title is never guessed", async () =>
   assert.equal(sceneCommandVerbFromLuma({ width: 800, height: 480, luma: titleFrame("none") }), undefined, "no title");
   assert.equal(sceneCommandVerbFromLuma({ width: 800, height: 480, luma: titleFrame("swap", 339, false) }), undefined, "a frame that still shows the Grid is not the dialog, whatever it holds where the title goes");
   assert.equal(sceneCommandVerbFromLuma({ width: 400, height: 240, luma: new Uint8Array(400 * 240) }), undefined, "not the unit's shape");
+  assert.equal(sceneCommandVerbFromLuma({ width: 800, height: 480, luma: titleFrame("copy").subarray(0, 800 * 300) }), undefined, "a buffer shorter than width * height is never read as a frame");
   const half = titleFrame("copy");
   for (let y = 178; y < 182; y += 1) half[y * 800 + 339] = 16;
   assert.equal(sceneCommandVerbFromLuma({ width: 800, height: 480, luma: half }), undefined, "between the two");
