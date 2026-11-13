@@ -81,11 +81,15 @@ final class BrokerMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func control(_ command: String) -> (Int32, [String: Any]) {
+        // Both are bounded. A call that never returned used to leave `busy`
+        // set for good, so every later refresh and menu action, Quit
+        // included, was ignored on a status item showing stale state.
         execute(command == "menu" ? ["--tray-menu"] + directoryArguments :
-            ["--control", command] + directoryArguments + (command == "quit" ? ["--confirm"] : []))
+            ["--control", command] + directoryArguments + (command == "quit" ? ["--confirm"] : []),
+            timeout: command == "menu" ? 10 : 30)
     }
 
-    private func execute(_ arguments: [String]) -> (Int32, [String: Any]) {
+    private func execute(_ arguments: [String], timeout: TimeInterval) -> (Int32, [String: Any]) {
         let process = Process()
         let output = Pipe()
         process.executableURL = broker
@@ -94,8 +98,20 @@ final class BrokerMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
+            // Ends only this short-lived control invocation, never the
+            // resident broker it talks to. Its closed output ends the read.
+            let lock = NSLock()
+            var timedOut = false
+            let watchdog = DispatchWorkItem {
+                lock.lock(); timedOut = true; lock.unlock()
+                process.terminate()
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
+            watchdog.cancel()
+            lock.lock(); let expired = timedOut; lock.unlock()
+            if expired { return (1, ["detail": "The broker did not answer in time"]) }
             return (process.terminationStatus, (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:])
         } catch { return (1, ["detail": error.localizedDescription]) }
     }
