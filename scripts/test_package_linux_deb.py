@@ -409,6 +409,52 @@ class PackageSafetyTests(unittest.TestCase):
             else:
                 self.fail(f"owned child process {child_pid} survived process-group cleanup")
 
+    def test_run_owned_forwards_output_as_it_arrives_and_returns_the_tail(self) -> None:
+        # The child prints, waits for a marker file, then prints again. If output
+        # were only collected at exit, the first line could not be seen before
+        # the marker is written and the child would never finish.
+        with tempfile.TemporaryDirectory(prefix="qc-deb-stream-") as temporary:
+            marker = Path(temporary) / "go"
+            code = (
+                "import os,sys,time; print('first', flush=True); "
+                "deadline=time.monotonic()+20; "
+                "[time.sleep(0.02) for _ in iter(lambda: not os.path.exists(sys.argv[1]) and time.monotonic()<deadline, False)]; "
+                "print('second', flush=True)"
+            )
+            seen: list[str] = []
+
+            class Sink(io.StringIO):
+                def write(self, text: str) -> int:
+                    seen.append(text)
+                    if "first" in text:
+                        marker.write_text("x", encoding="ascii")
+                    return len(text)
+
+            with patch.object(sys, "stderr", Sink()):
+                output = package_linux_deb.run_owned(
+                    [sys.executable, "-c", code, str(marker)], cwd=Path(temporary), timeout=30
+                )
+            self.assertEqual("".join(seen), "first\nsecond\n")
+            self.assertEqual(output, "first\nsecond\n")
+
+    def test_failed_command_error_carries_the_bounded_tail(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="qc-deb-tail-") as temporary:
+            code = (
+                "import sys; "
+                "[print('line', i) for i in range(2000)]; "
+                "sys.exit(3)"
+            )
+            with patch.object(sys, "stderr", io.StringIO()):
+                with self.assertRaises(package_linux_deb.PackageError) as raised:
+                    package_linux_deb.run_owned(
+                        [sys.executable, "-c", code], cwd=Path(temporary), timeout=30
+                    )
+            message = str(raised.exception)
+            self.assertIn("command exited 3", message)
+            self.assertIn("line 1999", message)
+            self.assertNotIn("line 5\n", message)
+            self.assertLessEqual(len(message), 8500)
+
 
 if __name__ == "__main__":
     unittest.main()
