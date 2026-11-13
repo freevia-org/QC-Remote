@@ -305,8 +305,8 @@ impl SessionRuntime {
         let ceiling = match method {
             "device.savePresetAs" => {
                 write_ms
-                    + 15_000
-                    + 3_000
+                    + crate::device::request::SAVE_STAGE_TIMEOUT_MS
+                    + crate::device::request::SAVE_STAGE_SETTLE_MS
                     + CatalogVerificationPolicy::persistent_file_mutation().timeout_ms
             }
             "device.duplicateSetlist" => {
@@ -347,14 +347,39 @@ impl SessionRuntime {
         Ok(id)
     }
 
-    /// Cancels preparation `id` if it is the active preparation and is still in progress.
+    /// Cancels preparation `id` if it is the current preparation. A preparation still in
+    /// progress fails. One already `Ready` also ends the workflow it installed, unless that
+    /// workflow has already finished: a host that stops polling after `Ready` has abandoned
+    /// it, and nothing else would ever end it before a session wipe, so it would refuse
+    /// every later preset workflow. A native call still in flight keeps refusing admission
+    /// until its report is finished, exactly as for any other workflow.
     pub fn cancel_preset_preparation(&mut self, id: u64) {
-        if let Some(entry) = self
+        let Some(entry) = self
             .preset_preparation
             .as_mut()
             .filter(|entry| entry.id == id)
+        else {
+            return;
+        };
+        const REASON: &str = "QC preset preparation was cancelled";
+        let installed = match entry.status {
+            PreparationStatus::Ready(workflow_id) => Some(workflow_id),
+            _ => None,
+        };
+        entry.invalidate(REASON.into());
+        let Some(workflow_id) = installed else {
+            return;
+        };
+        entry.status = PreparationStatus::Failed(REASON.into());
+        if let Some(workflow) = self
+            .preset_workflow
+            .as_mut()
+            .filter(|workflow| workflow.id == workflow_id && !workflow.runtime.is_terminal())
         {
-            entry.invalidate("QC preset preparation was cancelled".into());
+            workflow
+                .runtime
+                .invalidate("QC preset workflow was abandoned by its host".into());
+            drop(workflow.early_file_observations.take());
         }
     }
 
@@ -518,12 +543,14 @@ impl SessionRuntime {
             }
         }
         self.state.native_preset_catalog().health()?;
-        let retained = self.catalog_observations.retained_catalog(
+        // Copy only the folders this preparation plans against.
+        let retained = self.catalog_observations.retained_catalog_where(
             |ticket| {
                 ticket.connection == entry.context.session.connection
                     && ticket.epoch.as_ref() == Some(&entry.context.session.epoch)
             },
             now_ms,
+            |key| entry.full_directory || entry.required_keys.iter().any(|wanted| wanted == key),
         );
         let Some((folders, last)) = retained else {
             return Ok(OwnedPresetPreparationAction::Wait {
@@ -532,10 +559,7 @@ impl SessionRuntime {
                     .min(entry.deadline.expires_at_ms()),
             });
         };
-        entry.folders = folders
-            .into_iter()
-            .filter(|(key, _)| entry.full_directory || entry.required_keys.contains(key))
-            .collect();
+        entry.folders = folders;
         entry.last_file_ms = Some(entry.last_file_ms.unwrap_or(0).max(last));
         let have_folders = !entry.folders.is_empty()
             && entry
@@ -1054,6 +1078,39 @@ mod tests {
                 && source_product_key == &format!("{KEY}/source")
                 && destination_setlist_key == DEST));
         assert_eq!(ready(&mut owner, id, 16), workflow_id);
+    }
+
+    #[test]
+    fn cancelling_a_ready_preparation_releases_the_workflow_it_installed() {
+        let mut owner = owner(true);
+        let id = owner
+            .begin_preset_preparation("device.savePresetAs", save(&owner), 10)
+            .unwrap();
+        owner.advance_preset_preparation(id, 20).unwrap();
+        folder(&mut owner, KEY, "Unsaved", Some(22), 22);
+        preset(&mut owner, false, 24);
+        let workflow_id = ready(&mut owner, id, 25);
+        // The host stopped polling after Ready: until now this refused every
+        // later preset workflow for the rest of the session.
+        assert!(owner
+            .begin_preset_preparation("device.savePresetAs", save(&owner), 26)
+            .is_err());
+        owner.cancel_preset_preparation(id);
+        assert!(owner
+            .preset_workflow
+            .as_ref()
+            .unwrap()
+            .runtime
+            .is_terminal());
+        assert!(owner.advance_preset_preparation(id, 27).is_err());
+        let replacement = owner
+            .begin_preset_preparation("device.savePresetAs", save(&owner), 28)
+            .unwrap();
+        assert_ne!(replacement, id);
+        // The cancelled workflow can no longer be driven to dispatch.
+        assert!(owner
+            .advance_preset_workflow(workflow_id, 29)
+            .map_or(true, |action| action.operation.is_none()));
     }
 
     #[test]
