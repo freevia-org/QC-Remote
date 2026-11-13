@@ -903,3 +903,25 @@ test("a suppressed position observation becomes the preset step's rollback ident
   assert.equal(failed.presetPosition, 5);
   assert.equal(failed.presetIdentity, "other");
 });
+
+test("a bypass intent whose block left the preset is retired instead of polling forever", () => {
+  const base = { ...demoSnapshot, blocks: demoSnapshot.blocks.map((block) => block.id === "amp" ? { ...block, bypassed: false } : block) };
+  const amp = base.blocks.find((block) => block.id === "amp")!;
+  for (const blocks of [base.blocks.filter((block) => block.id !== "amp"), []]) {
+    const coordinator = new QcCommandCoordinator();
+    coordinator.beginBypass(base, "amp", true, 1_000);
+    assert.equal(coordinator.pendingReconciliationDelay(1_000), 3_000);
+    coordinator.reconcileSnapshot({ ...base, blocks }, 4_001, 4_001);
+    assert.equal(coordinator.hasPendingCommands, false);
+    assert.equal(coordinator.pendingReconciliationDelay(4_001), undefined);
+  }
+  const unexpired = new QcCommandCoordinator();
+  unexpired.beginBypass(base, "amp", true, 1_000);
+  unexpired.reconcileSnapshot({ ...base, blocks: [] }, 1_500, 1_500);
+  assert.equal(unexpired.hasPendingCommands, true, "an intent inside its grace window stays pending");
+
+  const removed = new QcCommandCoordinator();
+  const command = removed.beginBypass(base, "amp", true, 1_000);
+  removed.reconcileFrame(command.snapshot, [{ kind: "blockRemoved", row: amp.row, column: amp.column, observedAt: 1_100 }], 1_100);
+  assert.equal(removed.hasPendingCommands, false);
+});

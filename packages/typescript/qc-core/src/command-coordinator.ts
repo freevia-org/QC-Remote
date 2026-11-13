@@ -319,6 +319,12 @@ export class QcCommandCoordinator {
           if (this.footswitchBase) this.footswitchBase.states = undefined;
         }
       }
+      // A removed block can never echo the bypass it was waiting for.
+      if (scalar.kind === "blockRemoved" && scalar.row !== undefined && scalar.column !== undefined) {
+        const address = bypassAddress(scalar.row, scalar.column);
+        this.bypassIntents.delete(address);
+        this.bypassBases.delete(address);
+      }
       const bypass = reconcilePendingBypass(scalar, this.bypassIntents, now, graceMs);
       // A contradicting observation suppressed in favor of a newer intent is
       // still the device's value: it becomes what that intent rolls back to.
@@ -353,6 +359,13 @@ export class QcCommandCoordinator {
     for (const block of incoming.blocks) {
       const address = bypassAddress(block.row, block.column);
       if (sceneAccepted && this.bypassIntents.has(address)) this.adoptBypassBase(address, block.bypassed, observedAt);
+    }
+    // An intent whose block left the read is never visited above; without this
+    // sweep it would stay pending, and keep the caller polling, indefinitely.
+    for (const [address, intent] of this.bypassIntents) {
+      if (now - intent.issuedAt < graceMs) continue;
+      this.bypassIntents.delete(address);
+      this.bypassBases.delete(address);
     }
     const footswitch = this.footswitchBase;
     if (sceneAccepted && footswitch && observedAt >= footswitch.observedAt) {
