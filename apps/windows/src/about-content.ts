@@ -8,6 +8,7 @@
  * parts a test has to execute rather than read.
  */
 
+import { hostPlatform } from "./host-platform.ts";
 import { QC_LEGAL_DOCUMENTS, type QcLegalDocument } from "@qc-remote/theme";
 
 /** The three Help windows, as the Help menu names them to the Rust side. */
@@ -125,7 +126,7 @@ export type IssueReport = {
  */
 function issueAppVersion(input: Pick<IssueReport, "appVersion" | "osVersion" | "platform">): string {
   const os = input.platform || input.osVersion || "";
-  const platform = /mac/i.test(os) ? "macOS" : /win/i.test(os) ? "Windows" : /linux/i.test(os) ? "Linux" : "";
+  const platform = hostPlatform({ platform: os }) ?? "";
   return [platform, input.appVersion].filter(Boolean).join(" ");
 }
 

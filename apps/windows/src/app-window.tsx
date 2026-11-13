@@ -25,6 +25,7 @@ import { QC_BRAND } from "@qc-remote/theme";
 import { ControlAccessSelect, QcDeviceInformationDisplay } from "@qc-remote/ui";
 import { idleDisconnectHelp, idleMinutesFromInput, UPDATER_RELAY_EXPLANATION, UPDATER_RELAY_LABEL, updaterRelayStatusLine, type AppWindowKind, type DeviceInfoState, type SettingsSetting, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { DEVICE_INFO_EVENTS, requestSettingsChange, requestWorkspaceSaveCopy, SETTINGS_EVENTS, subscribeWindowState, WINDOW_STATE_NO_ANSWER, WORKSPACE_EVENTS } from "./tauri-transport";
+import { desktopPlatform } from "./host-platform";
 import "./help-windows.css";
 
 export type { AppWindowKind } from "./app-window-content";
@@ -160,7 +161,7 @@ function WorkspaceContent() {
 }
 
 function SettingsContent() {
-  const isMacOS = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
+  const isMacOS = desktopPlatform === "macOS";
   const [settings, unanswered] = useWindowState<SettingsState>(SETTINGS_EVENTS);
   const [message, setMessage] = useState<string>();
   // The change this window asked for. While the main window has not answered,
