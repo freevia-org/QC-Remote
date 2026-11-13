@@ -1,6 +1,6 @@
 import { QC_SCENE_COUNT, qcCategoryKey, type GridBlock, type PresetSnapshot } from "@qc-remote/client";
 import { QC_CATEGORY_COLORS, QC_HARDWARE_COLORS, QC_PRESET_SLOT_COLORS, QC_SCENE_COLORS } from "./device-reference/generated-device-colors.ts";
-import { sceneLetter } from "./state.ts";
+import { presetLocationLabel } from "./state.ts";
 
 export interface FootswitchLed {
   /** Absent when the current assigned block has no observed bypass state. */
@@ -138,7 +138,7 @@ export function applyFootswitchPreview(snapshot: PresetSnapshot, index: number, 
     return {
       ...snapshot,
       presetPosition,
-      presetLocation: `${Math.floor(presetPosition / 8) + 1}${sceneLetter(presetPosition % 8)}`
+      presetLocation: presetLocationLabel(presetPosition)
     };
   }
   if (intent.kind === "toggle-stomp") return optimisticallyPressFootswitch(snapshot, intent.index, stompPolicy);

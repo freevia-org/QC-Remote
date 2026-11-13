@@ -1000,3 +1000,8 @@ test("acknowledge reports a command superseded only by a later command on the sa
   other.beginBypass(cab.snapshot, "amp", false, 2_020);
   assert.equal(other.acknowledge(amp.token), true);
 });
+
+test("the bank and slot label has one implementation", async () => {
+  const { presetLocationLabel } = await import("../src/state.ts");
+  assert.deepEqual([0, 7, 8, 255].map(presetLocationLabel), ["1A", "1H", "2A", "32H"]);
+});

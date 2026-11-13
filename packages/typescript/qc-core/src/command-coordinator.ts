@@ -5,6 +5,7 @@ import {
   applyQcStateUpdate,
   bypassAddress,
   movePresetInSnapshot,
+  presetLocationLabel,
   reconcilePresetSnapshot,
   reconcilePendingBypass,
   selectModeSlotInSnapshot,
@@ -585,7 +586,7 @@ function setScalar<K extends ScalarKey>(snapshot: PresetSnapshot, key: K, value:
     ...snapshot,
     presetPosition: position,
     presetIdentity: position === snapshot.presetPosition ? snapshot.presetIdentity : undefined,
-    presetLocation: `${Math.floor(position / 8) + 1}${String.fromCharCode(65 + (position % 8))}`
+    presetLocation: presetLocationLabel(position)
   };
 }
 

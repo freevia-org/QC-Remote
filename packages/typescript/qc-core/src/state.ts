@@ -148,6 +148,11 @@ export function sceneLetter(index: number): string {
   return String.fromCharCode(65 + index);
 }
 
+/** The bank and slot label of a setlist position: `1A` for 0, `1H` for 7, `2A` for 8. */
+export function presetLocationLabel(position: number): string {
+  return `${Math.floor(position / 8) + 1}${sceneLetter(position % 8)}`;
+}
+
 export function selectSceneInSnapshot(snapshot: PresetSnapshot, index: number): PresetSnapshot {
   return { ...snapshot, activeScene: Math.max(0, Math.min(snapshot.scenes.length - 1, index)) };
 }
@@ -170,7 +175,7 @@ export function movePresetInSnapshot(snapshot: PresetSnapshot, delta: -1 | 1, na
     ...snapshot,
     presetPosition,
     presetIdentity: undefined,
-    presetLocation: `${Math.floor(presetPosition / 8) + 1}${sceneLetter(presetPosition % 8)}`,
+    presetLocation: presetLocationLabel(presetPosition),
     presetName: name ?? snapshot.presetName
   };
 }
@@ -347,7 +352,6 @@ function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): Pr
     presetLoadMidiOut: state.presetLoadMidiOut ?? snapshot.presetLoadMidiOut
   };
   if (state.kind === "position" && state.position !== undefined) {
-    const bank = Math.floor(state.position / 8) + 1;
     const setlistName = state.setlistKey?.split("/").filter(Boolean).at(-1) ?? snapshot.setlistName;
     return observed({
       ...snapshot,
@@ -355,7 +359,7 @@ function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): Pr
       presetIdentity: state.presetIdentity ?? (samePresetAddress(snapshot, {
         setlistKey: state.setlistKey ?? snapshot.setlistKey, presetPosition: state.position
       }) ? snapshot.presetIdentity : undefined),
-      presetLocation: `${bank}${sceneLetter(state.position % 8)}`,
+      presetLocation: presetLocationLabel(state.position),
       setlistKey: state.setlistKey ?? snapshot.setlistKey,
       setlistName
     }, "presetLocation");
