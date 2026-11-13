@@ -183,6 +183,7 @@ impl BackupRuntime {
         if !self.terminal {
             self.terminal = true;
             self.terminal_state = Some(BackupTerminalState::Cancelled);
+            self.assembler.release_document();
         }
     }
 
@@ -190,7 +191,12 @@ impl BackupRuntime {
     /// once; callers own platform-specific persistence of that document.
     pub fn absorb(&mut self, now_ms: u64, payload: &[u8]) -> Result<BackupProgress, String> {
         if self.terminal {
-            return Err("QC backup transfer is already complete".into());
+            return Err(match self.terminal_state {
+                Some(BackupTerminalState::Cancelled) => "QC backup transfer was cancelled",
+                Some(BackupTerminalState::Failed) => "QC backup transfer already failed",
+                _ => "QC backup transfer is already complete",
+            }
+            .into());
         }
         if let Some(error) = self.expire(now_ms) {
             return Err(error);
@@ -275,6 +281,13 @@ impl BackupRuntime {
     // Observation must not consume the keepalive action. Both input and timer
     // paths share only the terminal deadline transition.
     fn expire(&mut self, now_ms: u64) -> Option<String> {
+        let message = self.expire_message(now_ms)?;
+        // The transfer is over; the partial document must not outlive it.
+        self.assembler.release_document();
+        Some(message)
+    }
+
+    fn expire_message(&mut self, now_ms: u64) -> Option<String> {
         if now_ms >= self.deadline_ms {
             self.terminal = true;
             self.terminal_state = Some(BackupTerminalState::Failed);
@@ -337,6 +350,47 @@ mod tests {
         payload.extend_from_slice(text.as_bytes());
         payload.extend_from_slice(&[0x30, u8::from(last)]);
         payload
+    }
+
+    #[test]
+    fn a_stalled_or_cancelled_transfer_frees_its_partial_document_and_names_its_state() {
+        let partial = chunk(
+            &format!("{{\"type\":\"backup\",\"pad\":\"{}", "x".repeat(4096)),
+            false,
+        );
+        let late = chunk("more", false);
+
+        let mut stalled = BackupRuntime::start(0, 180_000);
+        stalled.absorb(1, &partial).unwrap();
+        assert!(stalled.started());
+        assert!(stalled.assembler.document_capacity() >= 4096);
+        let stall_at = 1 + profile::BACKUP_STREAM_STALL_TIMEOUT_MS;
+        assert!(matches!(stalled.advance(stall_at), BackupAction::Failed(_)));
+        assert_eq!(stalled.terminal_state(), Some(BackupTerminalState::Failed));
+        assert!(
+            stalled.started(),
+            "how far the transfer got is still reported"
+        );
+        assert_eq!(stalled.assembler.document_capacity(), 0);
+        let error = stalled.absorb(stall_at + 1, &late).unwrap_err();
+        assert!(error.contains("already failed"), "{error}");
+
+        let mut cancelled = BackupRuntime::start(0, 180_000);
+        cancelled.absorb(1, &partial).unwrap();
+        cancelled.cancel();
+        assert_eq!(cancelled.assembler.document_capacity(), 0);
+        let error = cancelled.absorb(2, &late).unwrap_err();
+        assert!(error.contains("was cancelled"), "{error}");
+
+        let mut done = BackupRuntime::start(0, 180_000);
+        done.absorb(
+            1,
+            &chunk("{\"type\":\"backup\",\"creator\":\"quad\"}", true),
+        )
+        .unwrap();
+        assert_eq!(done.terminal_state(), Some(BackupTerminalState::Complete));
+        let error = done.absorb(2, &late).unwrap_err();
+        assert!(error.contains("already complete"), "{error}");
     }
 
     #[test]
