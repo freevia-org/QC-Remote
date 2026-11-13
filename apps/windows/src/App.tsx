@@ -25,7 +25,7 @@ import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegration
 import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, qcBackgroundDeviceLive, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, waitForSynchronizedQc, qcReconcilePhysicalDevices, qcKeepRuntime, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
 import { DEFAULT_BROKER_TRAY_STATUS, sameBrokerTrayStatus, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
-import { callTauri } from "./tauri-invoke.ts";
+import { callTauri, withTimeout } from "./tauri-invoke.ts";
 import appPackage from "../package.json";
 import QRCode from "qrcode";
 import { qcLiveSessionCanObserveState, qcStreamRestartClearsBulkOperation } from "@qc-remote/ui";
@@ -44,6 +44,8 @@ const initialConnection: ConnectionState = {
 
 const storedAccessMode = (): ControlAccessMode => readControlAccessMode(localStorage);
 const appVersion = appPackage.version;
+/** A LOCAL status read that takes longer than this counts as failed, so one hung read cannot stop every later refresh. */
+const LOCAL_STATUS_READ_TIMEOUT_MS = 15_000;
 const publicRelayEndpoint = QC_BRAND.publicRelayEndpoint;
 export function App() {
   const { connection, setConnection, attempts: connectionAttempts } = useQcConnectionWorkflow(initialConnection);
@@ -2615,7 +2617,7 @@ export function App() {
     const current = captureLocalStatusRead("claude");
     if (!current()) return { ok: false } as const;
     try {
-      const nextStatus = await localClientPackages.claudeDesktopStatus();
+      const nextStatus = await withTimeout(localClientPackages.claudeDesktopStatus(), LOCAL_STATUS_READ_TIMEOUT_MS, "A status read");
       if (!current()) return { ok: false } as const;
       setClaudeExtensionStatus(nextStatus);
       setClaudeStatusRefreshFailed(false);
@@ -2635,7 +2637,7 @@ export function App() {
     const current = captureLocalStatusRead("chatgpt");
     if (!current()) return false;
     try {
-      const nextStatus = await localClientPackages.chatgptStatus();
+      const nextStatus = await withTimeout(localClientPackages.chatgptStatus(), LOCAL_STATUS_READ_TIMEOUT_MS, "A status read");
       if (!current()) return false;
       setChatgptIntegrationStatus(nextStatus);
       setChatgptStatusRefreshFailed(false);
@@ -2653,7 +2655,7 @@ export function App() {
     const current = captureLocalStatusRead("antigravity");
     if (!current()) return false;
     try {
-      const nextStatus = await localClientPackages.antigravityStatus();
+      const nextStatus = await withTimeout(localClientPackages.antigravityStatus(), LOCAL_STATUS_READ_TIMEOUT_MS, "A status read");
       if (!current()) return false;
       setAntigravityIntegrationStatus(nextStatus);
       setAntigravityStatusRefreshFailed(false);
@@ -2669,7 +2671,7 @@ export function App() {
     const current = captureLocalStatusRead("lm-studio");
     if (!current()) return false;
     try {
-      const nextStatus = await localClientPackages.lmStudioStatus();
+      const nextStatus = await withTimeout(localClientPackages.lmStudioStatus(), LOCAL_STATUS_READ_TIMEOUT_MS, "A status read");
       if (!current()) return false;
       setLmStudioIntegrationStatus(nextStatus);
       setLmStudioStatusRefreshFailed(false);
@@ -2685,7 +2687,7 @@ export function App() {
     const current = captureLocalStatusRead("jan");
     if (!current()) return false;
     try {
-      const nextStatus = await localClientPackages.janStatus();
+      const nextStatus = await withTimeout(localClientPackages.janStatus(), LOCAL_STATUS_READ_TIMEOUT_MS, "A status read");
       if (!current()) return false;
       setJanIntegrationStatus(nextStatus);
       setJanStatusRefreshFailed(false);
@@ -2706,7 +2708,7 @@ export function App() {
     const current = captureLocalStatusRead("access");
     if (!current()) return false;
     try {
-      const nextStatus = await localAccess.status();
+      const nextStatus = await withTimeout(localAccess.status(), LOCAL_STATUS_READ_TIMEOUT_MS, "A status read");
       if (!current()) return false;
       setLocalAccessStatus(nextStatus);
       return true;
@@ -2723,7 +2725,7 @@ export function App() {
     const current = captureLocalStatusRead("other");
     if (!current()) return false;
     try {
-      const nextStatus = await localClientPackages.otherMcpStdioSetup();
+      const nextStatus = await withTimeout(localClientPackages.otherMcpStdioSetup(), LOCAL_STATUS_READ_TIMEOUT_MS, "A status read");
       if (!current()) return false;
       setOtherMcpStatus(nextStatus);
       setOtherMcpStatusRefreshFailed(false);

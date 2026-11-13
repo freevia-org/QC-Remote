@@ -14,10 +14,23 @@ async function callTauri<T>(command: string, args?: Record<string, unknown>): Pr
   }
 }
 
+/**
+ * Bound a native read. `callTauri` has no timeout of its own, so one command
+ * that never answers would otherwise hold whatever awaits it for the life of
+ * the window. The late result, if it ever comes, is discarded.
+ */
+function withTimeout<T>(operation: Promise<T>, ms: number, what = "The request"): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${Math.round(ms / 1000)} s.`)), ms);
+  });
+  return Promise.race([operation, timeout]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
+}
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
   }
 }
 
-export { callTauri };
+export { callTauri, withTimeout };
