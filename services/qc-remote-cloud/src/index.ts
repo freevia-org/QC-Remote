@@ -33,7 +33,7 @@ import { QC_SCOPES } from "./scopes.ts";
 import { NO_PAIRED_HOST } from "./device-selection.ts";
 import { adaptForHost, isVersionSensitive, legacyModelGuardFailure, projectAction, projectAdminCommand, reportedGatewayApiVersion } from "./action-projection.ts";
 import { sharedTool } from "./shared-tool-shape.ts";
-import { adoptReplacement, admitPairingAttempt, resolvePairingAttempt, PAIRING_REFUSAL_MESSAGES, PAIRING_REFUSAL_RESPONSES, type PairingAdmission, type PairingResolution, DEVICE_PAIR_REPLACE_PATH, pairingPrevious, REPLACEMENT_ACK_PARAM, replacementAckFrame, completeDevicePairing, drainDirectoryCleanup, DEVICE_SWEEP_KEY, earliestDeadline, liveDeviceCount, redeemPairingOffer, refreshDeviceDirectory, sweepExpiredDevices, touchDeviceLastUse, type DirectoryKv, type AccountWriteDenial, type ConnectAdmission, type PendingReplacement, type RetentionTransaction } from "./device-retention.ts";
+import { abandonPairingAttempt, adoptReplacement, admitPairingAttempt, resolvePairingAttempt, PAIRING_REFUSAL_MESSAGES, PAIRING_REFUSAL_RESPONSES, type PairingAdmission, type PairingResolution, DEVICE_PAIR_REPLACE_PATH, pairingPrevious, REPLACEMENT_ACK_PARAM, replacementAckFrame, completeDevicePairing, drainDirectoryCleanup, DEVICE_SWEEP_KEY, earliestDeadline, liveDeviceCount, redeemPairingOffer, refreshDeviceDirectory, removeDeviceRecord, sweepExpiredDevices, touchDeviceLastUse, type DirectoryKv, type AccountWriteDenial, type ConnectAdmission, type PendingReplacement, type RetentionTransaction } from "./device-retention.ts";
 import { backfillDeviceSessionIds, DEVICE_SESSION_LATE_RESULTS_KEY, initializeDeviceSessionState, inspectDeviceSessionIds, inspectDeviceSessionStorage, requestLegacyRetentionBackfill, type DeviceSessionInventory, type DeviceSessionRetentionBackfillResult } from "./device-session-inventory.ts";
 
 type SecretEnv = AppleOAuthEnv & {
@@ -75,7 +75,11 @@ type PairingDirectory = { owner: string; expiresAt: number; pairing?: PairingMet
 type DeviceDirectory = { owner: string };
 /** `remaining` is the account's device count after the removal, which only the
  * Durable Object can see and only the request handler can act on. */
-type RevocationOutcome = { revoked: boolean; remaining: number };
+type RevocationOutcome = { revoked: boolean; remaining: number; gone?: boolean };
+/** Device ids are minted by this Worker; anything else cannot name a record, so
+ * it is refused before any KV call (a key over 512 bytes makes KV throw). */
+const DEVICE_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/;
+const validDeviceId = (value: string | null): value is string => value !== null && DEVICE_ID_SHAPE.test(value);
 type PairOfferResult = { pairingCode: string; codeHash: string; expiresAt: number; protocol: string };
 /** `previousDeviceReplacementPending` is true when the previous device id and
  * credential were proven: that record is deleted when the new credential first
@@ -261,6 +265,7 @@ function rpcSession(env: Env, owner = OWNER): {
   rosterForDevice(deviceId: string, credential: string): Promise<Json>;
   revokeSibling(deviceId: string, credential: string, target: string): Promise<RevocationOutcome>;
   describeDevice(deviceId: string): Promise<Json | null>;
+  queueDirectoryCleanup(deviceId: string): Promise<void>;
   command(payload: Json, generation?: number): Promise<Json>;
 } {
   return session(env, owner);
@@ -401,6 +406,7 @@ const baseHandler: ExportedHandler<Env> = {
       const deviceId = url.searchParams.get("deviceId");
       const credential = bearer(request);
       if (!deviceId || !credential) return error("Device credentials are required", 401);
+      if (!validDeviceId(deviceId)) return error("Unknown paired device", 401);
       const directory = await env.QCRC_OAUTH.get<DeviceDirectory>(`qcrc:device:${deviceId}`, "json");
       if (!directory) return error("Unknown paired device", 401);
       try { return json(await rpcSession(env, directory.owner).usageForDevice(deviceId, credential)); }
@@ -423,6 +429,7 @@ const baseHandler: ExportedHandler<Env> = {
       const deviceId = url.searchParams.get("deviceId");
       const credential = bearer(request);
       if (!deviceId || !credential) return error("Device credentials are required", 401);
+      if (!validDeviceId(deviceId)) return error("Unknown paired device", 401);
       const directory = await env.QCRC_OAUTH.get<DeviceDirectory>(`qcrc:device:${deviceId}`, "json");
       if (!directory) return error("Unknown paired device", 401);
       try { return json(await rpcSession(env, directory.owner).rosterForDevice(deviceId, credential)); }
@@ -436,6 +443,7 @@ const baseHandler: ExportedHandler<Env> = {
       const deviceId = url.searchParams.get("deviceId");
       const credential = bearer(request);
       if (!deviceId || !credential) return error("Device credentials are required", 401);
+      if (!validDeviceId(deviceId)) return error("Unknown paired device", 401);
       const directory = await env.QCRC_OAUTH.get<DeviceDirectory>(`qcrc:device:${deviceId}`, "json");
       if (!directory) return error("Unknown paired device", 401);
       let authenticated = false;
@@ -478,6 +486,8 @@ const baseHandler: ExportedHandler<Env> = {
       const target = url.searchParams.get("target");
       const credential = bearer(request);
       if (!deviceId || !target || !credential) return error("Device credentials are required", 401);
+      if (!validDeviceId(deviceId)) return error("Unknown paired device", 401);
+      if (!validDeviceId(target)) return error("Unknown paired device", 404);
       const directory = await env.QCRC_OAUTH.get<DeviceDirectory>(`qcrc:device:${deviceId}`, "json");
       if (!directory) return error("Unknown paired device", 401);
       const owned = await env.QCRC_OAUTH.get<DeviceDirectory>(`qcrc:device:${target}`, "json");
@@ -485,7 +495,9 @@ const baseHandler: ExportedHandler<Env> = {
       let outcome: RevocationOutcome;
       try { outcome = await rpcSession(env, directory.owner).revokeSibling(deviceId, credential, target); }
       catch { return error("Invalid device credentials", 401); }
-      if (outcome.revoked) await env.QCRC_OAUTH.delete(`qcrc:device:${target}`);
+      // The directory entry was queued for deletion in the same Durable Object
+      // transaction that removed the record, and the Durable Object has already
+      // tried that delete; a failure is retried by its alarm.
       await retireGrantsForEmptiedAccount(env.OAUTH_PROVIDER, env.QCRC_ENVIRONMENT, directory.owner, outcome.remaining);
       return json({ revoked: outcome.revoked });
     }
@@ -498,11 +510,16 @@ const baseHandler: ExportedHandler<Env> = {
       const deviceId = url.searchParams.get("deviceId");
       const credential = bearer(request);
       if (!deviceId || !credential) return error("Device credentials are required", 401);
+      if (!validDeviceId(deviceId)) return json({ revoked: true });
       const directory = await env.QCRC_OAUTH.get<DeviceDirectory>(`qcrc:device:${deviceId}`, "json");
       if (!directory) return json({ revoked: true });
       const outcome = await rpcSession(env, directory.owner).revokeDevice(deviceId, credential);
-      if (!outcome.revoked) return error("Invalid device credential", 401);
-      await env.QCRC_OAUTH.delete(`qcrc:device:${deviceId}`);
+      // A record that is already gone is a revoke that already happened (a
+      // retry after a failed first attempt): finish what it may have left
+      // undone, which is idempotent, and answer as the first attempt would.
+      if (!outcome.revoked && !outcome.gone) return error("Invalid device credential", 401);
+      // Independent of the directory delete, which the Durable Object queued
+      // with the removal and retries from its alarm.
       await retireGrantsForEmptiedAccount(env.OAUTH_PROVIDER, env.QCRC_ENVIRONMENT, directory.owner, outcome.remaining);
       return json({ revoked: true });
     }
@@ -510,13 +527,14 @@ const baseHandler: ExportedHandler<Env> = {
     if (request.method === "GET" && url.pathname === relayProfile.deviceConnectPath) {
       const deviceId = url.searchParams.get("deviceId");
       if (!deviceId || !bearer(request)) return error("Device credentials are required", 401);
+      if (!validDeviceId(deviceId)) return error("Unknown paired device", 401);
       const directory = await env.QCRC_OAUTH.get<DeviceDirectory>(`qcrc:device:${deviceId}`, "json");
       if (!directory) return error("Unknown paired device", 401);
       const response = await session(env, directory.owner).fetch(request);
       // Only an accepted credential extends the directory entry's KV TTL, at
       // most once a day; a failure here never fails the connection.
       if (response.status === 101) {
-        await refreshDeviceDirectory(directoryKv(env), deviceId, directory.owner, Date.now(), async () => await rpcSession(env, directory.owner).describeDevice(deviceId) !== null).catch(() => false);
+        await refreshDeviceDirectory(directoryKv(env), deviceId, directory.owner, Date.now(), async () => await rpcSession(env, directory.owner).describeDevice(deviceId) !== null, () => rpcSession(env, directory.owner).queueDirectoryCleanup(deviceId)).catch(() => false);
       }
       return response;
     }
@@ -796,7 +814,10 @@ export default {
       url.pathname = "/mcp";
       request = new Request(url, request);
     }
-    return oauth.fetch(request, providerEnv(env), ctx);
+    // A transient KV or Durable Object failure on a route with no handling of
+    // its own is a retryable 503 with a correlation id, not a bare runtime 500.
+    try { return await oauth.fetch(request, providerEnv(env), ctx); }
+    catch (cause) { return clientFailure(cause, { status: 503, fallback: "The relay is temporarily unavailable. Try again.", context: "unhandled" }); }
   }
 };
 
@@ -841,6 +862,12 @@ export class DeviceSession extends DurableObject<Env> {
    * All cleanup remains in alarm(), with its existing deletion fences. */
   async scheduleLegacyRetentionForOperator(): Promise<DeviceSessionRetentionBackfillResult> {
     return requestLegacyRetentionBackfill(this.ctx.storage);
+  }
+
+  /** Account-internal operator release of one unresolved pairing attempt
+   * (device-retention.ts `abandonPairingAttempt`). Decides nothing about KV. */
+  async abandonPairingAttemptForOperator(deviceId: string): Promise<boolean> {
+    return abandonPairingAttempt(this.ctx.storage, deviceId, Date.now());
   }
 
   private async persistLateResults(): Promise<void> {
@@ -1283,12 +1310,9 @@ export class DeviceSession extends DurableObject<Env> {
    * it; the entry point above proves both ids belong to that one account. */
   async revokeSibling(deviceId: string, credential: string, target: string): Promise<RevocationOutcome> {
     if (!await this.authenticateDevice(deviceId, credential)) throw new Error("Invalid device credential");
-    if (!await this.ctx.storage.get<DeviceRecord>(`device:${target}`)) return { revoked: false, remaining: await this.deviceCount() };
-    await this.ctx.storage.delete(`device:${target}`);
-    for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment() as DeviceAttachment | null;
-      if (attachment?.deviceId === target) socket.close(1008, "This device was unpaired");
-    }
+    if (!await removeDeviceRecord(this.ctx.storage, target, Date.now())) return { revoked: false, remaining: await this.deviceCount() };
+    this.closeDeviceSockets(target);
+    await this.drainDirectoryQueue();
     return { revoked: true, remaining: await this.deviceCount() };
   }
 
@@ -1326,13 +1350,37 @@ export class DeviceSession extends DurableObject<Env> {
   /** Withdraw a credential. The host calls this when the user unpairs, so
    * unpairing stops being a local delete of a secret the relay still honours. */
   async revokeDevice(deviceId: string, credential: string): Promise<RevocationOutcome> {
-    if (!await this.authenticateDevice(deviceId, credential)) return { revoked: false, remaining: await this.deviceCount() };
-    await this.ctx.storage.delete(`device:${deviceId}`);
+    if (!await this.authenticateDevice(deviceId, credential)) {
+      // No record at all is a revoke that already landed; a record that does
+      // not match the credential is a refusal.
+      const gone = await this.ctx.storage.get<DeviceRecord>(`device:${deviceId}`) === undefined;
+      return { revoked: false, remaining: await this.deviceCount(), ...(gone ? { gone: true } : {}) };
+    }
+    // The record's removal and its directory entry's queued cleanup commit
+    // together, so a failed KV delete can no longer leave an entry with no owner.
+    await removeDeviceRecord(this.ctx.storage, deviceId, Date.now());
+    this.closeDeviceSockets(deviceId);
+    await this.drainDirectoryQueue();
+    return { revoked: true, remaining: await this.deviceCount() };
+  }
+
+  private closeDeviceSockets(deviceId: string): void {
     for (const socket of this.ctx.getWebSockets()) {
       const attachment = socket.deserializeAttachment() as DeviceAttachment | null;
       if (attachment?.deviceId === deviceId) socket.close(1008, "This device was unpaired");
     }
-    return { revoked: true, remaining: await this.deviceCount() };
+  }
+
+  /** Best effort: whatever fails stays queued for the alarm. */
+  private async drainDirectoryQueue(): Promise<void> {
+    try { await drainDirectoryCleanup(this.ctx.storage, this.directoryKv()); } catch { /* retried by the alarm */ }
+  }
+
+  /** Queue a directory entry whose record is gone (or never existed) for the
+   * owner's cleanup; the drain re-checks that no live record holds the id. */
+  async queueDirectoryCleanup(deviceId: string): Promise<void> {
+    await queueRefusedDirectoryEntry(this.ctx.storage, deviceId, Date.now());
+    await this.drainDirectoryQueue();
   }
 
   async command(payload: Json, generation?: number): Promise<Json> {
@@ -1570,6 +1618,25 @@ export class DeviceSessionRetentionEntrypoint extends WorkerEntrypoint<Env> {
       deploymentTag: metadata.tag,
       deployedAt: metadata.timestamp,
     };
+  }
+
+  /** Release one unresolved pairing attempt early (the retention sweep abandons
+   * it on its own once its offer has lapsed). Same deployment fence as above. */
+  async abandonPairingAttemptV1(request: {
+    schemaVersion: 1;
+    id: string;
+    deviceId: string;
+    expectedDeployment: { id: string; tag: string; timestamp: string };
+  }): Promise<{ abandoned: boolean }> {
+    if (!request || request.schemaVersion !== 1 || !request.expectedDeployment || typeof request.id !== "string" || typeof request.deviceId !== "string") {
+      throw new Error("Pairing release refused because the reviewed request envelope is invalid.");
+    }
+    const metadata = this.env.QCRC_VERSION_METADATA;
+    if (metadata.id !== request.expectedDeployment.id || metadata.tag !== request.expectedDeployment.tag || metadata.timestamp !== request.expectedDeployment.timestamp) {
+      throw new Error("Pairing release refused because the active deployment changed.");
+    }
+    const objectId = this.env.DEVICE_SESSION.idFromString(request.id);
+    return { abandoned: await this.env.DEVICE_SESSION.get(objectId).abandonPairingAttemptForOperator(request.deviceId) };
   }
 
   async scheduleReviewedRetentionV1(request: {
