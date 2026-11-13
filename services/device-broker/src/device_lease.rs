@@ -23,9 +23,9 @@
 //!   live owner's record disappeared.
 //! * An owner removes only its own record (pid and creation time match), on a
 //!   disconnect or on its own clean shutdown (`Drop`). While connected it
-//!   refreshes the record every [`REFRESH_INTERVAL`] and re-creates it if
-//!   something deleted it, so the file's mtime shows a live owner and a crashed
-//!   one is recognisable.
+//!   checks the record every [`REFRESH_INTERVAL`], re-creates it if something
+//!   deleted it, and rewrites it once it is [`RECORD_REWRITE_INTERVAL`] old, so
+//!   the file's mtime shows a live owner and a crashed one is recognisable.
 
 mod cleanup_lifetime;
 use cleanup_lifetime::{CleanupLimiter, CleanupPermit};
@@ -97,8 +97,13 @@ fn held_count(path: &Path) -> usize {
         .unwrap_or(0)
 }
 
-/// How often a connected owner rewrites its record.
+/// How often a connected owner checks its record (and restores it if
+/// something deleted it).
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+/// How old an intact own record may get before the owner rewrites it. The
+/// timestamp is diagnostic; the rewrite costs disk flushes on the device
+/// thread, so it is not done at every check.
+pub const RECORD_REWRITE_INTERVAL: Duration = Duration::from_secs(60);
 /// Concurrent recovery must settle quickly without blocking reconnect forever.
 const TRANSITION_LOCK_WAIT: Duration = Duration::from_secs(2);
 const TRANSITION_LOCK_RETRY: Duration = Duration::from_millis(20);
@@ -1225,6 +1230,18 @@ impl LeaseHolder {
         if !self.held || self.last_refresh.elapsed() < REFRESH_INTERVAL {
             return;
         }
+        // The common case reads and writes nothing: every location still
+        // holds this process's own record and the record is recent. The
+        // refresh below (two transition-lock claims, a staged write with a
+        // flush and a rename for each location) runs on the device worker
+        // thread that drains HID input and sends the keepalive. The record's
+        // timestamp is diagnostic only; what must happen promptly is
+        // restoring a record something deleted, which this check still does
+        // every interval.
+        if self.records_are_own_and_recent() {
+            self.last_refresh = Instant::now();
+            return;
+        }
         let transition_paths = self.transition_paths();
         let Ok(_transition) =
             LeaseTransitionGuard::acquire(&transition_paths, Duration::from_millis(100))
@@ -1242,6 +1259,22 @@ impl LeaseHolder {
             }
         }
         self.write_mirrors();
+    }
+
+    /// Whether the primary record and every mirror are this process's own and
+    /// were written within [`RECORD_REWRITE_INTERVAL`]. Anything else (missing,
+    /// foreign, unreadable, old) is for the full refresh to deal with.
+    fn records_are_own_and_recent(&self) -> bool {
+        let now = unix_ms();
+        std::iter::once(&self.path)
+            .chain(self.mirrors.iter())
+            .all(|path| {
+                read_record(path).is_some_and(|record| {
+                    is_own(&record)
+                        && now.saturating_sub(record.refreshed_unix_ms)
+                            < RECORD_REWRITE_INTERVAL.as_millis() as u64
+                })
+            })
     }
 
     /// Removes the record if, and only if, it is this process's own.
@@ -2167,6 +2200,56 @@ mod tests {
         write_record(&path, &sleeper.record());
         owner.release();
         assert_eq!(read_record(&path).unwrap().process_id, sleeper.pid());
+    }
+
+    /// DB-5: the periodic refresh runs on the device worker thread, so an
+    /// intact, recent record must cost one read and no lock claim, flush or
+    /// rewrite; a deleted or old one is still restored or renewed.
+    #[test]
+    fn tick_on_an_intact_recent_record_writes_nothing_and_restores_or_renews_otherwise() {
+        let path = scratch("tick-cheap");
+        let mut owner = holder(&path);
+        owner.acquire().unwrap();
+        let before = std::fs::read(&path).unwrap();
+        // Another holder of the transition locks would make the full refresh
+        // wait (and give up); the cheap check must not touch them at all.
+        let transition_paths = owner.transition_paths();
+        let held = LeaseTransitionGuard::acquire(&transition_paths, Duration::from_secs(1))
+            .expect("this test takes the transition locks");
+        owner.last_refresh = Instant::now() - REFRESH_INTERVAL - Duration::from_millis(1);
+        let started = Instant::now();
+        owner.tick();
+        assert!(
+            started.elapsed() < Duration::from_millis(80),
+            "the cheap check waited for the transition locks: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "an intact recent record is not rewritten"
+        );
+        assert!(
+            owner.last_refresh.elapsed() < REFRESH_INTERVAL,
+            "the check counts as this interval's refresh"
+        );
+        drop(held);
+
+        // An old record is renewed.
+        let mut old = read_record(&path).unwrap();
+        old.refreshed_unix_ms = unix_ms() - 2 * RECORD_REWRITE_INTERVAL.as_millis() as u64;
+        write_record(&path, &old);
+        owner.last_refresh = Instant::now() - REFRESH_INTERVAL - Duration::from_millis(1);
+        owner.tick();
+        let renewed = read_record(&path).unwrap();
+        assert!(is_own(&renewed));
+        assert!(renewed.refreshed_unix_ms > old.refreshed_unix_ms + 1_000);
+
+        // A deleted record is restored at the next check, as before.
+        std::fs::remove_file(&path).unwrap();
+        owner.last_refresh = Instant::now() - REFRESH_INTERVAL - Duration::from_millis(1);
+        owner.tick();
+        assert!(is_own(&read_record(&path).unwrap()));
     }
 
     #[test]
