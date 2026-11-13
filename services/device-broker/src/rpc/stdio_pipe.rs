@@ -404,15 +404,9 @@ fn serve_files(
                 Err(_) => return,
             }
             if phases {
-                let status = observed_controller.status();
-                let next = (
-                    status.phase.clone(),
-                    status.detail.clone(),
-                    status.connected,
-                    status.synchronized,
-                );
+                let next = observed_controller.phase_projection();
                 if published.as_ref() != Some(&next) {
-                    if deliver(&notifications, &phase_notification(&status), &stop).is_err() {
+                    if deliver(&notifications, &phase_notification(&next), &stop).is_err() {
                         stop.store(true, Ordering::Release);
                         return;
                     }

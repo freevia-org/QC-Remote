@@ -91,6 +91,16 @@ pub struct PresetCatalogUnpublished {
     pub timeout_ms: u64,
 }
 
+/// What a `device.phase` notification reports; see
+/// [`DeviceController::phase_projection`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseProjection {
+    pub phase: String,
+    pub detail: String,
+    pub connected: bool,
+    pub synchronized: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerStatus {
@@ -1237,6 +1247,21 @@ impl DeviceController {
     #[cfg(test)]
     pub(crate) fn hold_session_lock_for_test(&self) -> std::sync::MutexGuard<'_, SessionRuntime> {
         self.session_owner.lock_recover()
+    }
+
+    /// The four fields a phase event carries, from the short status lock
+    /// alone: no relay status (which may read the settings file), no
+    /// session-owner lock (the HID reader takes it for every report), no
+    /// clone of the per-type maps. Phase-event threads poll this ten times a
+    /// second and call [`Self::status`] only when it has changed.
+    pub fn phase_projection(&self) -> PhaseProjection {
+        let status = self.state.lock_recover();
+        PhaseProjection {
+            phase: status.phase.clone(),
+            detail: status.detail.clone(),
+            connected: status.connected,
+            synchronized: status.synchronized,
+        }
     }
 
     pub fn status(&self) -> BrokerStatus {
