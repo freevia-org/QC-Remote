@@ -30,8 +30,18 @@ export function useWindowsDeviceFrames({
         : { ...current, tempoPulseEpochMs: undefined });
       return;
     }
+    let warnedUntaggedFrame = false;
     const detach = listenScoped<NativeFrame>(listenTauri, TAURI_EVENTS.stateFrame, ({ payload: frame }) => {
-      if (selectedDeviceId.current && frame.deviceId !== selectedDeviceId.current) return;
+      if (selectedDeviceId.current && frame.deviceId !== selectedDeviceId.current) {
+        // Diagnostic only: the device-phase listener accepts an event without a
+        // deviceId, this one drops it. Say so once, so a broker that omits the id
+        // on frames shows up in the console rather than as a silent polling fallback.
+        if (!frame.deviceId && !warnedUntaggedFrame) {
+          warnedUntaggedFrame = true;
+          console.warn("QC Remote dropped a state frame with no deviceId while a device is selected.");
+        }
+        return;
+      }
       // The tempo pulse must share the renderer's monotonic clock. The broker
       // timestamp is useful for ordering, but includes an unmeasured hop from
       // USB receive to the WebView. Stamp the native tempo-clock event at arrival
