@@ -4,7 +4,60 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+type Publisher = fn(&Path, &[u8]) -> Result<(), String>;
+
+/// Publication state shared between a recorder and the checkpoint writer.
+/// `published` is the highest checkpoint sequence already on disk: a queued
+/// checkpoint older than a synchronous incident/drop write is discarded rather
+/// than allowed to replace it.
+#[derive(Default)]
+struct PublishState {
+    published: Mutex<u64>,
+    failed: AtomicBool,
+}
+
+struct CheckpointJob {
+    state: Arc<PublishState>,
+    sequence: u64,
+    path: PathBuf,
+    bytes: Vec<u8>,
+    publish: Publisher,
+}
+
+/// One process-lifetime thread performs the throttled checkpoints so the
+/// device session thread never waits on `fsync`, rename retries or antivirus.
+fn checkpoint_writer() -> Option<&'static SyncSender<CheckpointJob>> {
+    static WRITER: OnceLock<Option<SyncSender<CheckpointJob>>> = OnceLock::new();
+    WRITER
+        .get_or_init(|| {
+            let (sender, receiver) = sync_channel::<CheckpointJob>(1);
+            std::thread::Builder::new()
+                .name("qc-flight-writer".into())
+                .spawn(move || {
+                    while let Ok(job) = receiver.recv() {
+                        let mut published = match job.state.published.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        if job.sequence <= *published {
+                            continue;
+                        }
+                        match (job.publish)(&job.path, &job.bytes) {
+                            Ok(()) => *published = job.sequence,
+                            Err(_) => job.state.failed.store(true, Ordering::Release),
+                        }
+                    }
+                })
+                .ok()
+                .map(|_| sender)
+        })
+        .as_ref()
+}
 
 const MAX_ENTRIES: usize = 256;
 const MAX_INCIDENTS: usize = 4;
@@ -105,6 +158,9 @@ pub struct FlightRecorder {
     path: Option<PathBuf>,
     document: FlightDocument,
     last_persisted_at: Instant,
+    state: Arc<PublishState>,
+    next_sequence: u64,
+    publisher: Publisher,
 }
 
 impl FlightRecorder {
@@ -147,6 +203,9 @@ impl FlightRecorder {
             path,
             document,
             last_persisted_at: Instant::now(),
+            state: Arc::new(PublishState::default()),
+            next_sequence: 0,
+            publisher: qc_owner_only_file::publish_atomically,
         }
     }
 
@@ -265,13 +324,54 @@ impl FlightRecorder {
         // burst. Keep recording in memory on the realtime path and checkpoint
         // at most once per second; Drop performs a final flush on orderly
         // shutdown.
-        if self.last_persisted_at.elapsed() >= Duration::from_secs(1) {
+        if self.last_persisted_at.elapsed() >= Duration::from_secs(1)
+            || self.state.failed.swap(false, Ordering::AcqRel)
+        {
+            self.checkpoint();
+        }
+    }
+
+    /// Serialize on the caller's thread (cheap, in memory) and hand the bytes
+    /// to the writer thread. If the writer is still busy with the previous
+    /// checkpoint the hand-off is dropped and the next entry retries, so the
+    /// caller never waits on the disk. Without a writer thread, fall back to
+    /// publishing inline.
+    fn checkpoint(&mut self) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let Some(writer) = checkpoint_writer() else {
             self.persist();
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            if fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        let Ok(bytes) = serde_json::to_vec(&self.document) else {
+            return;
+        };
+        self.next_sequence += 1;
+        let job = CheckpointJob {
+            state: Arc::clone(&self.state),
+            sequence: self.next_sequence,
+            path,
+            bytes,
+            publish: self.publisher,
+        };
+        match writer.try_send(job) {
+            Ok(()) => self.last_persisted_at = Instant::now(),
+            Err(TrySendError::Full(_)) => {}
+            Err(TrySendError::Disconnected(job)) => {
+                let _ = (job.publish)(&job.path, &job.bytes);
+            }
         }
     }
 
     fn persist(&mut self) -> bool {
-        self.persist_with(qc_owner_only_file::publish_atomically)
+        let publisher = self.publisher;
+        self.persist_with(publisher)
     }
 
     // A failed checkpoint must preserve both the previous complete document
@@ -287,12 +387,20 @@ impl FlightRecorder {
                 return false;
             }
         }
-        let Ok(document) = serde_json::to_vec_pretty(&self.document) else {
+        let Ok(document) = serde_json::to_vec(&self.document) else {
             return false;
         };
+        // Synchronous publication (incident, drop, retry) outranks every
+        // checkpoint queued so far; hold the lock so none can land after it.
+        let mut published = match self.state.published.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        self.next_sequence += 1;
         if publish(path, &document).is_err() {
             return false;
         }
+        *published = self.next_sequence;
         self.last_persisted_at = Instant::now();
         true
     }
@@ -433,6 +541,49 @@ mod tests {
             fs::read_dir(&scratch.0).unwrap().count(),
             1,
             "no stage remains"
+        );
+    }
+
+    fn slow_publisher(path: &Path, bytes: &[u8]) -> Result<(), String> {
+        std::thread::sleep(Duration::from_millis(300));
+        qc_owner_only_file::publish_atomically(path, bytes)
+    }
+
+    #[test]
+    fn a_slow_disk_never_blocks_the_recording_thread() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("flight.json");
+        let mut recorder = FlightRecorder::open(Some(path.clone()));
+        recorder.publisher = slow_publisher;
+        recorder.last_persisted_at = Instant::now() - Duration::from_secs(2);
+        let started = Instant::now();
+        for index in 0..100 {
+            recorder.inbound(4 + (index % 2) as u16, 1);
+            recorder.last_persisted_at = Instant::now() - Duration::from_secs(2);
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "checkpointing blocked the caller for {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn an_incident_is_on_disk_when_it_returns_and_no_stale_checkpoint_replaces_it() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("flight.json");
+        let mut recorder = FlightRecorder::open(Some(path.clone()));
+        recorder.publisher = slow_publisher;
+        recorder.last_persisted_at = Instant::now() - Duration::from_secs(2);
+        recorder.event("queued-before-incident");
+        recorder.incident("frozen");
+        let on_disk = fs::read(&path).unwrap();
+        assert!(String::from_utf8_lossy(&on_disk).contains("frozen"));
+        std::thread::sleep(Duration::from_millis(800));
+        let after = fs::read(&path).unwrap();
+        assert!(
+            String::from_utf8_lossy(&after).contains("frozen"),
+            "an older queued checkpoint overwrote the incident"
         );
     }
 
