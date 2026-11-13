@@ -424,6 +424,36 @@ const pairedRouteUpdateDetail = (
   ? `QC Remote ${status.installedVersion} is paired; ${status.availableVersion} is available. Update installs it.`
   : "QC Remote is paired. Update rewrites the connection so QC Remote can tell when this client is connected.";
 
+/**
+ * The "Update available" row shared by every host whose pairing can be
+ * repaired in place. A refused route rewrite outranks the skill sentences: a
+ * skill one release behind is routine, a refused write is not.
+ */
+const updateAvailablePresentation = (
+  status: { routeRefresh?: LocalRouteRefresh | null; availableSkillVersion?: string; installedVersion?: string; availableVersion: string },
+  skill: string | null | undefined
+): LocalProviderPresentation => routeRefreshFailure(status.routeRefresh) ?? {
+  phase: "attention", status: "Update available", tone: "action-required",
+  detail: skill === "not-installed"
+    ? `Install QC Device Knowledge ${status.availableSkillVersion} alongside the existing local connection.`
+    : skill === "update-available"
+      ? `Update QC Device Knowledge to ${status.availableSkillVersion}; the existing copy will be backed up.`
+      : pairedRouteUpdateDetail(status),
+  canUnpair: true, primary: localPrimaryAction("repair")
+};
+
+/** The "Needs attention" row for a different configuration; `verb` is how the connection is put back ("replaces only" or "restores"). */
+const differentConfigurationPresentation = (
+  skill: string | null | undefined,
+  verb: "replaces only" | "restores"
+): LocalProviderPresentation => ({
+  phase: "attention", status: "Needs attention", tone: "action-required",
+  detail: skill === "modified" || skill === "different-configuration"
+    ? "Update backs up the existing QC Device Knowledge skill before installing the app-managed copy. Other skills remain unchanged."
+    : `Update ${verb} the QC Remote connection and keeps every other MCP server.`,
+  canUnpair: true, primary: localPrimaryAction("repair")
+});
+
 /** The most of the host's own words a row will carry. */
 const ROUTE_REFRESH_REASON_LIMIT = 120;
 
@@ -781,22 +811,8 @@ export const chatgptIntegrationPresentation = (
   // rewrite leaves behind: the older route still on disk. It comes ahead of
   // the skill sentences because a skill one release behind is routine and a
   // write that was refused is not, and one row may only say one thing.
-  if (status.state === "update-available") return routeRefreshFailure(status.routeRefresh) ?? {
-    phase: "attention", status: "Update available", tone: "action-required",
-    detail: status.skillState === "not-installed"
-      ? `Install QC Device Knowledge ${status.availableSkillVersion} alongside the existing local connection.`
-      : status.skillState === "update-available"
-        ? `Update QC Device Knowledge to ${status.availableSkillVersion}; the existing copy will be backed up.`
-        : pairedRouteUpdateDetail(status),
-    canUnpair: true, primary: localPrimaryAction("repair")
-  };
-  if (status.state === "different-configuration") return {
-    phase: "attention", status: "Needs attention", tone: "action-required",
-    detail: status.skillState === "modified" || status.skillState === "different-configuration"
-      ? "Update backs up the existing QC Device Knowledge skill before installing the app-managed copy. Other skills remain unchanged."
-      : "Update replaces only the QC Remote connection and keeps every other MCP server.",
-    canUnpair: true, primary: localPrimaryAction("repair")
-  };
+  if (status.state === "update-available") return updateAvailablePresentation(status, status.skillState);
+  if (status.state === "different-configuration") return differentConfigurationPresentation(status.skillState, "replaces only");
   return {
     phase: "available", status: availableStatus(status.appVersion), tone: "available",
     detail: "Pair with ChatGPT / Codex to control QC Remote with AI",
@@ -854,22 +870,8 @@ export const antigravityIntegrationPresentation = (
     );
   }
   // The same precedence as ChatGPT's row, for the same reason.
-  if (status.state === "update-available") return routeRefreshFailure(status.routeRefresh) ?? {
-    phase: "attention", status: "Update available", tone: "action-required",
-    detail: status.skillState === "not-installed"
-      ? `Install QC Device Knowledge ${status.availableSkillVersion} alongside the existing local connection.`
-      : status.skillState === "update-available"
-        ? `Update QC Device Knowledge to ${status.availableSkillVersion}; the existing copy will be backed up.`
-        : pairedRouteUpdateDetail(status),
-    canUnpair: true, primary: localPrimaryAction("repair")
-  };
-  if (status.state === "different-configuration") return {
-    phase: "attention", status: "Needs attention", tone: "action-required",
-    detail: status.skillState === "modified" || status.skillState === "different-configuration"
-      ? "Update backs up the existing QC Device Knowledge skill before installing the app-managed copy. Other skills remain unchanged."
-      : "Update restores the QC Remote connection and keeps every other MCP server.",
-    canUnpair: true, primary: localPrimaryAction("repair")
-  };
+  if (status.state === "update-available") return updateAvailablePresentation(status, status.skillState);
+  if (status.state === "different-configuration") return differentConfigurationPresentation(status.skillState, "restores");
   return {
     phase: "available", status: availableStatus(status.appVersion), tone: "available",
     detail: "Pair with Google Antigravity to control QC Remote with AI",
@@ -1021,22 +1023,8 @@ export const managedMcpIntegrationPresentation = (
       : `${name} picks the connection up on its own schedule`);
   }
   // The same precedence as ChatGPT's row, for the same reason.
-  if (status.state === "update-available") return routeRefreshFailure(status.routeRefresh) ?? {
-    phase: "attention", status: "Update available", tone: "action-required",
-    detail: skill === "not-installed"
-      ? `Install QC Device Knowledge ${status.availableSkillVersion} alongside the existing local connection.`
-      : skill === "update-available"
-        ? `Update QC Device Knowledge to ${status.availableSkillVersion}; the existing copy will be backed up.`
-        : pairedRouteUpdateDetail(status),
-    canUnpair: true, primary: localPrimaryAction("repair")
-  };
-  if (status.state === "different-configuration") return {
-    phase: "attention", status: "Needs attention", tone: "action-required",
-    detail: skill === "modified" || skill === "different-configuration"
-      ? "Update backs up the existing QC Device Knowledge skill before installing the app-managed copy. Other skills remain unchanged."
-      : "Update replaces only the QC Remote connection and keeps every other MCP server.",
-    canUnpair: true, primary: localPrimaryAction("repair")
-  };
+  if (status.state === "update-available") return updateAvailablePresentation(status, skill);
+  if (status.state === "different-configuration") return differentConfigurationPresentation(skill, "replaces only");
   return {
     phase: "available", status: availableStatus(status.appVersion), tone: "available",
     detail: `Pair with ${name} to control QC Remote with AI`,
