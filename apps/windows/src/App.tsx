@@ -2207,13 +2207,12 @@ export function App() {
   };
 
   useEffect(() => {
-    const recovering = connection.phase === "needs-attention" && connection.detail.startsWith("Live synchronization");
-    if (!((connection.phase === "ready" && !connection.demo && connection.source === "device") || recovering)) return;
-    if (!recovering && nativeStateAvailable.current) return;
+    if (!(connection.phase === "ready" && !connection.demo && connection.source === "device")) return;
+    if (nativeStateAvailable.current) return;
     let cancelled = false;
     let timer: number | undefined;
-    const schedule = (delay = recovering ? 500 : 250) => {
-      if (!recovering && nativeStateAvailable.current) return;
+    const schedule = (delay = 250) => {
+      if (nativeStateAvailable.current) return;
       if (!cancelled) timer = window.setTimeout(() => void synchronize(), delay);
     };
     const synchronize = async () => {
@@ -2225,20 +2224,14 @@ export function App() {
         return;
       }
       try {
-        let verifiedRuntime = runtime;
-        const recovered = recovering || liveSyncFailures.current >= 2;
+        const recovered = liveSyncFailures.current >= 2;
         const current = await qcController.readSnapshot(async () => {
           const incoming = await tauriTransport.currentSnapshot();
-          verifiedRuntime = recovering ? await tauriTransport.runtimeStatus() : runtime;
           if (cancelled) throw new SupersededPresetOperation();
-          if (recovering && !runtimeHasSynchronizedQc(verifiedRuntime)) {
-            throw new Error(verifiedRuntime?.usbDiagnostics?.detail || "The Quad Cortex preset is not synchronized");
-          }
           // Preserve newer volume samples delivered by the native event stream.
           return {...incoming, masterVolume: recovered ? incoming.masterVolume : snapshotRef.current.masterVolume};
         });
         if (cancelled) return;
-        if (verifiedRuntime) setRuntime(verifiedRuntime);
         liveSyncFailures.current = 0;
         setSelectedBlockId((selected) => current.blocks.some((block) => block.id === selected) ? selected : "");
         if (recovered) {
