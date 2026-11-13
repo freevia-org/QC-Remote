@@ -111,6 +111,7 @@ function Capture-QcBuildProcessOwner {
     if ($null -eq $originalJob) { throw 'The original PowerShell Job was not retained before native admission.' }
     $deadline = [datetime]::UtcNow.AddSeconds($AdmissionTimeoutSeconds)
     $document = $null
+    $lastRefusal = $null
     while ([datetime]::UtcNow -lt $deadline) {
         if (Test-Path -LiteralPath $key -PathType Leaf) {
             try {
@@ -128,11 +129,19 @@ function Capture-QcBuildProcessOwner {
                     $document = $candidate
                     break
                 }
-            } catch { }
+            } catch {
+                # A half-written or not-yet-replaced owner file is retried until the
+                # deadline, as before. Remember why, so a persistent refusal is
+                # reported instead of being relabelled as a missing record.
+                $lastRefusal = [string]$_.Exception.Message
+            }
         }
         Start-Sleep -Milliseconds 25
     }
-    if ($null -eq $document -or [int]$document.schemaVersion -ne 2) { throw "Build Job admission record missing or unsupported: $key" }
+    if ($null -eq $document -or [int]$document.schemaVersion -ne 2) {
+        $detail = if ($null -ne $lastRefusal) { " (last refusal while waiting: $lastRefusal)" } else { "" }
+        throw "Build Job admission record missing or unsupported: $key$detail"
+    }
     if ([int]$document.parentProcessId -ne $PID) { throw 'Build owner is not an original direct child of this admitting process.' }
     [QcOwnedProcess.BuildJob]::CaptureAndRetain($key, [string]$document.jobName, [int]$document.processId, [long]$document.createdAtFileTime, [int]$document.parentProcessId, [string]$document.imagePath)
     # Retain before acknowledgment, including a failure publishing the ack.
