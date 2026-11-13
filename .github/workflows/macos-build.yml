@@ -49,6 +49,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
+      # This runner is persistent: keep each lane's Cargo output warm between
+      # runs instead of depending on a GitHub cache that only master saves.
+      - uses: ./.github/actions/cargo-target-dir
+        with:
+          name: macos-${{ matrix.target }}-${{ matrix.lane }}
       - name: Require Rosetta 2 for x86_64 binaries
         if: matrix.target == 'x86_64-apple-darwin'
         run: |
@@ -67,6 +72,7 @@ jobs:
       # cache saved by a run that failed in its first cargo step lacked every
       # Tauri dependency and made each later run recompile 336 crates.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           workspaces: |
             . -> target

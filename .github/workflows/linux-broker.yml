@@ -122,11 +122,16 @@ jobs:
         run: *runner_budget_guard_native_linux
       # Master-only dispatches save this cache; validation on other refs reads it
       # without pushing branch-local copies into the shared cache budget.
+      - uses: ./.github/actions/cargo-target-dir
+        with:
+          name: linux-broker
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_004.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_004.outputs.minutes || '1') || 360 }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: linux-broker
           save-if: ${{ github.ref == 'refs/heads/master' }}
-        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_004.outputs.ready == 'true') }}
+        if: ${{ (success()) && runner.environment == 'github-hosted' && (!contains(runner.name, '-i5-') || steps.runner_budget_004.outputs.ready == 'true') }}
         timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_004.outputs.minutes || '1') || 360 }}
       - name: Check remaining execution budget (5)
         id: runner_budget_005
@@ -154,7 +159,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qc-device-broker-linux-tray
-          path: target/debug/qc-device-broker
+          path: ${{ env.CARGO_TARGET_DIR || 'target' }}/debug/qc-device-broker
           if-no-files-found: error
           retention-days: 1
         if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_006.outputs.ready == 'true') }}
@@ -201,7 +206,7 @@ jobs:
           CI_STEP_LIMIT: 360
         run: *runner_budget_guard_native_linux
       - name: Check non-hardware executable entry point
-        run: ./target/debug/qc-device-broker --self-check
+        run: '"${CARGO_TARGET_DIR:-target}/debug/qc-device-broker" --self-check'
         if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_009.outputs.ready == 'true') }}
         timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_009.outputs.minutes || '1') || 360 }}
       - name: Check remaining execution budget (10)
@@ -427,13 +432,18 @@ jobs:
           CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
           CI_STEP_LIMIT: 360
         run: *runner_budget_guard_linux_desktop_host
+      - uses: ./.github/actions/cargo-target-dir
+        with:
+          name: linux-tauri-host
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_007.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_007.outputs.minutes || '1') || 360 }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: apps/windows/src-tauri -> target
           key: linux-tauri-host
           # Master only, as for the headless broker job above.
           save-if: ${{ github.ref == 'refs/heads/master' }}
-        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_007.outputs.ready == 'true') }}
+        if: ${{ (success()) && runner.environment == 'github-hosted' && (!contains(runner.name, '-i5-') || steps.runner_budget_007.outputs.ready == 'true') }}
         timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_007.outputs.minutes || '1') || 360 }}
       - name: Check remaining execution budget (8)
         id: runner_budget_008
@@ -485,7 +495,7 @@ jobs:
       - name: Test the GUI host with its in-process broker
         working-directory: apps/windows/src-tauri
         env:
-          QC_GATEWAY_EXECUTABLE: ${{ github.workspace }}/apps/windows/src-tauri/target/debug/qc-device-broker
+          QC_GATEWAY_EXECUTABLE: ${{ env.CARGO_TARGET_DIR || format('{0}/apps/windows/src-tauri/target', github.workspace) }}/debug/qc-device-broker
         run: cargo +stable test --locked --features tray-sidecar,custom-protocol
         if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_010.outputs.ready == 'true') }}
         timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_010.outputs.minutes || '1') || 360 }}
