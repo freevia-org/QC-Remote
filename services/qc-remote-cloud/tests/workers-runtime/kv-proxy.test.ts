@@ -657,3 +657,64 @@ describe("provider retention on Durable Object storage and alarms", () => {
     });
   });
 });
+
+describe("explicit revocation, identifier shape and a malformed journal on the production Worker", () => {
+  async function pairedDevice(target: ReturnType<typeof env.DEVICE_SESSION.getByName>) {
+    const deviceId = crypto.randomUUID();
+    const credential = `runtime-device-${crypto.randomUUID()}`;
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(credential));
+    const credentialHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+    await runInDurableObject(target, async (_instance: DeviceSession, state) => {
+      await state.storage.put(`device:${deviceId}`, { name: "Runtime host", credentialHash, pairedAt: Date.now(), expiresAt: null, identityProvider: "google" });
+    });
+    return { deviceId, credential };
+  }
+
+  it("removes the record and its directory entry together, and a retried revoke is idempotent", async () => {
+    const target = env.DEVICE_SESSION.getByName(`revoke-${crypto.randomUUID()}`);
+    const { deviceId, credential } = await pairedDevice(target);
+    await env.QCRC_OAUTH.put(`qcrc:device:${deviceId}`, JSON.stringify({ owner: "runtime" }));
+    await expect(target.revokeDevice(deviceId, "wrong-credential")).resolves.toMatchObject({ revoked: false });
+    expect(await runInDurableObject(target, (_i: DeviceSession, state) => state.storage.get(`device:${deviceId}`))).toBeDefined();
+    await expect(target.revokeDevice(deviceId, credential)).resolves.toEqual({ revoked: true, remaining: 0 });
+    expect(await env.QCRC_OAUTH.get(`qcrc:device:${deviceId}`)).toBeNull();
+    await runInDurableObject(target, async (_i: DeviceSession, state) => {
+      expect(await state.storage.get(`device:${deviceId}`)).toBeUndefined();
+      expect(await state.storage.get("device-directory-cleanup-v1")).toBeUndefined();
+    });
+    // The retry finds no record at all: a revoke that already happened, not a refusal.
+    await expect(target.revokeDevice(deviceId, credential)).resolves.toEqual({ revoked: false, remaining: 0, gone: true });
+  });
+
+  it("reports the daily usage marker as what it is", async () => {
+    const target = env.DEVICE_SESSION.getByName(`usage-${crypto.randomUUID()}`);
+    const day = new Date().toISOString().slice(0, 10);
+    const firstAt = Date.now() - 60_000;
+    await runInDurableObject(target, async (_i: DeviceSession, state) => { await state.storage.put("usage:daily", { day, commands: 1, lastCommandAt: firstAt }); });
+    await expect(target.usage()).resolves.toEqual({ day, commands: 1, lastCommandAt: firstAt, firstCommandAt: firstAt });
+    const idle = env.DEVICE_SESSION.getByName(`usage-idle-${crypto.randomUUID()}`);
+    await expect(idle.usage()).resolves.toEqual({ day, commands: 0 });
+  });
+
+  it("queues a directory entry left by a revoked connect and drains it", async () => {
+    const target = env.DEVICE_SESSION.getByName(`queue-${crypto.randomUUID()}`);
+    const deviceId = crypto.randomUUID();
+    await env.QCRC_OAUTH.put(`qcrc:device:${deviceId}`, JSON.stringify({ owner: "runtime" }));
+    await target.queueDirectoryCleanup(deviceId);
+    expect(await env.QCRC_OAUTH.get(`qcrc:device:${deviceId}`)).toBeNull();
+  });
+
+  it("answers an overlong or malformed device id without touching KV or throwing", async () => {
+    const long = "a".repeat(600);
+    const headers = { authorization: "Bearer runtime-credential" };
+    for (const path of [`/v1/device/usage?deviceId=${long}`, `/v1/device/roster?deviceId=${long}`, `/v1/device/connect?deviceId=${long}`]) {
+      const response = await workerRequest(path, { headers });
+      expect(response.status, path).toBe(401);
+    }
+    const bad = await workerRequest(`/v1/device/revoke?deviceId=${encodeURIComponent("../x y")}`, { method: "POST", headers });
+    expect(bad.status).toBe(200);
+    expect(await bad.json()).toEqual({ revoked: true });
+    const sibling = await workerRequest(`/v1/device/roster/revoke?deviceId=${crypto.randomUUID()}&target=${long}`, { method: "POST", headers });
+    expect([401, 404]).toContain(sibling.status);
+  });
+});

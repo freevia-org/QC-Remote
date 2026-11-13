@@ -705,7 +705,7 @@ function mcpHandler(env: Env, props: PrincipalProps) {
     server.registerTool("get_qc_status", { title: "Quad Cortex status", description: "Read the paired Quad Cortex connection and readiness status.", inputSchema: {}, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async () => deviceToolCall(async () => toolResult(await readStatus())));
     server.registerTool("get_qc_identity", { title: "Quad Cortex device information", description: "Read the connected Quad Cortex identity and reported firmware versions. Requires a host supporting remote device identity.", inputSchema: {}, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async () => deviceToolCall(async () => toolResult(await route({ action: "get_qc_identity", method: "device.identity", params: {} }, "qc:read"))));
     server.registerTool("get_current_preset", { title: "Current preset", description: "Read the current Quad Cortex preset, scene, tempo, and Grid state.", inputSchema: {}, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async () => deviceToolCall(async () => toolResult(await readCurrentPreset())));
-    server.registerTool("get_remote_usage", { title: "Remote usage", description: "Read today's QC Remote Cloud command count. Cloudflare platform limits remain authoritative in the Cloudflare dashboard.", inputSchema: {}, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async () => {
+    server.registerTool("get_remote_usage", { title: "Remote usage", description: "Read whether QC Remote Cloud relayed a command today (commands is 0 or 1, a daily marker, not a running total) and when the first one was sent (firstCommandAt). Cloudflare platform limits remain authoritative in the Cloudflare dashboard.", inputSchema: {}, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async () => {
       if (!scopes.has("qc:read")) throw new Error("This tool requires the qc:read OAuth permission.");
       return toolResult(await rpcSession(env, ownerSessionKey(env.QCRC_ENVIRONMENT, props.subject)).usage(props.accountGeneration ?? 0));
     });
@@ -843,7 +843,12 @@ export class DeviceSession extends DurableObject<Env> {
       () => this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong")),
       (callback) => this.ctx.blockConcurrencyWhile(async () => {
         await callback();
-        await enrollProviderWritesRetention(this.ctx.storage, Date.now());
+        // A malformed journal must not stop this object from being constructed:
+        // every provider-write mutation re-reads the journal and refuses on its
+        // own (fail closed), and the object stays reachable for the operator
+        // inventory that exists to report exactly this state.
+        try { await enrollProviderWritesRetention(this.ctx.storage, Date.now()); }
+        catch { console.warn("Provider-write journal could not be enrolled for retention; provider writes stay refused until it is repaired."); }
       }),
       this.ctx.storage,
       this.lateResults,
@@ -1241,7 +1246,12 @@ export class DeviceSession extends DurableObject<Env> {
     if (generation !== undefined) await this.ctx.storage.transaction((transaction) => assertAccountWritable(transaction, generation));
     const usage = await this.ctx.storage.get<DailyUsage>("usage:daily");
     const day = new Date().toISOString().slice(0, 10);
-    return { day, commands: usage?.day === day ? usage.commands : 0, lastCommandAt: usage?.day === day ? usage.lastCommandAt : undefined };
+    // `commands` is a daily marker (0 or 1) and the stored time is the first
+    // command of the day, because a write per command is deliberately avoided.
+    // `firstCommandAt` says that; `commands` and `lastCommandAt` stay for
+    // hosts built before it.
+    const today = usage?.day === day;
+    return { day, commands: today ? usage.commands : 0, lastCommandAt: today ? usage.lastCommandAt : undefined, firstCommandAt: today ? usage.lastCommandAt : undefined };
   }
 
   /** The single place a device credential is checked. Expiry lives here rather
