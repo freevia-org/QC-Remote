@@ -26,16 +26,19 @@ export type RateLimitEnv = {
   QCRC_PAIRING_RATE_LIMIT?: RateLimitBinding;
   QCRC_OAUTH_RATE_LIMIT?: RateLimitBinding;
   QCRC_MCP_RATE_LIMIT?: RateLimitBinding;
+  QCRC_POLL_RATE_LIMIT?: RateLimitBinding;
 };
 
-export type RateLimitedRoute = "mcp" | "pairing-session" | "pairing-sign-in" | "pairing-cancel" | "pairing-device" | "pairing-replace" | "account-delete-sign-in" | "account-delete-confirm" | "oauth-authorize" | "oauth-register";
+export type RateLimitedRoute = "mcp" | "pairing-session" | "pairing-sign-in" | "pairing-cancel" | "pairing-device" | "pairing-replace" | "account-delete-sign-in" | "account-delete-confirm" | "oauth-authorize" | "oauth-authorize-submit" | "oauth-apple-callback" | "apple-notification" | "oauth-register" | "pairing-poll" | "pairing-page";
+
+type RateLimitBindingName = "QCRC_PAIRING_RATE_LIMIT" | "QCRC_OAUTH_RATE_LIMIT" | "QCRC_MCP_RATE_LIMIT" | "QCRC_POLL_RATE_LIMIT";
 
 /** Which limit, if any, applies to this request.
  *
  * The binding is chosen per family so each carries its own budget in
  * wrangler.jsonc; the route is part of the key so one family's routes do not
  * spend each other's allowance. */
-export function rateLimitedRoute(request: Request, url = new URL(request.url)): { route: RateLimitedRoute; binding: "QCRC_PAIRING_RATE_LIMIT" | "QCRC_OAUTH_RATE_LIMIT" | "QCRC_MCP_RATE_LIMIT" } | null {
+export function rateLimitedRoute(request: Request, url = new URL(request.url)): { route: RateLimitedRoute; binding: RateLimitBindingName } | null {
   const { pathname } = url;
   // Stop polling storms before OAuth KV reads and account DO admission.
   // Include the origin alias used by Claude Mobile and all MCP HTTP methods.
@@ -53,7 +56,18 @@ export function rateLimitedRoute(request: Request, url = new URL(request.url)): 
   // continue run the deletion (account-deletion-web.ts).
   if (request.method === "POST" && pathname === "/account/delete/sign-in") return { route: "account-delete-sign-in", binding: "QCRC_PAIRING_RATE_LIMIT" };
   if (request.method === "POST" && (pathname === "/account/delete/confirm" || pathname === "/account/delete/continue")) return { route: "account-delete-confirm", binding: "QCRC_PAIRING_RATE_LIMIT" };
-  if (request.method === "POST" && pathname === "/auth/apple/notifications") return { route: "oauth-authorize", binding: "QCRC_OAUTH_RATE_LIMIT" };
+  if (request.method === "POST" && pathname === "/auth/apple/notifications") return { route: "apple-notification", binding: "QCRC_OAUTH_RATE_LIMIT" };
+  // Sign-in callbacks Apple posts through the browser: each is read and parsed
+  // before any routing, so they carry the OAuth family's limit.
+  if (request.method === "POST" && /^\/auth\/apple\/(mcp|pair|delete)\/callback$/.test(pathname)) return { route: "oauth-apple-callback", binding: "QCRC_OAUTH_RATE_LIMIT" };
+  // The consent form post reads and deletes KV for any nonce a caller names.
+  if (request.method === "POST" && pathname === "/authorize") return { route: "oauth-authorize-submit", binding: "QCRC_OAUTH_RATE_LIMIT" };
+  // The two routes that look a pairing session up wake a Durable Object per id
+  // with no session needed. Their own binding is sized above the hosts' poll
+  // cadence (one poll every 1.5 s is 40 a minute), so a normal pairing never
+  // meets it.
+  if (request.method === "GET" && /^\/v1\/host\/pairing-sessions\/[A-Za-z0-9_-]{20,128}$/.test(pathname)) return { route: "pairing-poll", binding: "QCRC_POLL_RATE_LIMIT" };
+  if (request.method === "GET" && pathname === "/pair" && url.searchParams.has("hostSession")) return { route: "pairing-page", binding: "QCRC_POLL_RATE_LIMIT" };
   if (request.method === "GET" && pathname === "/authorize") return { route: "oauth-authorize", binding: "QCRC_OAUTH_RATE_LIMIT" };
   if (request.method === "POST" && pathname === "/register") return { route: "oauth-register", binding: "QCRC_OAUTH_RATE_LIMIT" };
   return null;

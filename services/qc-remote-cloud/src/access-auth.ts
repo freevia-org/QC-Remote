@@ -247,7 +247,7 @@ export async function completeAccountDeletionSignIn(request: Request, env: Googl
   const code = url.searchParams.get("code");
   if (!nonce || !code) throw new PublicError("This sign-in link is invalid or expired. Start the deletion again.");
   const stored = await env.QCRC_OAUTH.get<PendingAccountDeletion>(`qcrc:delete-sign-in:${nonce}`, "json");
-  await env.QCRC_OAUTH.delete(`qcrc:delete-sign-in:${nonce}`);
+  if (stored) await env.QCRC_OAUTH.delete(`qcrc:delete-sign-in:${nonce}`);
   if (!stored) throw new PublicError("This sign-in expired. Start the deletion again.");
   if (!await browserMatchesFlow(request, env, stored.browserHash, nonce)) throw new PublicError("This sign-in was started in a different browser. Start the deletion again in this browser.");
   const provider = callbackProvider(request);
@@ -303,7 +303,7 @@ export async function completePairingSignIn(request: Request, env: GoogleOAuthEn
   const code = url.searchParams.get("code");
   if (!nonce || !code) throw new PublicError("Invalid or expired sign-in request");
   const stored = await env.QCRC_OAUTH.get<PendingDirectPairing>(`qcrc:direct-pair:${nonce}`, "json");
-  await env.QCRC_OAUTH.delete(`qcrc:direct-pair:${nonce}`);
+  if (stored) await env.QCRC_OAUTH.delete(`qcrc:direct-pair:${nonce}`);
   if (!stored) throw new PublicError("Sign-in request expired");
   if (!await browserMatchesFlow(request, env, stored.browserHash, nonce)) {
     throw new PublicError("This sign-in was started in a different browser. Open REMOTE in QC Remote and start a new pairing code.");
@@ -316,7 +316,7 @@ export async function completePairingSignIn(request: Request, env: GoogleOAuthEn
 
 async function continueAuthorization(request: Request, env: GoogleOAuthEnv, nonce: string, identityProvider: IdentityProvider = "google"): Promise<Response> {
   const stored = await env.QCRC_OAUTH.get<PendingApproval>(`qcrc:approval:${nonce}`, "json");
-  await env.QCRC_OAUTH.delete(`qcrc:approval:${nonce}`);
+  if (stored) await env.QCRC_OAUTH.delete(`qcrc:approval:${nonce}`);
   if (!stored) return new Response("Authorization approval expired. Please return to Claude and try again.", { status: 400 });
   const stateNonce = randomToken(24);
   const browser = randomToken(24);
@@ -354,7 +354,9 @@ export async function handleGoogleAuthorization(request: Request, env: GoogleOAu
     const form = await readBrowserForm(request);
     if (!form) return new Response("Invalid authorization form", { status: 400 });
     const nonce = typeof form.get("nonce") === "string" ? form.get("nonce") as string : "";
-    if (!same(cookie(request, `__Host-qcrc-csrf-${nonce}`), nonce)) return new Response("Authorization approval expired. Please try again.", { status: 400 });
+    // The shape randomToken(24) produces: nothing else can name a pending
+    // approval, so anything else is refused before any KV call.
+    if (!/^[A-Za-z0-9_-]{32}$/.test(nonce) || !same(cookie(request, `__Host-qcrc-csrf-${nonce}`), nonce)) return new Response("Authorization approval expired. Please try again.", { status: 400 });
     let provider: IdentityProvider;
     try { provider = requestedIdentityProvider(form.get("identity_provider"), env); } catch { return new Response("Sign-in method unavailable", { status: 400 }); }
     return continueAuthorization(request, env, nonce, provider);
@@ -364,7 +366,7 @@ export async function handleGoogleAuthorization(request: Request, env: GoogleOAu
     const code = url.searchParams.get("code");
     if (!nonce || !code) return new Response("Invalid or expired sign-in request", { status: 400 });
     const stored = await env.QCRC_OAUTH.get<PendingAuthorization>(`qcrc:access:${nonce}`, "json");
-    await env.QCRC_OAUTH.delete(`qcrc:access:${nonce}`);
+    if (stored) await env.QCRC_OAUTH.delete(`qcrc:access:${nonce}`);
     if (!stored) return new Response("Sign-in request expired", { status: 400 });
     if (!await browserMatchesFlow(request, env, stored.browserHash, nonce)) {
       return new Response("This sign-in was started in a different browser. Return to your MCP client and connect again.", { status: 400 });
