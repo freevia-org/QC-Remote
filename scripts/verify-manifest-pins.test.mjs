@@ -211,3 +211,25 @@ test('the declared Node minimum runs the test scripts', () => {
   assert.ok(major > 22 || (major === 22 && minor >= 6), `engines.node ${rootPackage.engines.node} is below 22.6`);
   assert.equal(lock.packages[''].engines?.node, rootPackage.engines.node, 'package-lock.json root engines is stale');
 });
+
+// The signed Play bundle is built by android-store-candidate.yml, which repeats
+// the Android toolchain steps of ci.yml. Neither copy may drift from the other.
+test('the Android store-candidate workflow installs exactly the toolchain CI validates', () => {
+  const store = read('.github/workflows/android-store-candidate.yml');
+  for (const [pattern, what] of [
+    [/cargo install cargo-ndk --version (\S+) --locked/.source, 'cargo-ndk version'],
+    [/(sdkmanager "platforms;[^\n]+)/.source, 'sdkmanager line'],
+    [/java-version: '(\d+)'/.source, 'java-version'],
+    [/rustup target add ([^\n]+)|targets: ([a-z0-9_, -]+android[a-z0-9_, -]*)/.source, 'Rust Android targets'],
+  ]) {
+    const regex = new RegExp(pattern, 'g');
+    const values = (text) => [...text.matchAll(regex)].map((match) => (match[1] ?? match[2]).trim());
+    const inStore = values(store);
+    assert.ok(inStore.length > 0, `store candidate has no ${what}`);
+    assert.deepEqual([...new Set(inStore)], [...new Set(values(ci))], `${what} differs between ci.yml and android-store-candidate.yml`);
+  }
+  assert.equal(
+    single(/ndk;(\d+\.\d+\.\d+)/.source, store, 'store-candidate NDK package'),
+    single(/ndk;(\d+\.\d+\.\d+)/.source, ci, 'CI NDK package'),
+  );
+});
