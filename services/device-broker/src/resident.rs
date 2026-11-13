@@ -204,7 +204,9 @@ impl Supervisor {
                 Ok(Err(error)) => {
                     eprintln!("The background MCP host could not start; retrying: {error}")
                 }
-                Err(_) => eprintln!("The background MCP host panicked while starting"),
+                Err(_) => {
+                    eprintln!("The background MCP host panicked while starting")
+                }
             }
         }
     }
@@ -587,6 +589,49 @@ fn elect_assessed_with(
     result
 }
 
+/// Clear the election lock a dead holder left behind, for every operation
+/// that takes it (the election itself and the Quit record's operations).
+///
+/// A start that died holding the election leaves the lock and its `.claim`
+/// sidecar. Removing only the lock left the sidecar to refuse every later
+/// claim, so each logon start waited out its budget and exited 0 without
+/// serving. Clear the pair the way the app does (`release_descriptor_slot`):
+/// only under the sidecar's lock, so a live holder refuses and keeps both. A
+/// sidecar whose lock is already gone (what that older cleanup left behind) is
+/// aged by the sidecar itself.
+///
+/// `Ok(true)`: the pair was cleared and the claim may be retried now.
+/// `Ok(false)`: the lock does not look abandoned. `Err`: it looks abandoned
+/// but a live process still holds the claim.
+pub(crate) fn reclaim_abandoned_election(election: &Path) -> std::io::Result<bool> {
+    // Linux relies on the OS lock and inode identity alone. A process killed
+    // before publication must not keep the slot for 15 seconds while the next
+    // launch's budget expires.
+    #[cfg(target_os = "linux")]
+    let abandoned = true;
+    #[cfg(not(target_os = "linux"))]
+    let abandoned = {
+        let age = |path: &Path| {
+            std::fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+        };
+        match age(election) {
+            Some(age) => age > ELECTION_LOCK_STALE_AFTER,
+            None => {
+                !election.exists()
+                    && age(&qc_owner_only_file::claim_path(election))
+                        .is_some_and(|age| age > ELECTION_LOCK_STALE_AFTER)
+            }
+        }
+    };
+    if !abandoned {
+        return Ok(false);
+    }
+    qc_owner_only_file::release_if_unclaimed(election).map(|()| true)
+}
+
 fn elect_with(
     descriptor: &Path,
     budget: Duration,
@@ -655,52 +700,20 @@ fn elect_with(
                 }
                 return Ok(Election::Serve(guard));
             }
-            Err(_) => {
-                // A start that died holding the election leaves the lock and
-                // its `.claim` sidecar. Removing only the lock left the
-                // sidecar to refuse every later claim, so each logon start
-                // waited out its budget and exited 0 without serving. Clear
-                // the pair the way the app does (`release_descriptor_slot`):
-                // only under the sidecar's lock, so a live holder refuses and
-                // keeps both. A sidecar whose lock is already gone (what that
-                // older cleanup left behind) is aged by the sidecar itself.
-                #[cfg(target_os = "linux")]
-                let abandoned = true;
-                #[cfg(not(target_os = "linux"))]
-                let abandoned = {
-                    let age = |path: &Path| {
-                        std::fs::metadata(path)
-                            .and_then(|metadata| metadata.modified())
-                            .ok()
-                            .and_then(|modified| modified.elapsed().ok())
-                    };
-                    match age(&election) {
-                        Some(age) => age > ELECTION_LOCK_STALE_AFTER,
-                        None => {
-                            !election.exists()
-                                && age(&qc_owner_only_file::claim_path(&election))
-                                    .is_some_and(|age| age > ELECTION_LOCK_STALE_AFTER)
-                        }
-                    }
-                };
-                // Linux relies on the OS lock and inode identity alone. A
-                // process killed before publication must not keep the slot
-                // for 15 seconds while the next launch's budget expires.
-                if abandoned {
-                    match qc_owner_only_file::release_if_unclaimed(&election) {
-                        Ok(()) => continue,
-                        Err(error) if !reported_held => {
-                            reported_held = true;
-                            eprintln!(
-                                "The election lock at {} looks abandoned but its claim is held; \
+            Err(_) => match reclaim_abandoned_election(&election) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    if !reported_held {
+                        reported_held = true;
+                        eprintln!(
+                            "The election lock at {} looks abandoned but its claim is held; \
                              waiting for its holder ({error})",
-                                election.display()
-                            );
-                        }
-                        Err(_) => {}
+                            election.display()
+                        );
                     }
                 }
-            }
+            },
         }
         if Instant::now() >= deadline {
             // Someone else holds the election and will publish a broker,

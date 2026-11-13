@@ -73,8 +73,11 @@ pub fn path_for(descriptor: &Path) -> PathBuf {
 /// Run `operation` holding the election lock for `descriptor`, waiting at
 /// most `budget` for it. The claim is the same exclusive create-new claim a
 /// `--resident` start's election takes, and excludes the app's election
-/// (create-new on the same file). An abandoned lock is not reaped here; the
-/// elections that own that policy do it.
+/// (create-new on the same file). A lock a dead holder left behind is cleared
+/// by the same rule the election uses, which refuses a live holder: while a
+/// live broker answers nobody elects, so without this a stale pair would
+/// refuse every Quit and every sign-in start until some other start ran an
+/// election.
 pub fn with_election_lock<T>(
     descriptor: &Path,
     budget: Duration,
@@ -85,13 +88,24 @@ pub fn with_election_lock<T>(
     let claim = loop {
         match qc_owner_only_file::ClaimedFile::try_claim(&election) {
             Ok(claim) => break claim,
-            Err(error) if Instant::now() >= deadline => {
-                return Err(format!(
-                    "the election lock at {} could not be taken ({error})",
-                    election.display()
-                ))
+            Err(error) => {
+                // A cleared pair is retried at once; a live holder (or a lock
+                // that does not look abandoned) is waited for.
+                let cleared = matches!(
+                    crate::resident::reclaim_abandoned_election(&election),
+                    Ok(true)
+                );
+                if cleared && Instant::now() < deadline {
+                    continue;
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "the election lock at {} could not be taken ({error})",
+                        election.display()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(20));
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(20)),
         }
     };
     let outcome = operation();
@@ -309,6 +323,48 @@ mod tests {
         publish(&descriptor, &record("newer")).unwrap();
         assert_eq!(withdraw(&descriptor, "older"), Ok(Withdrawal::NotOurs));
         assert_eq!(read(&descriptor), Some(Ok(record("newer"))));
+    }
+
+    /// DB-1: a process that died holding the election leaves the lock and its
+    /// sidecar. While a live broker answers nobody elects, so the record
+    /// operations must clear that pair themselves, as the election does.
+    #[test]
+    fn record_operations_clear_an_election_lock_a_dead_holder_left_behind() {
+        let scratch = Scratch::new("abandoned");
+        let descriptor = scratch.descriptor();
+        let election = crate::resident::election_path(&descriptor);
+        let leave_abandoned = || {
+            // Process exit closes the claim's handle but leaves both names.
+            drop(qc_owner_only_file::ClaimedFile::try_claim(&election).unwrap());
+            for path in [election.clone(), qc_owner_only_file::claim_path(&election)] {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(std::time::SystemTime::now() - Duration::from_secs(600))
+                    .unwrap();
+            }
+            assert!(election.exists());
+        };
+        let budget = Duration::from_secs(2);
+
+        leave_abandoned();
+        publish_within(&descriptor, &record("quit"), budget)
+            .expect("publish clears the stale lock");
+        assert_eq!(read(&descriptor), Some(Ok(record("quit"))));
+        assert!(!election.exists());
+
+        leave_abandoned();
+        assert_eq!(
+            withdraw_within(&descriptor, "quit", budget),
+            Ok(Withdrawal::Withdrawn)
+        );
+
+        publish(&descriptor, &record("again")).unwrap();
+        leave_abandoned();
+        assert_eq!(clear_within(&descriptor, budget), Ok(true));
+        assert_eq!(read(&descriptor), None);
+        assert!(!election.exists() && !qc_owner_only_file::claim_path(&election).exists());
     }
 
     /// Every record operation waits for the election lock and fails
