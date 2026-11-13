@@ -21,7 +21,7 @@ import { captureGatewaySession } from "@qc-remote/ui";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
 import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegrationPresentation, claudeExtensionPresentation, lmStudioAppName, lmStudioEnableSwitch, localAccessNotice, localActionFailure, localPairOutcome, managedMcpIntegrationPresentation, type LocalActionOutcome } from "./local-integration-presentation";
 import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, qcBackgroundDeviceLive, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, waitForSynchronizedQc, qcReconcilePhysicalDevices, qcKeepRuntime, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
-import { DEFAULT_BROKER_TRAY_STATUS, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
+import { DEFAULT_BROKER_TRAY_STATUS, sameBrokerTrayStatus, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
 import { callTauri } from "./tauri-invoke.ts";
 import appPackage from "../package.json";
@@ -2449,7 +2449,7 @@ export function App() {
     const version = trayStatusReadVersion.current;
     try {
       const status = await brokerTray.status();
-      if (version === trayStatusReadVersion.current && !trayChangePending.current) setBrokerTrayStatus(status);
+      if (version === trayStatusReadVersion.current && !trayChangePending.current) setBrokerTrayStatus((current) => sameBrokerTrayStatus(current, status) ? current : status);
     } catch (error) {
       if (version === trayStatusReadVersion.current && !trayChangePending.current) {
         setBrokerTrayStatus((current) => ({ ...current, lastError: error instanceof Error ? error.message : String(error) }));

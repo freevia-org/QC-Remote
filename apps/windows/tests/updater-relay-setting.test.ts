@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   DEFAULT_BROKER_TRAY_STATUS,
+  sameBrokerTrayStatus,
   UPDATER_RELAY_EXPLANATION,
   UPDATER_RELAY_LABEL,
   summarizeUpdaterRelay,
@@ -176,4 +177,14 @@ test("no gateway method, MCP action or public contract exposes the switch to an 
     assert.doesNotMatch(source(generated), /updater[-_ ]?relay|updaterRelay|set_broker_updater/i, generated);
   }
   assert.doesNotMatch(source("services/device-broker/src/generated_broker_surface.rs"), /updater[-_ ]?relay|updaterRelay/i);
+});
+
+test("an unchanged tray status is the same, and each field change is not (WF-2)", () => {
+  const base = { ...DEFAULT_BROKER_TRAY_STATUS };
+  assert.equal(sameBrokerTrayStatus(base, { ...base }), true);
+  const changes = [
+    { trayEnabled: !base.trayEnabled }, { idleDisconnectMinutes: null }, { trayRunning: !base.trayRunning },
+    { trayStopping: !base.trayStopping }, { updaterRelayEnabled: !base.updaterRelayEnabled }, { lastError: "boom" }
+  ];
+  for (const change of changes) assert.equal(sameBrokerTrayStatus(base, { ...base, ...change }), false, JSON.stringify(change));
 });
