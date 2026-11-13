@@ -37,8 +37,10 @@ jobs:
       # Master and manual builds run both lanes for both architectures.
       matrix:
         include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"lane":"tests","target":"aarch64-apple-darwin"},{"lane":"package","target":"x86_64-apple-darwin"}]' || '[{"lane":"tests","target":"aarch64-apple-darwin"},{"lane":"tests","target":"x86_64-apple-darwin"},{"lane":"package","target":"aarch64-apple-darwin"},{"lane":"package","target":"x86_64-apple-darwin"}]') }}
-    runs-on: qc-remote-macmini
-    timeout-minutes: 40
+    # Use a GitHub-hosted Apple Silicon runner. It runs x86_64 test and broker
+    # self-check binaries under Rosetta, matching the intended build layout.
+    runs-on: macos-15
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -66,13 +68,8 @@ jobs:
       # never re-saves a key that restored as a full match, so the x86_64 tests
       # cache saved by a run that failed in its first cargo step lacked every
       # Tauri dependency and made each later run recompile 336 crates.
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          workspaces: |
-            . -> target
-            apps/windows/src-tauri -> ../../../target
-          key: macos-${{ matrix.target }}-${{ matrix.lane }}
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # Keep this one-off release build isolated from the runner's restored
+      # Cargo target cache; stale sidecar copies can block Tauri packaging.
       - name: Test installer error recovery
         if: matrix.lane == 'package'
         run: node --test scripts/package-macos-ci.test.mjs
@@ -125,7 +122,7 @@ jobs:
         run: cargo test --locked --manifest-path Cargo.toml -p qc-native-platform --features macos-app-store --target ${{ matrix.target }} -- --test-threads=1
       - name: Build and stage the macOS broker sidecar
         if: matrix.lane == 'package'
-        timeout-minutes: 20
+        timeout-minutes: 35
         run: |
           cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.target }}
           "$CARGO_TARGET_DIR"/${{ matrix.target }}/release/qc-device-broker --self-check
@@ -137,7 +134,10 @@ jobs:
       - name: Build the macOS app and broker
         if: matrix.lane == 'package'
         timeout-minutes: 20
-        run: npm run tauri:build:mac -- --target ${{ matrix.target }} --bundles app --verbose
+        # The broker is already packaged as a nested app resource on macOS;
+        # suppress the generic externalBin copy to avoid its stale-file replace.
+        run: |
+          npm run tauri:build:mac -- --target ${{ matrix.target }} --bundles app --verbose --config '{"bundle":{"externalBin":[]}}'
         working-directory: apps/windows
         env:
           QC_MACOS_TARGET: ${{ matrix.target }}
