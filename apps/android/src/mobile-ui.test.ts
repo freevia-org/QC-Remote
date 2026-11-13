@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { startRelayReportingFailure } from "./relay-start.ts";
 import { retainStartupFailure, startupFailureReport } from "./android-startup-failure.ts";
+import { formatUsbDiagnosticsReport } from "./usb-diagnostics-report.ts";
 import { createAndroidTargetIntent } from "./android-target-intent.ts";
 import { advanceUsbConnectionProgress } from "./usb-connection-progress.ts";
 
@@ -472,4 +473,25 @@ test("state-only relay events cannot confirm stale MCP permissions after an ambi
   assert.equal(current.verified, true);
   assert.equal(current.view.disabled, false);
   assert.equal(current.view.readout, "full");
+});
+
+test("copied USB diagnostics keep the fields that tell failure causes apart and no content", () => {
+  const entries = Array.from({ length: 100 }, (_, index) => ({ atUnixMs: index, processId: 1, event: `event-${index}`, ...(index % 2 ? { messageType: 35 } : {}) }));
+  const text = formatUsbDiagnosticsReport({
+    phase: "syncing", sessionEpoch: 3, messagesReceived: 14, messagesSent: 8, decodeErrors: 0, expectedWriteStalls: 8,
+    messagesReceivedByType: { "35": 1, "52": 2 }, messagesSentByType: { "10": 1 },
+    lastHidWriteResult: -1, lastHidWriteDurationMs: 3, maxHidWriteDurationMs: 9, lastHidWriteIncludedReportId: true,
+    inputMaxPacketSize: 64, readerRequestCount: 32, lastReaderError: "boom",
+    lastStartupFailure: "startup phase=initializing; type 35 empty-statistics payloadBytes=2", lastStartupFailureSessionEpoch: 3,
+    flightRecorder: { version: 1, entries }, presetName: "SECRET PRESET", device: "My Quad Cortex"
+  } as never);
+  assert.match(text, /^USB diagnostics data: \{/);
+  const data = JSON.parse(text.slice("USB diagnostics data: ".length));
+  assert.deepEqual(data.messagesReceivedByType, { "35": 1, "52": 2 });
+  assert.equal(data.maxHidWriteDurationMs, 9);
+  assert.equal(data.lastHidWriteIncludedReportId, true);
+  assert.match(data.lastStartupFailure, /empty-statistics payloadBytes=2/);
+  assert.equal(data.flight.length, 60);
+  assert.equal(data.flight.at(-1).event, "event-99");
+  assert.doesNotMatch(text, /SECRET PRESET|My Quad Cortex/);
 });

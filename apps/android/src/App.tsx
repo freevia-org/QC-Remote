@@ -23,6 +23,7 @@ import { mobileIndicatorConnection, refreshMobileTarget } from "./mobile-target-
 import { retainStartupFailure, startupFailureReport, type AndroidStartupFailure } from "./android-startup-failure.ts";
 import { createAndroidTargetIntent, type AndroidTargetSource } from "./android-target-intent.ts";
 import { advanceUsbConnectionProgress } from "./usb-connection-progress.ts";
+import { formatUsbDiagnosticsReport } from "./usb-diagnostics-report.ts";
 import appPackage from "../package.json";
 import { qcStreamRestartClearsBulkOperation } from "@qc-remote/ui";
 
@@ -203,6 +204,8 @@ export function App({ appVersion = appPackage.version, appBuildNumber }: { appVe
   const [workflowPanel, setWorkflowPanel] = useState<"usb" | "remote" | "about" | "display" | "privacy" | "legal" | "notices" | null>(null);
   const [usbPanelDetail, setUsbPanelDetail] = useState(iosPlatform ? "Checking remote host status…" : "Checking direct USB status…");
   const [lastStartupFailure, setLastStartupFailure] = useState<AndroidStartupFailure | null>(null);
+  // Raw, payload-free counters from the latest diagnostics read, for "Copy diagnostics" only.
+  const usbDiagnosticsData = useRef("");
   const screenDestination = useQcScreenDestination();
   const mobileScreenView = screenDestination.view;
   const setMobileScreenView = screenDestination.setView;
@@ -816,6 +819,7 @@ export function App({ appVersion = appPackage.version, appBuildNumber }: { appVe
     if (!native) return "USB diagnostics are available in the installed Android app.";
     const runtimeDiagnostics = await androidUsbRuntimeDiagnostics();
     const result = runtimeDiagnostics.android;
+    usbDiagnosticsData.current = formatUsbDiagnosticsReport(result);
     const traffic = `${result.messagesReceived} received / ${result.messagesSent} sent`;
     const last = result.lastMessageType >= 0 ? `; last message type ${result.lastMessageType}` : "";
     const errors = result.decodeErrors ? `; ${result.decodeErrors} decode error${result.decodeErrors === 1 ? "" : "s"}` : "";
@@ -835,7 +839,7 @@ export function App({ appVersion = appPackage.version, appBuildNumber }: { appVe
   const copyUsbDiagnostics = async () => {
     try {
       // Copy the displayed report; do not trigger a device or relay request.
-      await navigator.clipboard.writeText([usbPanelDetail, startupFailureReport(lastStartupFailure)].filter(Boolean).join("\n"));
+      await navigator.clipboard.writeText([usbPanelDetail, startupFailureReport(lastStartupFailure), usbDiagnosticsData.current].filter(Boolean).join("\n"));
       if (appOperationMounted.current) setNotice("Connection diagnostics copied.");
     } catch {
       if (appOperationMounted.current) setNotice("Could not copy connection diagnostics. Select the status text to copy it manually.");
