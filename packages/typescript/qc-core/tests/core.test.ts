@@ -3,9 +3,9 @@ import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import type { BlockDetails } from "../../qc-client/src/index.ts";
 import { demoSnapshot } from "../src/device-reference/demo-snapshot.ts";
-import { blockSelectionIntent, emptyBlockEditorSession, parameterDrafts, reduceBlockEditorSession, updateBlockParameter } from "../src/editor.ts";
+import { blockSelectionIntent, emptyBlockEditorSession, parameterDrafts, reduceBlockEditorSession, updateBlockParameters } from "../src/editor.ts";
 import { applyFootswitchPreview, footswitchIntent, footswitchLeds, optimisticallyPressFootswitch } from "../src/footswitch.ts";
-import { applyQcStateUpdate, applyQcStateUpdates, canAdoptNativeState, clearPendingBypassChanges, markPendingBypass, movePresetInSnapshot, reconcilePendingBypass, reconcilePresetSnapshot, reconcileQcStateUpdates, recordPendingBypassChanges, reduceQcStateFrame, selectModeSlotInSnapshot, setBlockBypassInSnapshot, setTempoInSnapshot, type PendingBypassIntents } from "../src/state.ts";
+import { applyQcStateUpdate, applyQcStateUpdates, canAdoptNativeState, movePresetInSnapshot, reconcilePendingBypass, reconcilePresetSnapshot, reduceQcStateFrame, selectModeSlotInSnapshot, setBlockBypassInSnapshot, setTempoInSnapshot, type PendingBypassIntents } from "../src/state.ts";
 import { dispatchSurfaceCommand, surfaceCommand } from "../src/surface-actions.ts";
 import type { ModelPresetCatalogState, ModelPresetSummary } from "../../qc-client/src/index.ts";
 import { buildWorkspaceDocument, saveWorkspaceDocument, type WorkspaceWriter } from "../src/workspace-save.ts";
@@ -215,8 +215,8 @@ test("native MIDI settings replace the matching preset projections", () => {
 
 test("new optimistic bypass intent cannot be rolled back by an older device echo", () => {
   const pending = new Map();
-  markPendingBypass(pending, 0, 1, true, 1_000);
-  markPendingBypass(pending, 0, 1, false, 1_050);
+  pending.set("0:1", { bypassed: true, issuedAt: 1_000 });
+  pending.set("0:1", { bypassed: false, issuedAt: 1_050 });
 
   const stale = reconcilePendingBypass({ kind: "bypassBatch", bypassUpdates: [{ row: 0, column: 1, bypassed: true }] }, pending, 1_100);
   assert.equal(stale, null);
@@ -226,7 +226,7 @@ test("new optimistic bypass intent cannot be rolled back by an older device echo
   assert.deepEqual(acknowledgement, { kind: "bypassBatch", bypassUpdates: [{ row: 0, column: 1, bypassed: false }] });
   assert.equal(pending.size, 0);
 
-  markPendingBypass(pending, 0, 1, true, 2_000);
+  pending.set("0:1", { bypassed: true, issuedAt: 2_000 });
   const enriched = reconcilePendingBypass({
     kind: "preset",
     catalogRefresh: true,
@@ -238,7 +238,7 @@ test("new optimistic bypass intent cannot be rolled back by an older device echo
 
 test("a full snapshot that started before a rapid second tap cannot acknowledge its ABA state", () => {
   const pending: PendingBypassIntents = new Map();
-  markPendingBypass(pending, 0, 0, false, 200);
+  pending.set("0:0", { bypassed: false, issuedAt: 200 });
   const stale = reconcilePendingBypass(
     { kind: "preset", blocks: [{ id: "drive", name: "Drive", kind: "utility", row: 0, column: 0, bypassed: false }] },
     pending,
@@ -261,30 +261,30 @@ test("a full snapshot that started before a rapid second tap cannot acknowledge 
 });
 
 test("native frame batching and optimistic bypass bookkeeping are shared", () => {
-  const pending: PendingBypassIntents = new Map();
+  const coordinator = new QcCommandCoordinator();
   const before = { ...demoSnapshot, blocks: [{ ...demoSnapshot.blocks[0], row: 0, column: 0, bypassed: false }] };
-  const after = { ...before, blocks: [{ ...before.blocks[0], bypassed: true }] };
-  const changed = recordPendingBypassChanges(before, after, pending, 1_000);
-  assert.deepEqual(changed, ["0:0"]);
+  const command = coordinator.beginBypass(before, before.blocks[0].id, true, 1_000);
+  assert.equal(command.snapshot.blocks[0].bypassed, true);
+  assert.equal(coordinator.hasPendingCommands, true);
 
-  const states = reconcileQcStateUpdates([
+  const frame = coordinator.reconcileFrame(command.snapshot, [
     { kind: "bypass", row: 0, column: 0, bypassed: false, observedAt: 900 },
     { kind: "tempo", tempo: 132, observedAt: 1_010 }
-  ], pending, 1_020);
-  const applied = applyQcStateUpdates(after, states);
-  assert.equal(applied.blocks[0].bypassed, true, "a pre-command device echo must be suppressed");
-  assert.equal(applied.tempo, 132);
-  assert.equal(pending.size, 1);
+  ], 1_020);
+  assert.equal(frame.snapshot.blocks[0].bypassed, true, "a pre-command device echo must be suppressed");
+  assert.equal(frame.snapshot.tempo, 132);
+  assert.equal(coordinator.hasPendingCommands, true);
 
-  clearPendingBypassChanges(pending, changed, 999);
-  assert.equal(pending.size, 1, "an older failure must not clear a newer intent");
-  clearPendingBypassChanges(pending, changed, 1_000);
-  assert.equal(pending.size, 0);
+  const newer = coordinator.beginBypass(frame.snapshot, before.blocks[0].id, false, 1_030);
+  coordinator.fail(newer.snapshot, command.token);
+  assert.equal(coordinator.hasPendingCommands, true, "an older failure must not clear a newer intent");
+  coordinator.fail(newer.snapshot, newer.token);
+  assert.equal(coordinator.hasPendingCommands, false);
 });
 
 test("native frames and slow complete reads use shared stale-echo reduction", () => {
   const pending: PendingBypassIntents = new Map();
-  markPendingBypass(pending, 0, 0, true, 1_000);
+  pending.set("0:0", { bypassed: true, issuedAt: 1_000 });
   const before = { ...demoSnapshot, blocks: [{ ...demoSnapshot.blocks[0], row: 0, column: 0, bypassed: true }] };
   const reduced = reduceQcStateFrame(before, [
     { kind: "bypass", row: 0, column: 0, bypassed: false, observedAt: 900 },
@@ -508,7 +508,7 @@ test("parameter editor helpers share open-close and draft rules", () => {
     ] as unknown as BlockDetails["parameters"]
   };
   assert.deepEqual(parameterDrafts(details), { 0: 0.5 });
-  assert.equal(updateBlockParameter(details, 0, 0.75).parameters[0].normalizedValue, 0.75);
+  assert.equal(updateBlockParameters(details, { 0: 0.75 }).parameters[0].normalizedValue, 0.75);
   assert.equal(blockSelectionIntent("amp", "amp"), "close");
   assert.equal(blockSelectionIntent("amp", "cab"), "open");
 

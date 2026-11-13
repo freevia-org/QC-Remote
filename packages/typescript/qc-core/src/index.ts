@@ -1,11 +1,11 @@
-export { adjacentPresetPosition, presetBoundaryDetail, applyQcStateUpdate, applyQcStateUpdates, bypassAddress, clearPendingBypassChanges, markPendingBypass, movePresetInSnapshot, presetLocationLabel, reconcilePendingBypass, reconcilePresetSnapshot, reconcileQcStateUpdates, recordPendingBypassChanges, reduceQcStateFrame, sceneLetter, selectModeSlotInSnapshot, selectSceneInSnapshot, setBlockBypassInSnapshot, setTempoInSnapshot, type PendingBypassIntent, type PendingBypassIntents, type QcStateUpdate } from "./state.ts";
+export { adjacentPresetPosition, presetBoundaryDetail, applyQcStateUpdate, applyQcStateUpdates, bypassAddress, movePresetInSnapshot, presetLocationLabel, reconcilePendingBypass, reconcilePresetSnapshot, reconcileQcStateUpdates, reduceQcStateFrame, sceneLetter, selectModeSlotInSnapshot, selectSceneInSnapshot, setBlockBypassInSnapshot, setTempoInSnapshot, type PendingBypassIntent, type PendingBypassIntents, type QcStateUpdate } from "./state.ts";
 export { recordTempoTap, synchronizeTempoPulseEpoch, type TapTempoResult } from "./tempo.ts";
 export { canAdoptNativeState, modeSlotIsActive } from "./state.ts";
 export { buildWorkspaceDocument, saveWorkspaceDocument, type WorkspaceWriter } from "./workspace-save.ts";
 export { admitGlobalEqPreset, adoptModelPresetCatalog, globalEqPresetsFor, globalEqPresetsFrom, globalEqUnavailableNotice, withoutModelPresetCatalog, type GlobalEqPresets, type GlobalEqPresetsUnavailable } from "./model-preset-catalog.ts";
 export { samePresetAddress, trimTrailingSlashes, type PresetAddress } from "./preset-address.ts";
 export { DeviceMutationAdmission, PresetLifetime, SupersededPresetOperation, type DeviceMutationLease, type PresetOperation } from "./preset-lifetime.ts";
-export { blockSelectionIntent, emptyBlockEditorSession, laneControlSelectionId, parameterDrafts, parseLaneControlSelectionId, reduceBlockEditorSession, updateBlockParameter, updateBlockParameters, type BlockEditorSession, type BlockEditorSessionAction } from "./editor.ts";
+export { blockSelectionIntent, emptyBlockEditorSession, laneControlSelectionId, parameterDrafts, parseLaneControlSelectionId, reduceBlockEditorSession, updateBlockParameters, type BlockEditorSession, type BlockEditorSessionAction } from "./editor.ts";
 export { dispatchSurfaceCommand, surfaceCommand, type QcSurfaceAction, type QcSurfaceCommand, type QcSurfaceCommandHandlers } from "./surface-actions.ts";
 export { applyFootswitchPreview, footswitchIntent, footswitchLeds, hybridModeIndex, optimisticallyPressFootswitch, type FootswitchIntent, type FootswitchLed, type QcStompPreviewPolicy } from "./footswitch.ts";
 export { SHARED_QC_ACCESS_MODES, SHARED_QC_ACTIONS, type SharedQcActionName, type SharedQcAccessMode } from "./generated-actions.ts";
