@@ -4,8 +4,8 @@ import { exposeDesktopDemo, observeDemoBrokerInstance } from "./demo-broker.ts";
 import { demoRegistrationNeverAttempted, observeDemoSelectionHold } from "./demo-broker-lifecycle.ts";
 import relayProfile from "../../../contracts/public/qc-relay-profile.v1.json";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { type ConnectionState, type DeviceActionResult, type DiagnosticsReport, type PresetSnapshot, type RuntimeStatus, type WorkspaceDocument } from "@qc-remote/client";
-import { modeSlotIsActive, demoBlockDetails, demoSnapshot, sceneLetter, SupersededPresetOperation, saveWorkspaceDocument, type ControlAccessMode, type PublicRelayConnector } from "@qc-remote/core";
+import { type ConnectionState, type DiagnosticsReport, type RuntimeStatus, type WorkspaceDocument } from "@qc-remote/client";
+import { modeSlotIsActive, demoSnapshot, sceneLetter, SupersededPresetOperation, saveWorkspaceDocument, type ControlAccessMode, type PublicRelayConnector } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND } from "@qc-remote/theme";
 import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, readControlAccessMode, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, useQcFollowSetting, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist } from "@qc-remote/ui";
@@ -15,14 +15,14 @@ import { createWindowsQcTransport } from "./qc-transport";
 import { useWindowsDeviceFrames } from "./use-windows-device-frames";
 import { useWindowsPrompts } from "./use-windows-prompts";
 import { BROWSER_PAIRING_EXPIRED, beginBrowserPairingOnPanelOpen, browserPairingPollFailureMessage, createBrowserPairingSession, startBrowserPairingLifecycle } from "./browser-pairing-session";
-import { shouldCloseBlockEditorOnEscape } from "./block-editor-keyboard";
+import { isPlainGridKey, shouldCloseBlockEditorOnEscape } from "./block-editor-keyboard";
 import { appendConnectionEvent, DIAGNOSTICS_EVENT_COUNT } from "./connection-events";
 import { connectorsNeedRefreshAfter, runConnectorUnlink, type ConnectorUnlinkOutcome } from "./relay-connectors";
 import { saveOpenedWorkspaceCopy } from "./workspace-copy";
 import { captureGatewaySession } from "@qc-remote/ui";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
 import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegrationPresentation, claudeExtensionPresentation, lmStudioAppName, lmStudioEnableSwitch, localAccessNotice, localActionFailure, localPairOutcome, managedMcpIntegrationPresentation, type LocalActionOutcome } from "./local-integration-presentation";
-import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, qcBackgroundDeviceLive, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, waitForSynchronizedQc, qcReconcilePhysicalDevices, qcKeepRuntime, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
+import { isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, qcBackgroundDeviceLive, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, waitForSynchronizedQc, qcReconcilePhysicalDevices, qcKeepRuntime, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
 import { DEFAULT_BROKER_TRAY_STATUS, sameBrokerTrayStatus, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
 import { callTauri, withTimeout } from "./tauri-invoke.ts";
@@ -135,6 +135,13 @@ export function App() {
   const [otherMcpStatusRefreshFailed, setOtherMcpStatusRefreshFailed] = useState(false);
   const [localPanelOpen, setLocalPanelOpen] = useState(false);
   const [localIntegrationAction, setLocalIntegrationAction] = useState<"claude" | "chatgpt" | "remove-chatgpt" | "antigravity" | "remove-antigravity" | "lm-studio" | "remove-lm-studio" | "jan" | "remove-jan" | "other" | null>(null);
+  // The single-flight guard reads this ref, which is set in the same tick as the click;
+  // the state above is for drawing and is stale until the next render.
+  const localActionRef = useRef<typeof localIntegrationAction>(null);
+  const setLocalAction = useCallback((action: typeof localIntegrationAction) => {
+    localActionRef.current = action;
+    setLocalIntegrationAction(action);
+  }, []);
   // Every LOCAL result is reported twice: once inside the provider card the
   // user is looking at, and once in the status strip that mirrors it.
   const [localAccessStatus, setLocalAccessStatus] = useState<LocalAccessStatus>();
@@ -1215,6 +1222,8 @@ export function App() {
         return;
       }
       if (/^[1-8]$/.test(event.key)) event.ctrlKey ? void chooseScene(Number(event.key) - 1) : void pressFootswitch(Number(event.key) - 1);
+      // The remaining Grid keys are plain keys: Ctrl+B, Ctrl+T and the like belong to the host.
+      if (!isPlainGridKey(event)) return;
       if (event.key === "[") void navigateBank(-1);
       if (event.key === "]") void navigateBank(1);
       if (event.key.toLowerCase() === "t") event.shiftKey ? void deviceViews.open("tuner") : tapTempo();
@@ -2802,9 +2811,9 @@ export function App() {
    * approval instruction.
    */
   const installClaudeDesktopExtension = async () => {
-    if (localIntegrationAction) return;
+    if (localActionRef.current) return;
     const updatingInstalledExtension = Boolean(claudeExtensionStatus?.installedVersion);
-    setLocalIntegrationAction("claude");
+    setLocalAction("claude");
     setClaudeApprovalLapsed(false);
     beginLocal(updatingInstalledExtension
       ? "Updating the QC Remote extension in Claude Desktop…"
@@ -2826,7 +2835,7 @@ export function App() {
     } catch (error) {
       failLocal("Claude Desktop", error, claudeRetryLabel());
     } finally {
-      setLocalIntegrationAction(null);
+      setLocalAction(null);
     }
   };
 
@@ -2868,9 +2877,9 @@ export function App() {
   };
 
   const installChatgptLocalIntegration = async () => {
-    if (localIntegrationAction) return;
+    if (localActionRef.current) return;
     const retry = chatgptRetryLabel();
-    setLocalIntegrationAction("chatgpt");
+    setLocalAction("chatgpt");
     beginLocal("Pairing ChatGPT / Codex…");
     try {
       const result = await localClientPackages.installChatgpt();
@@ -2892,13 +2901,13 @@ export function App() {
     } catch (error) {
       failLocal("ChatGPT", error, retry);
     } finally {
-      setLocalIntegrationAction(null);
+      setLocalAction(null);
     }
   };
 
   const removeChatgptLocalIntegration = async () => {
-    if (localIntegrationAction) return false;
-    setLocalIntegrationAction("remove-chatgpt");
+    if (localActionRef.current) return false;
+    setLocalAction("remove-chatgpt");
     beginLocal("Unpairing ChatGPT / Codex…");
     try {
       const result = await localClientPackages.removeChatgpt();
@@ -2922,7 +2931,7 @@ export function App() {
       failLocal("ChatGPT", error, "Unpair");
       return false;
     } finally {
-      setLocalIntegrationAction(null);
+      setLocalAction(null);
     }
   };
 
@@ -2981,9 +2990,9 @@ export function App() {
   };
 
   const installAntigravityLocalIntegration = async () => {
-    if (localIntegrationAction) return;
+    if (localActionRef.current) return;
     const retry = antigravityRetryLabel();
-    setLocalIntegrationAction("antigravity");
+    setLocalAction("antigravity");
     beginLocal("Pairing Google Antigravity…");
     try {
       const result = await localClientPackages.installAntigravity();
@@ -3002,13 +3011,13 @@ export function App() {
     } catch (error) {
       failLocal("Google Antigravity", error, retry);
     } finally {
-      setLocalIntegrationAction(null);
+      setLocalAction(null);
     }
   };
 
   const removeAntigravityLocalIntegration = async () => {
-    if (localIntegrationAction) return false;
-    setLocalIntegrationAction("remove-antigravity");
+    if (localActionRef.current) return false;
+    setLocalAction("remove-antigravity");
     beginLocal("Unpairing Google Antigravity…");
     try {
       await localClientPackages.removeAntigravity();
@@ -3019,7 +3028,7 @@ export function App() {
       failLocal("Google Antigravity", error, "Unpair");
       return false;
     } finally {
-      setLocalIntegrationAction(null);
+      setLocalAction(null);
     }
   };
 
@@ -3034,9 +3043,9 @@ export function App() {
   };
 
   const installLmStudioLocalIntegration = async () => {
-    if (localIntegrationAction) return;
+    if (localActionRef.current) return;
     const retry = lmStudioRetryLabel();
-    setLocalIntegrationAction("lm-studio");
+    setLocalAction("lm-studio");
     beginLocal(`Pairing ${lmStudioName}…`);
     try {
       const result = await localClientPackages.installLmStudio();
@@ -3056,13 +3065,13 @@ export function App() {
     } catch (error) {
       failLocal(lmStudioName, error, retry);
     } finally {
-      setLocalIntegrationAction(null);
+      setLocalAction(null);
     }
   };
 
   const removeLmStudioLocalIntegration = async () => {
-    if (localIntegrationAction) return false;
-    setLocalIntegrationAction("remove-lm-studio");
+    if (localActionRef.current) return false;
+    setLocalAction("remove-lm-studio");
     beginLocal(`Unpairing ${lmStudioName}…`);
     try {
       await localClientPackages.removeLmStudio();
@@ -3073,7 +3082,7 @@ export function App() {
       failLocal(lmStudioName, error, "Unpair");
       return false;
     } finally {
-      setLocalIntegrationAction(null);
+      setLocalAction(null);
     }
   };
 
@@ -3109,9 +3118,9 @@ export function App() {
   };
 
   const installJanLocalIntegration = async () => {
-    if (localIntegrationAction) return;
+    if (localActionRef.current) return;
     const retry = janRetryLabel();
-    setLocalIntegrationAction("jan");
+    setLocalAction("jan");
     beginLocal("Pairing Jan…");
     try {
       const result = await localClientPackages.installJan();
@@ -3123,13 +3132,13 @@ export function App() {
     } catch (error) {
       failLocal("Jan", error, retry);
     } finally {
-      setLocalIntegrationAction(null);
+      setLocalAction(null);
     }
   };
 
   const removeJanLocalIntegration = async () => {
-    if (localIntegrationAction) return false;
-    setLocalIntegrationAction("remove-jan");
+    if (localActionRef.current) return false;
+    setLocalAction("remove-jan");
     beginLocal("Unpairing Jan…");
     try {
       await localClientPackages.removeJan();
@@ -3140,7 +3149,7 @@ export function App() {
       failLocal("Jan", error, "Unpair");
       return false;
     } finally {
-      setLocalIntegrationAction(null);
+      setLocalAction(null);
     }
   };
 
@@ -3164,8 +3173,8 @@ export function App() {
   };
 
   const copyOtherMcpSetup = async () => {
-    if (localIntegrationAction) return;
-    setLocalIntegrationAction("other");
+    if (localActionRef.current) return;
+    setLocalAction("other");
     beginLocal("Copying the STDIO connection…");
     try {
       const setup = await localClientPackages.otherMcpStdioSetup();
@@ -3179,7 +3188,7 @@ export function App() {
         detail: error instanceof Error ? error.message : String(error)
       });
     } finally {
-      setLocalIntegrationAction(null);
+      setLocalAction(null);
     }
   };
 
@@ -3289,7 +3298,7 @@ export function App() {
       case "select-mode-2": void chooseModeSlot(2); break;
       case "export-preset-library": setNotice("Preset-library export will use untouched native .pb files; the raw-file transfer is not enabled yet."); break;
       case "device-backup": void createDeviceBackup(); break;
-      case "toggle-fullscreen": void (document.fullscreenElement ? document.exitFullscreen?.() : document.documentElement.requestFullscreen?.()); break;
+      case "toggle-fullscreen": void Promise.resolve(document.fullscreenElement ? document.exitFullscreen?.() : document.documentElement.requestFullscreen?.()).catch(actionFailed); break;
       case "undo": void undoLastAction(); break;
       case "redo": void redoLastAction(); break;
       case "copy-preset": copyCurrentPreset(); break;
@@ -3300,7 +3309,7 @@ export function App() {
       case "paste-setlist": void pasteSetlist(); break;
       case "copy-block-settings": void copySelectedBlockSettings(); break;
       case "paste-block-settings": void pasteSelectedBlockSettings(); break;
-      case "exit": void exitApp(); break;
+      case "exit": void exitApp().catch(actionFailed); break;
       default: item satisfies never;
     }
   };

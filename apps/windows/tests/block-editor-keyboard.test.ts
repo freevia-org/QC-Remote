@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { shouldCloseBlockEditorOnEscape } from "../src/block-editor-keyboard.ts";
+import { isPlainGridKey, shouldCloseBlockEditorOnEscape } from "../src/block-editor-keyboard.ts";
 
 const escape = (scope: string | null, defaultPrevented = false) => ({
   key: "Escape",
@@ -34,4 +34,23 @@ test("the app routes Escape to the block editor before focused-control filters",
   assert.ok(app.indexOf("if (appMenuOpen || sceneWorkflow.command") < route, "application-level surfaces retain first refusal");
   assert.ok(route < textFilter, "Escape is handled before input/button focus exclusions");
   assert.match(app.slice(route, textFilter), /parameterWorkflow\.cancel\(\)[\s\S]*gridWorkflow\.closeOnDevice\(\)/);
+});
+
+test("Grid single keys ignore Ctrl, Meta and Alt chords but accept Shift (WF-17)", () => {
+  assert.equal(isPlainGridKey({ ctrlKey: false, metaKey: false, altKey: false }), true);
+  for (const chord of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }]) {
+    assert.equal(isPlainGridKey({ ctrlKey: false, metaKey: false, altKey: false, ...chord }), false);
+  }
+  assert.equal(isPlainGridKey({ ctrlKey: false, metaKey: false, altKey: false, shiftKey: true } as never), true, "Shift+T still opens the Tuner");
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const gate = app.indexOf("if (!isPlainGridKey(event)) return;");
+  assert.ok(gate > app.indexOf("event.ctrlKey ? void chooseScene") && gate < app.indexOf('if (event.key === "[")'), "after the Ctrl+digit scene shortcut, before the plain keys");
+});
+
+test("single-flight LOCAL actions guard on a synchronously set ref, and exit/fullscreen report refusals (WF-17)", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(app, /if \(localIntegrationAction\) return/);
+  assert.equal((app.match(/if \(localActionRef\.current\) return/g) ?? []).length, 10);
+  assert.match(app, /void exitApp\(\)\.catch\(actionFailed\)/);
+  assert.match(app, /requestFullscreen\?\.\(\)\)\.catch\(actionFailed\)/);
 });
