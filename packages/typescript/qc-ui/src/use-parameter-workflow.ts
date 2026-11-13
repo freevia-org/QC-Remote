@@ -389,7 +389,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       return clock.current;
     }
     if (batchRunning.current) return clock.current;
-    if (!mounted.current || batchRunning.current) return -1;
+    if (!mounted.current) return -1;
     const existingHold = hold.current;
     if (connected && !reserveHold()) return -1;
     try {

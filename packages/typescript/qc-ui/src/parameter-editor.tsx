@@ -905,7 +905,7 @@ function CorOsParameterEditorSession(props: CorOsParameterEditorProps) {
       const next = (current[slot] + 1) % LOOPER_X_ASSIGNMENT_INDEX_NAMES.length;
       const other = current.indexOf(next);
       const copy = [...current];
-      copy[other] = copy[slot];
+      if (other >= 0) copy[other] = copy[slot];
       copy[slot] = next;
       return copy;
     });

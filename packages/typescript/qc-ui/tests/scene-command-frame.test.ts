@@ -22,7 +22,7 @@ test("a captured frame of the Copy or Swap Scene dialog is read by the browser's
     const { build } = await import("esbuild");
     const bundled = await build({ entryPoints: [join(uiSource, "scene-command-reader.ts")], bundle: true, format: "iife", globalName: "Reader", platform: "browser", write: false, logLevel: "error" });
     const page = join(work.path, "reader.html");
-    writeFileSync(page, `<!doctype html><html><head><meta charset="utf-8"><script>${bundled.outputFiles[0].text.replace(/<\/script/gi, "<\/script")}</script></head><body></body></html>`);
+    writeFileSync(page, `<!doctype html><html><head><meta charset="utf-8"><script>${bundled.outputFiles[0].text.replace(/<\/script/gi, "<\\/script")}</script></head><body></body></html>`);
     const frames = { copy: greyPngBase64(800, 480, titleFrame("copy", 341)), swap: greyPngBase64(800, 480, titleFrame("swap", 335)), none: greyPngBase64(800, 480, titleFrame("none")), grid: greyPngBase64(800, 480, titleFrame("swap", 339, false)), small: greyPngBase64(400, 240, new Uint8Array(400 * 240)) };
     const read = await withBrowser(browser, work.path, [], async (open) => open([1000, 700], pathToFileURL(page).href, `(async () => {
       const frames = ${JSON.stringify(frames)};

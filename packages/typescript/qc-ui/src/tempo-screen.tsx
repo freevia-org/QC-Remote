@@ -168,7 +168,7 @@ function CorOsTempoSession({ workflow, snapshot, queueTempo, onSelectScene, onCl
       <section className="coros-tempo" aria-label="Tempo and Metronome" data-qc-open-target="tempo" tabIndex={-1} onKeyDown={(event) => escapeUserOpenedTarget(event, onClose, workflow.returnFocusTarget)}>
         <header>
           <span>Tempo</span>
-          <QcSceneSelector className="tempo-scene" letter={sceneLetter(snapshot.activeScene)} onPrevious={() => onSelectScene((snapshot.activeScene - 1 + snapshot.scenes.length) % snapshot.scenes.length)} onNext={() => onSelectScene((snapshot.activeScene + 1) % snapshot.scenes.length)} />
+          <QcSceneSelector className="tempo-scene" letter={sceneLetter(snapshot.activeScene)} onPrevious={() => onSelectScene((snapshot.activeScene - 1 + Math.max(1, snapshot.scenes.length)) % Math.max(1, snapshot.scenes.length))} onNext={() => onSelectScene((snapshot.activeScene + 1) % Math.max(1, snapshot.scenes.length))} />
           <button type="button" aria-label="Close Tempo and Metronome" onClick={(event) => closeUserOpenedTarget(event.currentTarget, onClose, workflow.returnFocusTarget)}><QcUiIcon kind="check" /></button>
         </header>
         <div className="tempo-display">
