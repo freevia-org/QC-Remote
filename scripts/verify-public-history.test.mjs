@@ -281,3 +281,25 @@ test('--head limits the range, so later commits on the branch are not examined',
     assert.equal(auditHistory({ cwd, base }).errors.length, 1);
   });
 });
+
+test('paths git would C-quote (non-ASCII, quote, backslash) are still matched', () => {
+  // Without `ls-tree -z` git prints such a path inside double quotes with octal
+  // escapes, and the quotes hide it from every anchored pattern.
+  const quoted = [
+    '.claude/notes-é.md',
+    'keys/clé.pem',
+    'dir-é/.env',
+    'contracts/private/notes – draft.json',
+  ];
+  // A double quote is not a legal Windows file name; cover it where it can exist.
+  if (process.platform !== 'win32') quoted.push('a"b/.env');
+  for (const file of quoted) {
+    withRepository(({ cwd, commit }) => {
+      const base = commit('a.txt', 'base');
+      const sha = commit(file, 'leaky');
+      const expected = [`${sha}: forbidden public path ${file}`];
+      assert.deepEqual(auditHistory({ cwd, base }).errors, expected, file);
+      assert.deepEqual(auditHistory({ cwd }).errors, expected, file);
+    });
+  }
+});

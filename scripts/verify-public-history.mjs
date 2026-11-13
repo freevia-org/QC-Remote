@@ -238,7 +238,10 @@ export function auditHistory({ cwd = defaultRepositoryRoot, base, head = 'HEAD',
       if (!isPublishedIdentityException(commit, finding)) identityFindings.push(`${commit}: ${finding}`);
     }
 
-    const paths = git(cwd, ['ls-tree', '-r', '--name-only', commit]).split(/\r?\n/).filter(Boolean);
+    // -z: without it git C-quotes any path holding a non-ASCII byte, a quote, a
+    // backslash or a control character, and the surrounding quotes defeat every
+    // anchored pattern in forbiddenPaths.
+    const paths = git(cwd, ['ls-tree', '-r', '--name-only', '-z', commit]).split('\0').filter(Boolean);
     for (const trackedPath of paths) {
       if (forbiddenPaths.some((pattern) => pattern.test(trackedPath))) {
         errors.push(`${commit}: forbidden public path ${trackedPath}`);
