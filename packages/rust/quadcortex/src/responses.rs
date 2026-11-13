@@ -10,7 +10,7 @@ mod numeric_settings_tests;
 
 use crate::{
     commands::is_tuner_reference_offset_hz,
-    compression::{maybe_gunzip, InflateError},
+    compression::{maybe_gunzip_borrowed, InflateError},
     generated_payloads::{
         ExpressionPortSettings, GeneralSettings, GlobalBypassRows, GlobalEqParameter,
         GlobalEqSettings, HeadphonesFeed, HeadphonesSettings, InputPortSettings, IoSettings,
@@ -117,8 +117,8 @@ where
     if payload.len() > crate::compression::max_delivered_payload_bytes_for(M::MESSAGE_TYPE) {
         return Err(ResponseDecodeError::OversizedReply);
     }
-    let decoded = maybe_gunzip(payload)?;
-    Ok(M::decode(decoded.as_slice())?)
+    let decoded = maybe_gunzip_borrowed(payload)?;
+    Ok(M::decode(&decoded[..])?)
 }
 
 fn require_update_action(action: i32, family: &'static str) -> Result<(), ResponseDecodeError> {
