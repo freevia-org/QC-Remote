@@ -969,3 +969,15 @@ test("a throwing preset lifetime listener does not stop observation or the other
   assert.equal(errors.mock.callCount(), 2);
   errors.mock.restore();
 });
+
+test("transport methods reject instead of throwing synchronously when the preset identity is missing", async () => {
+  const transport = createQcGatewayTransport({} as unknown as GatewayTransport, () => demoSnapshot);
+  const unidentified = { ...demoSnapshot, presetIdentity: undefined };
+  let pending: Promise<unknown> | undefined;
+  assert.doesNotThrow(() => { pending = transport.selectScene(1, unidentified); });
+  await assert.rejects(pending!);
+  assert.doesNotThrow(() => { pending = transport.setBypass(99, 99, true, unidentified); });
+  await assert.rejects(pending!, /No block exists/);
+  assert.doesNotThrow(() => { pending = transport.setTempo(120, unidentified); });
+  await assert.rejects(pending!);
+});
