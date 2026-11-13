@@ -34,9 +34,9 @@
 // The functions are exported so other tooling can apply the same rule to the
 // same manifests, including through a directory junction or symlink.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, posix, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const BASE_LICENSE_EXPRESSION = "MIT OR Apache-2.0";
 export const REFERENCE_LICENSE_REF = "LicenseRef-QC-Remote-Reference";
@@ -501,7 +501,10 @@ export function currentLicenseCarveOutErrors(root) {
   ];
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+// Compare real paths: reached through a junction or symlink, argv[1] names the
+// link while import.meta.url names the target, and an exact URL comparison
+// would skip main() and exit 0 having checked nothing.
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const errors = currentLicenseCarveOutErrors(root);
   if (errors.length) {

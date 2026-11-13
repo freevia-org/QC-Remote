@@ -49,7 +49,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -553,4 +553,5 @@ function main() {
   );
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) main();
+// Real paths, so a junction or symlink cannot make the gate exit 0 unrun.
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) main();

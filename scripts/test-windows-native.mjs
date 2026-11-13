@@ -1,8 +1,8 @@
 import { runOwnedWindowsCommand } from "./windows-owned-producer.mjs";
 import { copyFile, lstat, mkdtemp, realpath, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 // Only top-level test-helper activators are removed. Child fixtures deliberately
 // supply their own activation values; production connection/lease policy is unchanged.
@@ -213,7 +213,8 @@ function mainRoot(argv) {
   return parseRoot(argv, process.cwd());
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// Real paths, so a junction or symlink cannot make this driver exit 0 unrun.
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const rootDir = mainRoot(process.argv.slice(2));
     const result = await runWindowsNativeTests({ rootDir });
