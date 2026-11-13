@@ -3055,6 +3055,42 @@ fn a_paced_wait_longer_than_the_keepalive_interval_still_sends_the_keepalive_on_
     );
 }
 
+/// DB-3: the worker records `error` with a plain status write that publishes
+/// no state frame, so a wait that only woke on frames ran its whole timeout.
+#[test]
+fn a_ready_wait_notices_an_error_phase_without_waiting_for_a_state_frame() {
+    let controller = Arc::new(DeviceController::start_disconnected().unwrap());
+    let writer = Arc::clone(&controller);
+    let flip = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(50));
+        writer.hold_status_lock_for_test().phase = "error".into();
+    });
+    let started = Instant::now();
+    let status = controller.wait_for_ready(Duration::from_secs(10));
+    flip.join().unwrap();
+    assert_eq!(status.phase, "error");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the wait ran {:?} of its 10 s timeout",
+        started.elapsed()
+    );
+
+    // A wait that reaches ready the same way, and one that times out, both
+    // still answer.
+    controller.hold_status_lock_for_test().phase = "ready".into();
+    assert_eq!(
+        controller.wait_for_ready(Duration::from_secs(10)).phase,
+        "ready"
+    );
+    controller.hold_status_lock_for_test().phase = "searching".into();
+    let started = Instant::now();
+    assert_eq!(
+        controller.wait_for_ready(Duration::from_millis(250)).phase,
+        "searching"
+    );
+    assert!(started.elapsed() >= Duration::from_millis(250));
+}
+
 #[test]
 fn an_abandoned_session_reports_to_the_backup_caller() {
     let (_owner, backup, receiver) = started_backup(Duration::from_secs(600));

@@ -2933,10 +2933,7 @@ impl DeviceController {
             {
                 return status;
             }
-            if events
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .is_err()
-            {
+            if !wait_for_state_event(&events, deadline) {
                 return self.status();
             }
         }
@@ -2950,17 +2947,17 @@ impl DeviceController {
         let events = self.subscribe_state_events();
         let started = Instant::now();
         loop {
-            let status = self.status();
+            let phase = self.connection_scalars().phase;
             let remaining = self.gateway_read_scope_remaining(scope)?;
             let wait = timeout
                 .saturating_sub(started.elapsed())
                 .min(Duration::from_millis(remaining));
-            if status.phase == "ready" || status.phase == "error" || wait.is_zero() {
-                return Ok(status);
+            if phase == "ready" || phase == "error" || wait.is_zero() {
+                return Ok(self.status());
             }
-            if events.recv_timeout(wait).is_err() {
+            if !wait_for_state_event(&events, Instant::now() + wait) {
                 // Re-sample through the same session/deadline check even when
-                // the notification channel closes or a wait expires.
+                // the notification channel closes.
                 let status = self.status();
                 self.gateway_read_scope_remaining(scope)?;
                 return Ok(status);
@@ -2972,18 +2969,38 @@ impl DeviceController {
         let events = self.subscribe_state_events();
         let deadline = Instant::now() + timeout;
         loop {
-            let status = self.status();
-            if status.phase == "ready" || status.phase == "error" || Instant::now() >= deadline {
-                return status;
+            // The phase is the cheap scalar; the full status is built once,
+            // on the way out, rather than for every one of the roughly
+            // thousand frames a handshake publishes.
+            let phase = self.connection_scalars().phase;
+            if phase == "ready" || phase == "error" || Instant::now() >= deadline {
+                return self.status();
             }
-            if events
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .is_err()
-            {
+            if !wait_for_state_event(&events, deadline) {
                 return self.status();
             }
         }
     }
+}
+
+/// How long a wait for a phase blocks on state frames before it looks at the
+/// phase again. The worker records its phase (`error`, `searching`, ...) with a
+/// plain write that publishes no state frame, so a wait that only woke on
+/// frames did not see a phase change until its whole timeout had run out.
+const PHASE_WAIT_SLICE: Duration = Duration::from_millis(100);
+
+/// Block until a state frame arrives, `deadline` passes, or one
+/// [`PHASE_WAIT_SLICE`] has elapsed, whichever is first. `false` only when the
+/// subscription has closed; a timeout slice is `true` so the caller re-checks
+/// its condition.
+fn wait_for_state_event(events: &StateSubscription, deadline: Instant) -> bool {
+    let slice = deadline
+        .saturating_duration_since(Instant::now())
+        .min(PHASE_WAIT_SLICE);
+    !matches!(
+        events.recv_timeout(slice),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    )
 }
 
 impl DeviceController {
