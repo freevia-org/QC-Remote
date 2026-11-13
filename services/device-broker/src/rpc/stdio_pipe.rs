@@ -294,7 +294,16 @@ fn deliver(
 ) -> Result<(), String> {
     let deadline = Instant::now() + DELIVERY;
     let mut body = Limited(Vec::new());
-    serde_json::to_writer(&mut body, value).map_err(|error| error.to_string())?;
+    if let Err(error) = serde_json::to_writer(&mut body, value) {
+        // A result that does not fit one frame is answered with an error for
+        // the same request id; only a response with nothing to answer with
+        // (or a failure to write that small frame) ends the transport.
+        let Some(replacement) = super::wire::result_too_large(value) else {
+            return Err(error.to_string());
+        };
+        body = Limited(Vec::new());
+        serde_json::to_writer(&mut body, &replacement).map_err(|error| error.to_string())?;
+    }
     let (ack, answer) = mpsc::sync_channel(1);
     enqueue(sender, Frame { body: body.0, ack }, stop, deadline)?;
     answer
@@ -455,6 +464,37 @@ mod tests {
     use windows_sys::Win32::System::Pipes::CreatePipe;
     use windows_sys::Win32::System::Threading::GetThreadIOPendingFlag;
     static PIPE_FIXTURE_LOCK: Mutex<()> = Mutex::new(());
+
+    /// DB-2: an oversize result on the STDIO pipe is answered with an error
+    /// frame for the same request; it must not end the pipe service.
+    #[test]
+    fn an_oversize_stdio_result_is_answered_and_the_pipe_keeps_serving() {
+        let (frames, outgoing) = mpsc::sync_channel::<Frame>(4);
+        let consumer = thread::spawn(move || {
+            let mut bodies = Vec::new();
+            for _ in 0..2 {
+                let frame = outgoing.recv_timeout(Duration::from_secs(5)).unwrap();
+                bodies.push(frame.body);
+                frame.ack.send(Ok(())).unwrap();
+            }
+            bodies
+        });
+        let stop = AtomicBool::new(false);
+        let huge = json!({"jsonrpc":"2.0","id":9,"result":{"document":"x".repeat(domain::IPC_MAX_FRAME_BYTES)}});
+        deliver(&frames, &huge, &stop).expect("an answer, not a transport failure");
+        deliver(
+            &frames,
+            &json!({"jsonrpc":"2.0","id":10,"result":true}),
+            &stop,
+        )
+        .unwrap();
+        let bodies = consumer.join().unwrap();
+        let first: Value = serde_json::from_slice(&bodies[0]).unwrap();
+        assert_eq!(first["id"], 9);
+        assert_eq!(first["error"]["data"]["code"], "RESULT_TOO_LARGE");
+        let second: Value = serde_json::from_slice(&bodies[1]).unwrap();
+        assert_eq!(second["id"], 10);
+    }
     fn pipe() -> (File, File) {
         let mut read = std::ptr::null_mut();
         let mut write = std::ptr::null_mut();
