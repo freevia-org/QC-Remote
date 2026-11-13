@@ -164,7 +164,15 @@ fn record_initial(
     *count = count.saturating_add(1);
     let message_type = message.message_type;
     if let Err(rejection) = crate::latest_cache::insert_latest_message(latest_messages, message) {
-        eprintln!("Did not cache initialization message type {message_type}: {rejection}");
+        // `eprintln!` panics when stderr is a closed pipe; this runs on the
+        // device session thread, so a failed diagnostic must be ignored.
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!(
+                "Did not cache initialization message type {message_type}: {rejection}
+"
+            ),
+        );
     }
 }
 
@@ -532,6 +540,10 @@ struct HidIo {
     writer: Option<OwnedWriter>,
 }
 
+/// Pause after a failed native read. The consumer ends the session on the
+/// second consecutive error, so this only has to stop a busy spin.
+const READ_ERROR_RETRY_PAUSE: Duration = Duration::from_millis(10);
+
 // A complete maximum-sized logical frame fits in this queue. The queue is
 // deliberately finite: a stalled command lane must never turn sustained USB
 // input into unbounded process memory.
@@ -656,13 +668,19 @@ impl HidIo {
                                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                                 .record_reader_lock_stall(housekeeping_ms);
                         }
-                        Err(error) => match sender.try_send(HidReadEvent::Error(error)) {
-                            Ok(()) => {}
-                            Err(mpsc::TrySendError::Full(_)) => {
-                                reader_overflowed.store(true, Ordering::Release);
+                        Err(error) => {
+                            match sender.try_send(HidReadEvent::Error(error)) {
+                                Ok(()) => {}
+                                Err(mpsc::TrySendError::Full(_)) => {
+                                    reader_overflowed.store(true, Ordering::Release);
+                                }
+                                Err(mpsc::TrySendError::Disconnected(_)) => break,
                             }
-                            Err(mpsc::TrySendError::Disconnected(_)) => break,
-                        },
+                            // A removed device fails every read at once; without
+                            // a pause this thread spins and floods the queue
+                            // while the consumer is busy elsewhere.
+                            thread::sleep(READ_ERROR_RETRY_PAUSE);
+                        }
                     }
                 }
             })
@@ -1964,6 +1982,19 @@ impl Drop for QcUsb {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failing_read_pauses_long_enough_to_bound_the_error_flood() {
+        // The reader posts at most one error per pause. Over the 3 s command
+        // confirmation window that stays far below the queue capacity, and the
+        // pause is short enough not to delay the two-error session policy.
+        use super::{profile, Duration, HID_READ_QUEUE_CAPACITY, READ_ERROR_RETRY_PAUSE};
+        let per_window =
+            profile::COMMAND_CONFIRMATION_TIMEOUT_MS as u128 / READ_ERROR_RETRY_PAUSE.as_millis();
+        assert!(per_window < HID_READ_QUEUE_CAPACITY as u128 / 10);
+        assert!(READ_ERROR_RETRY_PAUSE <= Duration::from_millis(50));
+        assert!(READ_ERROR_RETRY_PAUSE >= Duration::from_millis(1));
+    }
+
     use super::{
         encode_session_reports, encrypted_label, first_supported_path, key_unusable,
         macos_device_identity, observe_initial, read_error_disposition, HidIo, HidWriteMessage,
