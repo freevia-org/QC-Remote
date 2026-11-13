@@ -2665,12 +2665,17 @@ fn save_stage(
     PresetMutationStage {
         verification: verification_for_operation(&operation, &Value::Null, None),
         write: PlannedWrite::HidOperation(operation),
-        timeout_ms: 15_000,
+        timeout_ms: SAVE_STAGE_TIMEOUT_MS,
         // The active-preset push precedes completion of the CorOS storage
         // transaction. Keep subsequent persistent commands out of that window.
-        settle_ms: 3_000,
+        settle_ms: SAVE_STAGE_SETTLE_MS,
     }
 }
+
+/// Timeout of the save stage's write, and the settle window that follows it. The save budget
+/// ceiling in preset preparation adds the same two values, so both read these constants.
+pub(crate) const SAVE_STAGE_TIMEOUT_MS: u64 = 15_000;
+pub(crate) const SAVE_STAGE_SETTLE_MS: u64 = 3_000;
 
 /// Plan persistent preset workflows once for every native host. The host owns
 /// USB scheduling and waits, while overwrite policy, stale-state guards,
@@ -4647,14 +4652,6 @@ fn operation(operation: &str, params: &Value) -> Result<DeviceOperation, String>
             }
             Ok(DeviceOperation::SetModelPinned { model_id, pinned })
         }
-        "createSetlist" | "deleteSetlist" => {
-            let name = validate_setlist_name(required_text(params, "name")?)?;
-            if operation == "createSetlist" {
-                Ok(DeviceOperation::CreateSetlist { name })
-            } else {
-                Ok(DeviceOperation::DeleteSetlist { name })
-            }
-        }
         "movePreset" => Ok(DeviceOperation::MovePreset {
             setlist_key: writable_setlist_key(params, "setlistKey")?,
             product_key: validate_library_key(required_text(params, "productKey")?, "productKey")?,
@@ -5540,14 +5537,20 @@ pub fn plan_gateway_write_with_state(
         let row = bounded_u32(params, "row", domain::GRID_ROWS - 1)?;
         let column = bounded_u32(params, "column", domain::GRID_COLUMNS + 1)?;
         let parameter_index = bounded_u32(params, "parameterIndex", u32::MAX)?;
-        let actual = state.block_details(row, column).and_then(|details| {
-            details
-                .parameters
-                .into_iter()
-                .find(|parameter| parameter.index == parameter_index)
-                .and_then(|parameter| parameter.normalized_value)
-        });
-        assert_expected_parameter(actual, params)?;
+        // Only the one parameter is materialised: a knob drag repeats this per
+        // event under the owner lock.
+        let observed = state.single_parameter_target_detail(row, column, parameter_index);
+        let actual = observed
+            .as_ref()
+            .and_then(|parameter| parameter.normalized_value);
+        // An option list is stored as index / (count - 1), so compare the
+        // selected option, exactly as the host's `setParameter` guard does.
+        let option_counts = observed
+            .as_ref()
+            .map(|parameter| parameter.options.len())
+            .filter(|count| *count >= 2)
+            .map(|count| (count, count));
+        assert_expected_parameter_with_options(actual, params, option_counts)?;
     }
     if matches!(method, "device.setParameter" | "device.previewParameter") {
         reject_sync_gated_numeric_write(params, state)?;
@@ -5620,19 +5623,17 @@ fn reject_sync_gated_numeric_write(
         return Ok(());
     }
     let parameter_index = bounded_u32(params, "parameterIndex", u32::MAX)?;
-    let Some(details) = state.block_details(row, column) else {
-        return Ok(());
-    };
-    let Some(target) = details
-        .parameters
-        .iter()
-        .find(|parameter| parameter.index == parameter_index)
-    else {
+    // The common case is an enabled control; settle it from the one parameter
+    // and build the whole block only on the disabled path.
+    let Some(target) = state.single_parameter_target_detail(row, column, parameter_index) else {
         return Ok(());
     };
     if target.enabled {
         return Ok(());
     }
+    let Some(details) = state.block_details(row, column) else {
+        return Ok(());
+    };
     let Some(gate_index) =
         state.parameter_disabled_when_sibling_on(details.model_id, parameter_index)
     else {
@@ -6083,18 +6084,15 @@ fn plan_gateway_write_inner(
             ),
             verification: GatewayVerification::None,
         },
-        "device.setFavorite"
-        | "device.setModelPinned"
-        | "device.createSetlist"
-        | "device.deleteSetlist"
-        | "device.deletePreset" => {
-            let operation_name = match method {
-                "device.setFavorite" => "setFavorite",
-                "device.setModelPinned" => "setModelPinned",
-                "device.createSetlist" => "createSetlist",
-                "device.deleteSetlist" => "deleteSetlist",
-                "device.deletePreset" => "deletePreset",
-                _ => "deletePreset",
+        // Setlist creation and deletion and preset deletion are persistent
+        // workflows (`plan_preset_mutation`): they need the fresh catalog, the
+        // active-setlist guard and an exact key match, none of which this
+        // stateless planner can supply, so they are refused here.
+        "device.setFavorite" | "device.setModelPinned" => {
+            let operation_name = if method == "device.setFavorite" {
+                "setFavorite"
+            } else {
+                "setModelPinned"
             };
             GatewayWritePlan {
                 write: PlannedWrite::HidOperation(operation(operation_name, params)?),
@@ -6238,6 +6236,11 @@ fn plan_gateway_write_inner(
                 }
                 .into(),
                 verification: if method == "device.previewParameter" {
+                    GatewayVerification::None
+                } else if params.get("text").is_some() && column < domain::GRID_COLUMNS {
+                    // A text write carries no numeric value, so there is nothing to
+                    // verify numerically: reading back 0.0 would "verify" option 0
+                    // whatever was written and time out on every other option.
                     GatewayVerification::None
                 } else {
                     GatewayVerification::Parameter {
