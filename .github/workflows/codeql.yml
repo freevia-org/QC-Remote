@@ -11,6 +11,9 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: qc-remote-i5-linux
+    # One hung analysis would hold the only self-hosted runner for the default
+    # six hours while every other workflow queues behind it.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       max-parallel: 1

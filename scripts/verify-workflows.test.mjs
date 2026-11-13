@@ -56,3 +56,25 @@ test('no other workflow uses pull_request_target', () => {
     assert.doesNotMatch(text, /^\s*pull_request_target:/m, `${name} must not use pull_request_target`);
   }
 });
+
+// A job without timeout-minutes inherits GitHub's 360-minute default, and on the
+// single self-hosted runner one hung job blocks every other workflow.
+test('every job in every workflow declares timeout-minutes', () => {
+  for (const name of readdirSync(workflows).filter((entry) => /\.ya?ml$/.test(entry))) {
+    const lines = readFileSync(path.join(workflows, name), 'utf8').split(/\r?\n/);
+    const jobsAt = lines.findIndex((line) => line === 'jobs:');
+    assert.notEqual(jobsAt, -1, `${name} declares jobs`);
+    const jobs = [];
+    for (const line of lines.slice(jobsAt + 1)) {
+      if (line && !/^\s/.test(line)) break;
+      const header = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+      if (header) jobs.push({ id: header[1], body: [] });
+      else if (jobs.length > 0) jobs[jobs.length - 1].body.push(line);
+    }
+    assert.ok(jobs.length > 0, `${name} has jobs`);
+    for (const { id, body } of jobs) {
+      if (body.some((line) => /^ {4}uses:/.test(line))) continue; // reusable workflow call
+      assert.ok(body.some((line) => /^ {4}timeout-minutes:/.test(line)), `${name}: job ${id} has no timeout-minutes`);
+    }
+  }
+});
