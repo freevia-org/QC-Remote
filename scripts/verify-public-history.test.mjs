@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import {
   auditHistory,
+  commitMetadata,
   identityErrors,
   isPublishedIdentityException,
   parseOptions,
@@ -302,4 +303,20 @@ test('paths git would C-quote (non-ASCII, quote, backslash) are still matched', 
       assert.deepEqual(auditHistory({ cwd }).errors, expected, file);
     });
   }
+});
+
+test('metadata is read in one pass and a message that breaks the record format fails the audit', () => {
+  withRepository(({ cwd, commit }) => {
+    const first = commit('a.txt', 'first');
+    const second = commit('b.txt', 'second\n\nCo-authored-by: A <a@example.com>');
+    const third = commit('c.txt', 'third');
+    const metadata = commitMetadata(cwd, [third, first, second]);
+    assert.deepEqual([...metadata.keys()], [third, first, second], 'input order is kept');
+    assert.equal(metadata.get(second).messageLines.some((line) => /^Co-authored-by:/.test(line)), true);
+    assert.equal(metadata.get(first).authorEmail, noreplyAuthor);
+    // A commit message carrying the record separator cannot hide or forge a record.
+    const hostile = commit('d.txt', `hostile\x1e${first}`);
+    assert.throws(() => auditHistory({ cwd }), /refusing to pass/);
+    assert.ok(hostile);
+  });
 });
