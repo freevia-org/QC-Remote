@@ -800,10 +800,12 @@ impl RelayBridge {
     /// Disable request admission before retaining and retiring cloud receipts.
     pub async fn unpair(&self) -> Result<RelayStatus, String> {
         let _operation = credential_lease("relay-pairing-operation.lock")?;
+        // Admission is disabled before anything that can fail on the
+        // credential store: an unavailable store must not leave the relay
+        // running and remote enabled behind an Unpair that reported an error.
+        self.disable_admission(|| set_remote_session_enabled(false))
+            .await?;
         let expected = load_credentials().await?;
-        self.credential_generation.fetch_add(1, Ordering::AcqRel);
-        self.stop();
-        set_remote_session_enabled(false).await?;
         self.invalidate_pending_browser_pairing()?;
         let pending = prepare_withdrawal(true, expected).await?;
         self.cache_credentials(None)?;
@@ -815,6 +817,16 @@ impl RelayBridge {
             *detail = remains.then(|| PENDING_WITHDRAWAL_DETAIL.into());
         }
         self.status()
+    }
+
+    async fn disable_admission<F, Fut>(&self, disable: F) -> Result<(), String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<(), String>>,
+    {
+        self.credential_generation.fetch_add(1, Ordering::AcqRel);
+        self.stop();
+        disable().await
     }
 
     /// Retry only withdrawn receipts; never clear or stop a new active pairing.
@@ -1772,6 +1784,28 @@ mod tests {
         assert_eq!(running.restart_due(), None);
         drop((bridge, running));
         crate::relay_task::reap();
+    }
+
+    #[tokio::test]
+    async fn unpair_disables_admission_before_any_credential_store_read() {
+        let bridge = RelayBridge::default();
+        let (stop_tx, stop_rx) = watch::channel(false);
+        *bridge.stop.lock().unwrap() = Some(stop_tx);
+        let generation = bridge.credential_generation.load(Ordering::Acquire);
+        let lifecycle = bridge.lifecycle_generation.load(Ordering::Acquire);
+        let disabled = bridge
+            .disable_admission(|| async { Err::<(), _>("store unavailable".to_string()) })
+            .await;
+        assert_eq!(disabled, Err("store unavailable".to_string()));
+        assert!(*stop_rx.borrow(), "the running client was told to stop");
+        assert_eq!(
+            bridge.credential_generation.load(Ordering::Acquire),
+            generation + 1
+        );
+        assert_eq!(
+            bridge.lifecycle_generation.load(Ordering::Acquire),
+            lifecycle + 1
+        );
     }
 
     #[tokio::test]
