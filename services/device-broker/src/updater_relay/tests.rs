@@ -54,6 +54,44 @@ fn demo_cached_rpc_relay_diagnostics_do_not_wait_or_invent_settings() {
     assert!(relay.try_cached_status().is_none());
     assert!(relay.settings.lock().unwrap().read_at.is_none());
 }
+/// RC-17: the device worker asks for the switch on every pass, so a stale
+/// cache must answer at once with the old value and refresh off-thread.
+#[test]
+fn worker_switch_read_answers_from_cache_and_refreshes_in_the_background() {
+    let directory = std::env::temp_dir().join(format!(
+        "qc-relay-enabled-cached-{}-{:?}",
+        std::process::id(),
+        thread::current().id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = directory.join(crate::tray_settings::SETTINGS_FILE);
+    std::fs::write(&file, br#"{"updaterRelayEnabled":false}"#).unwrap();
+    let relay = Arc::new(UpdaterRelay::with_parts(
+        Fake::new(200, vec![]),
+        Arc::new(AtomicBool::new(false)),
+    ));
+    relay.set_settings_directory(directory.clone());
+    // Nothing has been read yet: the first call reads once, on the caller.
+    assert!(!relay.enabled_cached());
+    std::fs::write(&file, br#"{"updaterRelayEnabled":true}"#).unwrap();
+    // Within the recheck window the cached value stands.
+    assert!(!relay.enabled_cached());
+    relay.settings.lock().unwrap().read_at =
+        Some(Instant::now() - super::SETTINGS_RECHECK - Duration::from_secs(1));
+    // Stale: the old value comes back without a read on this thread ...
+    assert!(!relay.enabled_cached());
+    // ... and the refresh lands shortly after.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !relay.enabled_cached() {
+        assert!(
+            Instant::now() < deadline,
+            "the background refresh never landed"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct Seen {
     url: String,

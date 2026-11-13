@@ -133,6 +133,7 @@ pub enum Disposition {
     SpawnFailed,
 }
 
+#[derive(Clone)]
 enum SettingsSource {
     Defaults,
     Directory(PathBuf),
@@ -143,6 +144,9 @@ struct SettingsCache {
     source: SettingsSource,
     settings: UpdaterRelaySettings,
     read_at: Option<Instant>,
+    /// Bumped whenever `source` is replaced, so a read that started against
+    /// the old source cannot be stored as the new one's value.
+    generation: u64,
 }
 #[derive(Default)]
 struct State {
@@ -189,6 +193,8 @@ pub struct UpdaterRelay {
     response_cancellations: Mutex<Vec<std::sync::Weak<AtomicBool>>>,
     fetcher: Arc<dyn HttpFetcher>,
     activity: Mutex<UpdateActivity>,
+    /// A background settings refresh is already running.
+    refreshing: AtomicBool,
 }
 impl Default for UpdaterRelay {
     fn default() -> Self {
@@ -208,39 +214,55 @@ impl UpdaterRelay {
                 source: SettingsSource::Defaults,
                 settings: UpdaterRelaySettings::default(),
                 read_at: None,
+                generation: 0,
             }),
             state: Arc::new(Mutex::new(State::default())),
             tasks: Mutex::new(Vec::new()),
             response_cancellations: Mutex::new(Vec::new()),
             fetcher,
             activity: Mutex::new(UpdateActivity::default()),
+            refreshing: AtomicBool::new(false),
         }
     }
     pub fn set_settings_directory(&self, directory: PathBuf) {
         let mut settings = self.settings.lock_recover();
         settings.source = SettingsSource::Directory(directory);
         settings.read_at = None;
+        settings.generation += 1;
     }
     #[cfg(test)]
     pub(crate) fn use_fixed_settings(&self, fixed: UpdaterRelaySettings) {
         let mut settings = self.settings.lock_recover();
         settings.source = SettingsSource::Fixed(fixed);
         settings.read_at = None;
+        settings.generation += 1;
     }
     fn settings(&self, now: Instant) -> UpdaterRelaySettings {
+        // The file is read with the cache unlocked, so a slow read (antivirus
+        // scanning the replaced file, a redirected profile) never holds up a
+        // reader that only wants the cached value.
+        let (generation, source) = {
+            let cache = self.settings.lock_recover();
+            let stale = cache
+                .read_at
+                .is_none_or(|read| now.saturating_duration_since(read) >= SETTINGS_RECHECK);
+            if !stale {
+                return cache.settings.clone();
+            }
+            (cache.generation, cache.source.clone())
+        };
+        let read = match &source {
+            SettingsSource::Defaults => Ok(UpdaterRelaySettings::default()),
+            SettingsSource::Directory(directory) => {
+                tray_settings::try_read_updater_relay_in(directory)
+            }
+            #[cfg(test)]
+            SettingsSource::Fixed(settings) => Ok(settings.clone()),
+        };
         let mut cache = self.settings.lock_recover();
-        let stale = cache
-            .read_at
-            .is_none_or(|read| now.saturating_duration_since(read) >= SETTINGS_RECHECK);
-        if stale {
-            let read = match &cache.source {
-                SettingsSource::Defaults => Ok(UpdaterRelaySettings::default()),
-                SettingsSource::Directory(directory) => {
-                    tray_settings::try_read_updater_relay_in(directory)
-                }
-                #[cfg(test)]
-                SettingsSource::Fixed(settings) => Ok(settings.clone()),
-            };
+        // The source was replaced while the file was being read: this result
+        // belongs to the old source, so it must not stand for the new one.
+        if cache.generation == generation {
             // A file that is there and cannot be used (locked for a moment
             // while the app replaces it, or damaged) says nothing about
             // the switch, so the last value stands: a cleared switch must
@@ -252,6 +274,44 @@ impl UpdaterRelay {
             cache.read_at = Some(now);
         }
         cache.settings.clone()
+    }
+
+    /// Whether the relay is switched on, for the device worker's loop. It
+    /// never reads the settings file on the calling thread once a first value
+    /// exists: a stale value is returned at once and refreshed by a short-lived
+    /// thread, because that loop drains HID input and sends the keepalive and
+    /// must not wait on a profile-directory read.
+    pub(crate) fn enabled_cached(self: &Arc<Self>) -> bool {
+        let first_read_pending = {
+            let cache = self.settings.lock_recover();
+            let now = Instant::now();
+            match cache.read_at {
+                None => true,
+                Some(read) => {
+                    if now.saturating_duration_since(read) < SETTINGS_RECHECK {
+                        return cache.settings.enabled;
+                    }
+                    false
+                }
+            }
+        };
+        if first_read_pending {
+            // Nothing has been read yet, so there is no value to answer with.
+            return self.settings(Instant::now()).enabled;
+        }
+        if !self.refreshing.swap(true, Ordering::AcqRel) {
+            let relay = Arc::clone(self);
+            let spawned = thread::Builder::new()
+                .name("qc-relay-settings".into())
+                .spawn(move || {
+                    relay.settings(Instant::now());
+                    relay.refreshing.store(false, Ordering::Release);
+                });
+            if spawned.is_err() {
+                self.refreshing.store(false, Ordering::Release);
+            }
+        }
+        self.settings.lock_recover().settings.enabled
     }
 
     pub fn status(&self) -> RelayStatus {

@@ -3735,7 +3735,8 @@ fn run_leased(
         // memory and only far enough (ids, timeout, action) to answer or log
         // them, then zeroized: a request left unanswered makes the unit drop
         // its account link. The other account families stay undecrypted.
-        let internet_relay_enabled = updater_relay.status().enabled;
+        // Cached, never a settings-file read on this thread (RC-17).
+        let internet_relay_enabled = updater_relay.enabled_cached();
         cloud_forward.set_enabled(internet_relay_enabled);
         {
             let mut owner = session.lock_recover();
