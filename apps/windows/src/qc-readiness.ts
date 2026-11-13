@@ -287,7 +287,7 @@ export function qcConnectionDuringBrokerPhase(
 export function qcShouldConnectOnDetection(connection: ConnectionState, demoCanYield = true): boolean {
   if (connection.source === "virtual") return demoCanYield;
   if (["ready", "discovering", "opening", "handshaking", "syncing"].includes(connection.phase)) return false;
-  return !connection.detail.startsWith("Live synchronization");
+  return true;
 }
 
 /** The fields of one `broker.devices` row this decision reads. */

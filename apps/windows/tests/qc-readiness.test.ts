@@ -11,7 +11,7 @@ test("USB loss and failed Connect expose Disconnected, never a ready Demo sessio
     assert.equal(connection.detail, `Disconnected. ${reason}`);
   }
 });
-import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, QC_FOLLOW_RETRY_MAX_MS, QC_FOLLOW_RETRY_MIN_MS, QC_FOLLOW_STABLE_LIVE_MS, QC_ORPHANED_DISCOVERING_MS, QC_SESSION_LEFT_OPEN_NOTICE, qcAutomaticConnectHeld, qcBackgroundDeviceLive, qcConnectionDuringBrokerPhase, qcDisconnectClosedSession, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcFollowRetryDelay, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcKeepRuntime, qcSameRuntimeView, qcReconcilePhysicalDevices, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcShouldFollowDevicePhase, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, qcWatchConnectStall, waitForSynchronizedQc, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect } from "../src/qc-readiness.ts";
+import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, QC_FOLLOW_RETRY_MAX_MS, QC_FOLLOW_RETRY_MIN_MS, QC_FOLLOW_STABLE_LIVE_MS, QC_ORPHANED_DISCOVERING_MS, QC_SESSION_LEFT_OPEN_NOTICE, qcAutomaticConnectHeld, qcBackgroundDeviceLive, qcConnectionDuringBrokerPhase, qcDisconnectClosedSession, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcFollowRetryDelay, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcKeepRuntime, qcSameRuntimeView, qcShouldConnectOnDetection, qcReconcilePhysicalDevices, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcShouldFollowDevicePhase, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, qcWatchConnectStall, waitForSynchronizedQc, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect } from "../src/qc-readiness.ts";
 
 test("connect waits for transient broker synchronization before reporting its physical result", async () => {
   const waiting = { gatewayAvailable: true, platform: "Linux", message: "", usbDiagnostics: { phase: "ready", connected: true, synchronized: false, detail: "Preset sync pending" } };
@@ -806,4 +806,15 @@ test("an unchanged device inventory returns the array already held (WF-1)", () =
   const replacement = { id: "b", name: "Quad Cortex", connected: true, phase: "ready" };
   const first = qcReconcilePhysicalDevices([replacement], "a", held);
   assert.equal(qcReconcilePhysicalDevices([{ ...replacement }], "a", first), first);
+});
+
+test("the live-sync fallback keeps no dead recovery branch or stale runtime write (WF-7)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const readiness = readFileSync(new URL("../src/qc-readiness.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(app, /Live synchronization/);
+  assert.doesNotMatch(readiness, /Live synchronization/);
+  assert.doesNotMatch(app, /let verifiedRuntime = runtime/);
+  assert.equal(qcShouldConnectOnDetection(qcDisconnectedConnection("USB was lost")), true);
+  assert.equal(qcShouldConnectOnDetection({ ...qcDisconnectedConnection("x"), phase: "ready" }), false);
 });
