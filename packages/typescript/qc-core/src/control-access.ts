@@ -12,7 +12,9 @@ export function parseControlAccessMode(value: unknown, fallback: ControlAccessMo
     : fallback;
 }
 
+const ACTION_ACCESS_BY_NAME = new Map<string, SharedQcAccessMode>(SHARED_QC_ACTIONS.map((action) => [action.name, action.access] as const));
+
 export function controlAccessPermitsAction(mode: ControlAccessMode, name: string): boolean {
-  const action = SHARED_QC_ACTIONS.find((candidate) => candidate.name === name);
-  return Boolean(action && accessLevel[mode] >= accessLevel[action.access]);
+  const access = ACTION_ACCESS_BY_NAME.get(name);
+  return access !== undefined && accessLevel[mode] >= accessLevel[access];
 }

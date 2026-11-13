@@ -234,3 +234,10 @@ test('a lifecycle action that took effect is not reported failed when the follow
     assert.equal(statuses, 0);
   }
 });
+
+test('action lookups by rpc and by name are unambiguous, so indexed lookup matches the first-match scan', () => {
+  const rpcs = SHARED_QC_ACTIONS.map(action => action.rpc);
+  const names = SHARED_QC_ACTIONS.map(action => action.name);
+  assert.equal(new Set(rpcs).size, rpcs.length, 'no two actions share an rpc');
+  assert.equal(new Set(names).size, names.length, 'no two actions share a name');
+});
