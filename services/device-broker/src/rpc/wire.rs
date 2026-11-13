@@ -117,11 +117,45 @@ pub(super) fn read_request(input: &mut impl Read) -> Result<Option<Request>, Str
         .map_err(|error| format!("Invalid native broker JSON: {error}"))
 }
 
-pub(super) fn write_response(output: &mut impl Write, response: &Value) -> Result<(), String> {
+/// The answer that goes out in place of a result too large for one IPC frame
+/// (DB-2). Such a result is an answer, not a transport failure: a backup
+/// document can be larger than a frame, and treating that as a write error
+/// closed the client's socket (or ended a `--stdio` broker and its USB
+/// session) after the device work had already finished. Only a response that
+/// carries a `result` is replaced; a notification or an error has nothing to
+/// answer with and still fails the write.
+pub(super) fn result_too_large(response: &Value) -> Option<Value> {
+    let id = response.get("id")?;
+    response.get("result")?;
+    Some(json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": HANDLER_ERROR_CODE,
+            "message": format!(
+                "Result exceeds the {} MiB IPC frame limit",
+                quadcortex::domain::IPC_MAX_FRAME_BYTES / (1024 * 1024)
+            ),
+            "data": {"code": "RESULT_TOO_LARGE", "retryable": false}
+        }
+    }))
+}
+
+/// The serialized frame body for `response`: the response itself, or the
+/// [`result_too_large`] answer when it does not fit.
+pub(super) fn frame_body(response: &Value) -> Result<Vec<u8>, String> {
     let body = serde_json::to_vec(response).map_err(|error| error.to_string())?;
-    if body.len() > quadcortex::domain::IPC_MAX_FRAME_BYTES {
-        return Err("Native broker response exceeds the IPC frame limit".into());
+    if body.len() <= quadcortex::domain::IPC_MAX_FRAME_BYTES {
+        return Ok(body);
     }
+    match result_too_large(response) {
+        Some(replacement) => serde_json::to_vec(&replacement).map_err(|error| error.to_string()),
+        None => Err("Native broker response exceeds the IPC frame limit".into()),
+    }
+}
+
+pub(super) fn write_response(output: &mut impl Write, response: &Value) -> Result<(), String> {
+    let body = frame_body(response)?;
     qc_broker_framing::write_frame(output, &body, quadcortex::domain::IPC_MAX_FRAME_BYTES)
         .map_err(|error| error.to_string())
 }
@@ -130,10 +164,7 @@ pub(super) fn write_response(output: &mut impl Write, response: &Value) -> Resul
 /// reading cannot keep a writer mutex and scoped connection threads forever.
 pub(super) fn write_tcp_response(output: &mut TcpStream, response: &Value) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(5);
-    let body = serde_json::to_vec(response).map_err(|error| error.to_string())?;
-    if body.len() > quadcortex::domain::IPC_MAX_FRAME_BYTES {
-        return Err("Native broker response exceeds the IPC frame limit".into());
-    }
+    let body = frame_body(response)?;
     let mut frame = (body.len() as u32).to_be_bytes().to_vec();
     frame.extend_from_slice(&body);
     write_tcp_frame_before_deadline(output, &frame, deadline).map_err(|error| error.to_string())
@@ -218,5 +249,64 @@ mod demo_envelope_tests {
                 "accepted {bad}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod oversize_result_tests {
+    use super::*;
+
+    fn oversize() -> Value {
+        json!({"jsonrpc":"2.0","id":41,"result":{"document":"x".repeat(quadcortex::domain::IPC_MAX_FRAME_BYTES)}})
+    }
+
+    fn assert_too_large(answer: &Value) {
+        assert_eq!(answer["id"], 41);
+        assert!(answer.get("result").is_none());
+        assert_eq!(answer["error"]["code"], HANDLER_ERROR_CODE);
+        assert_eq!(answer["error"]["data"]["code"], "RESULT_TOO_LARGE");
+        assert_eq!(answer["error"]["data"]["retryable"], false);
+        assert!(answer["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("16 MiB"));
+    }
+
+    /// DB-2: a result that does not fit one frame is answered with an error
+    /// for the same request, on every transport, and the connection survives.
+    #[test]
+    fn an_oversize_result_is_answered_with_an_error_for_the_same_request() {
+        let mut stream = Vec::new();
+        write_response(&mut stream, &oversize()).expect("an answer, not a write failure");
+        let answer = read_frame_bytes(&mut stream.as_slice()).unwrap().unwrap();
+        assert_too_large(&serde_json::from_slice(&answer).unwrap());
+        // The same writer is still good for the next, ordinary response.
+        write_response(&mut stream, &json!({"jsonrpc":"2.0","id":42,"result":true})).unwrap();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write_tcp_response(&mut server, &oversize()).expect("an answer, not a write failure");
+        let answer = read_frame_bytes(&mut client).unwrap().unwrap();
+        assert_too_large(&serde_json::from_slice(&answer).unwrap());
+        write_tcp_response(&mut server, &json!({"jsonrpc":"2.0","id":42,"result":true})).unwrap();
+        let next = read_frame_bytes(&mut client).unwrap().unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&next).unwrap()["id"], 42);
+    }
+
+    /// A notification or an error has nothing to answer with, so an oversize
+    /// one still fails the write rather than being silently replaced.
+    #[test]
+    fn an_oversize_notification_still_fails_the_write() {
+        let huge = "x".repeat(quadcortex::domain::IPC_MAX_FRAME_BYTES);
+        let notification =
+            json!({"jsonrpc":"2.0","method":"device.stateFrame","params":{"frame":huge}});
+        assert!(write_response(&mut Vec::new(), &notification).is_err());
+        assert!(result_too_large(&notification).is_none());
+        let failure = json!({"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":huge}});
+        assert!(write_response(&mut Vec::new(), &failure).is_err());
     }
 }
