@@ -112,7 +112,9 @@ fn serve_stdio_request(
     if !resource_read_may_reach(&request.method) {
         return idle_reopen_error(request.id, RESOURCE_READ_NOT_OPEN);
     }
-    if request.method != generated_gateway::rpc::RUNTIME_STATUS && !controller.status().connected {
+    if request.method != generated_gateway::rpc::RUNTIME_STATUS
+        && !controller.connection_scalars().connected
+    {
         return idle_reopen_error(request.id, RESOURCE_READ_NOT_OPEN);
     }
     handle(controller, performance_midi, request)
@@ -1053,7 +1055,7 @@ fn classify_handler_error(message: &str) -> (i64, bool) {
 }
 
 fn connection_state(controller: &DeviceController, detail: &str) -> Value {
-    let status = controller.status();
+    let status = controller.connection_scalars();
     json!({
         "phase": status.phase,
         "detail": detail,
@@ -1093,7 +1095,7 @@ fn suspension_refusal(
     message: &str,
     request_sent: Option<bool>,
 ) -> Value {
-    let suspension = controller.status().suspension;
+    let suspension = controller.suspension();
     json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -1127,7 +1129,7 @@ fn await_ready_status(controller: &DeviceController) -> BrokerStatus {
     // the searching state immediately; the worker remains armed and its phase
     // stream will announce a device plugged in later.
     let selected_device_id = controller.device_id();
-    if controller.status().phase == "searching" {
+    if controller.connection_scalars().phase == "searching" {
         if let Ok(devices) = controller.connected_devices() {
             let selected_is_present =
                 requested_device_is_present(selected_device_id.as_deref(), &devices);
@@ -2582,7 +2584,7 @@ fn gateway_set_tempo(controller: &DeviceController, params: &Value) -> Result<Va
 }
 
 fn gateway_master_volume(controller: &DeviceController) -> Result<Value, String> {
-    let status = controller.status();
+    let status = controller.connection_scalars();
     if !status.connected {
         return Err("Quad Cortex USB is not connected".to_string());
     }
@@ -4974,7 +4976,7 @@ fn dispatch_resource_read(
             return idle_reopen_error(request.id, NOT_OPEN);
         }
     }
-    if !controller.status().connected {
+    if !controller.connection_scalars().connected {
         return idle_reopen_error(request.id, NOT_OPEN);
     }
     let expected = request.expected_broker_target.clone();
