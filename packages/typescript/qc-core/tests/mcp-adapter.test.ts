@@ -222,3 +222,15 @@ test('read-only MCP requests stay compatible without cloud binding support', asy
   assert.equal('expectedBrokerTarget' in captured, false);
   assert.deepEqual(captured.params, { query: null });
 });
+
+test('a lifecycle action that took effect is not reported failed when the follow-up status read fails', async () => {
+  for (const readStatus of [async () => { throw new Error('relay blip'); }, async () => null]) {
+    let statuses = 0;
+    const state = await invokeAppMcp('device.disconnect', {}, { accessMode: 'full', confirm: async () => true, onStatus: () => { statuses++; },
+      callTool: async (name) => name === 'get_qc_status' ? readStatus() : { source: 'device', restarted: true } });
+    assert.equal(state.phase, 'needs-attention');
+    assert.equal(state.brokerTarget, undefined);
+    assert.equal(state.restarted, true);
+    assert.equal(statuses, 0);
+  }
+});

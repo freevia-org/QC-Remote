@@ -76,13 +76,19 @@ export async function invokeAppMcp(method: string, args: Record<string, unknown>
   }
   if (method === "system.status") options.onStatus?.(result);
   if (["device.reconnect", "device.resetSession", "device.disconnect"].includes(method)) {
+    if (result === null || typeof result !== "object") throw new Error("The paired host returned a malformed connection response. Refresh before editing.");
     const source = result?.source;
     if (source !== undefined && source !== "device" && source !== "virtual") throw new Error("The paired host returned an unsupported connection source. Refresh before editing.");
-    const runtime = await options.callTool("get_qc_status", {});
+    const restarted = result?.restarted ?? result?.changed !== false;
+    let runtime;
+    // The action already took effect on the host. A failed status read must not report it as
+    // failed; it returns a fail-closed state with no target, so writes stay fenced.
+    try { runtime = await options.callTool("get_qc_status", {}); } catch { runtime = undefined; }
+    if (!runtime) return { phase: "needs-attention", detail: "The paired host accepted the request, but its status could not be read. Refresh to continue.", demo: false, source: "device", brokerTarget: undefined, restarted };
     const target = selectedBrokerTarget(runtime);
     if (source === "virtual" && !target && runtime.targetReady !== false) throw new Error("The paired host demo has no broker target identity. Update the host before editing.");
     options.onStatus?.(runtime);
-    return { phase: runtime.targetReady === false ? "disconnected" : target ? "ready" : runtime.usbDiagnostics?.phase === "ready" ? "ready" : runtime.usbDiagnostics?.phase === "syncing" ? "syncing" : runtime.usbDiagnostics?.connected ? "opening" : "disconnected", detail: target?.source === "demo" ? "The paired host’s demo device is ready." : runtime.usbDiagnostics?.detail ?? "Remote host connection updated.", demo: false, source: "device", brokerTarget: target, restarted: result?.restarted ?? result?.changed !== false };
+    return { phase: runtime.targetReady === false ? "disconnected" : target ? "ready" : runtime.usbDiagnostics?.phase === "ready" ? "ready" : runtime.usbDiagnostics?.phase === "syncing" ? "syncing" : runtime.usbDiagnostics?.connected ? "opening" : "disconnected", detail: target?.source === "demo" ? "The paired host’s demo device is ready." : runtime.usbDiagnostics?.detail ?? "Remote host connection updated.", demo: false, source: "device", brokerTarget: target, restarted };
   }
   return result;
 }
