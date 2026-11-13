@@ -17,6 +17,8 @@ const PENDING_REVOCATIONS_ACCOUNT: &str = "outbound-public-relay-pending-revocat
 const WITHDRAWAL_TIMEOUT: Duration = Duration::from_secs(20);
 const PENDING_WITHDRAWAL_DETAIL: &str =
     "This computer is unpaired locally. Cloud withdrawal is pending; retry withdrawal when online.";
+const HOST_BUSY: &str =
+    "Remote MCP is hosted by the background tray or a previous host is retiring";
 const ACCESS_MODE_ACCOUNT: &str = "outbound-public-relay-access-v1";
 const AUTO_APPROVE_REMOTE_ACTIONS_ACCOUNT: &str = "outbound-public-relay-auto-approve-actions-v1";
 /// The name this computer registers under, and declares when it opens a
@@ -120,6 +122,7 @@ pub struct RelayBridge {
     last_error: Mutex<Option<String>>,
     pending_browser_pairing: Arc<Mutex<BrowserPairingState>>,
     pending_revocation: std::sync::atomic::AtomicBool,
+    restart_backoff: Mutex<crate::relay_task::RestartBackoff>,
 }
 
 impl Default for RelayBridge {
@@ -145,6 +148,7 @@ impl Default for RelayBridge {
             last_error: Mutex::new(None),
             pending_browser_pairing: Arc::new(Mutex::new(BrowserPairingState::default())),
             pending_revocation: std::sync::atomic::AtomicBool::new(false),
+            restart_backoff: Mutex::new(crate::relay_task::RestartBackoff::default()),
         }
     }
 }
@@ -195,13 +199,113 @@ impl RelayBridge {
             self.stop();
             return;
         }
-        let running = self.task.lock().map(|task| task.is_some()).unwrap_or(false);
-        if !running && self.status().is_ok_and(|status| status.paired) {
+        // A client that returned on its own (a refused credential, an invalid
+        // endpoint) still occupies the slot. It is not running: counted as
+        // running it kept remote dead until the app restarted.
+        let Some(finished) = self.restart_due() else {
+            return;
+        };
+        if self.status().is_ok_and(|status| status.paired) {
+            if finished && !self.admit_finished_restart() {
+                return;
+            }
             if let Err(error) = self.start(adapter()).await {
                 if let Ok(mut detail) = self.last_error.lock() {
                     *detail = Some(error);
                 }
             }
+        }
+    }
+
+    /// `None` while a client is running, otherwise whether the slot holds a
+    /// client that ended on its own (`true`) or is empty (`false`).
+    fn restart_due(&self) -> Option<bool> {
+        let finished = match self.task.lock() {
+            Ok(task) => task.as_ref().map(|task| task.is_finished()),
+            // A poisoned slot was reported as running before; keep that.
+            Err(_) => return None,
+        };
+        match finished {
+            Some(false) => {
+                if self
+                    .state
+                    .lock()
+                    .is_ok_and(|state| *state.borrow() == ConnectionState::Connected)
+                {
+                    if let Ok(mut backoff) = self.restart_backoff.lock() {
+                        backoff.reset();
+                    }
+                }
+                None
+            }
+            Some(true) => Some(true),
+            None => Some(false),
+        }
+    }
+
+    fn admit_finished_restart(&self) -> bool {
+        let last_state = self
+            .state
+            .lock()
+            .map(|state| *state.borrow())
+            .unwrap_or(ConnectionState::PairingRequired);
+        self.restart_backoff
+            .lock()
+            .is_ok_and(|mut backoff| backoff.may_restart(Instant::now(), last_state))
+    }
+
+    /// Retire the client this bridge already holds, then take the host slot.
+    ///
+    /// The previous client's `Owned` keeps the host lease until its task is
+    /// joined, and that lease is exclusive per handle even inside one process.
+    /// Taking the lease first therefore failed whenever a client was held -
+    /// including one that had already returned - and the retirement in the
+    /// publication step was never reached. The lifecycle generation is left
+    /// alone on purpose: bumping it would make this start supersede itself.
+    async fn retire_then_acquire_host(
+        &self,
+        lifecycle_generation: u64,
+        directory: &std::path::Path,
+        lease_name: &str,
+    ) -> Result<(crate::relay_task::Permit, crate::background_host::HostLease), String> {
+        const HOST_RETIRE_WAIT: Duration = Duration::from_secs(2);
+        const HOST_RETIRE_POLL: Duration = Duration::from_millis(25);
+        let retired = {
+            let _lifecycle = self
+                .lifecycle
+                .lock()
+                .map_err(|_| "Relay lifecycle lock was poisoned")?;
+            if self.lifecycle_generation.load(Ordering::Acquire) != lifecycle_generation {
+                return Err("Relay startup was superseded before the host could start".into());
+            }
+            let held = self.task.lock().is_ok_and(|task| task.is_some());
+            if held {
+                self.stop_inner();
+            }
+            held
+        };
+        // Only a client retired here is worth waiting for. A lease held by
+        // another process is the tray host's and is answered at once, as before.
+        let wait = if retired {
+            HOST_RETIRE_WAIT
+        } else {
+            Duration::ZERO
+        };
+        let deadline = Instant::now() + wait;
+        loop {
+            let refusal = match crate::relay_task::Permit::acquire() {
+                Ok(permit) => {
+                    match crate::background_host::HostLease::try_acquire(directory, lease_name)? {
+                        Some(lease) => return Ok((permit, lease)),
+                        None => HOST_BUSY.to_string(),
+                    }
+                }
+                Err(error) => error,
+            };
+            if Instant::now() >= deadline {
+                return Err(refusal);
+            }
+            tokio::time::sleep(HOST_RETIRE_POLL).await;
         }
     }
     /// What the relay last said about the credential this host holds.
@@ -431,12 +535,9 @@ impl RelayBridge {
         if !crate::access_policy_store::effective_remote_enabled(&directory) {
             return Err("Remote hosting is disabled. Pair this device again to enable it.".into());
         }
-        let permit = crate::relay_task::Permit::acquire()?;
-        let lease =
-            crate::background_host::HostLease::try_acquire(&directory, "remote-mcp-host.lock")?
-                .ok_or(
-                    "Remote MCP is hosted by the background tray or a previous host is retiring",
-                )?;
+        let (permit, lease) = self
+            .retire_then_acquire_host(lifecycle_generation, &directory, "remote-mcp-host.lock")
+            .await?;
         let credentials = begin_credential_connection(credentials).await?;
         self.publish_start_if_current(lifecycle_generation, generation, &directory, move || {
             self.stop_inner();
@@ -1555,6 +1656,122 @@ mod tests {
 
         assert!(start.await.unwrap().is_err());
         assert_eq!(published.load(Ordering::Acquire), 0);
+    }
+
+    /// A client that returned on its own, still holding its host lease in the
+    /// bridge's slot exactly as `Client::run` leaves it after a refusal.
+    async fn bridge_holding_a_finished_client(
+        directory: &std::path::Path,
+        lease_name: &str,
+    ) -> RelayBridge {
+        let bridge = RelayBridge::default();
+        let lease = crate::background_host::HostLease::try_acquire(directory, lease_name)
+            .unwrap()
+            .expect("the fixture owns its lease");
+        let permit = crate::relay_task::Permit::acquire().unwrap();
+        let task = tauri::async_runtime::JoinHandle::Tokio(tokio::spawn(async {}));
+        let owned = crate::relay_task::Owned::new(task, lease, permit);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !owned.is_finished() {
+            assert!(Instant::now() < deadline, "the fixture client must end");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        *bridge.task.lock().unwrap() = Some(owned);
+        bridge
+    }
+
+    fn relay_fixture_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_start_retires_the_held_client_before_taking_the_host_lease() {
+        let _serial = crate::relay_task::fixture_lock();
+        relay_fixture_runtime().block_on(start_retires_the_held_client());
+        crate::relay_task::reap();
+    }
+
+    async fn start_retires_the_held_client() {
+        let directory = crate::tests::unique_fixture_directory("relay-retire-then-acquire");
+        let _directory_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let bridge = bridge_holding_a_finished_client(&directory, "relay-fixture.lock").await;
+        assert!(
+            crate::background_host::HostLease::try_acquire(&directory, "relay-fixture.lock")
+                .unwrap()
+                .is_none(),
+            "the finished client still owns the lease a successor needs"
+        );
+        let generation = bridge.lifecycle_generation.load(Ordering::Acquire);
+
+        let (permit, lease) = bridge
+            .retire_then_acquire_host(generation, &directory, "relay-fixture.lock")
+            .await
+            .expect("the held client is retired and its lease taken");
+
+        assert!(bridge.task.lock().unwrap().is_none());
+        assert_eq!(
+            bridge.lifecycle_generation.load(Ordering::Acquire),
+            generation,
+            "retiring the predecessor must not supersede the start doing it"
+        );
+        drop((permit, lease));
+
+        // A stop that lands first still wins: the superseded start retires
+        // nothing and takes nothing.
+        let stale = bridge_holding_a_finished_client(&directory, "relay-fixture.lock").await;
+        stale.lifecycle_generation.fetch_add(1, Ordering::AcqRel);
+        assert!(stale
+            .retire_then_acquire_host(generation, &directory, "relay-fixture.lock")
+            .await
+            .is_err());
+        assert!(stale.task.lock().unwrap().is_some());
+        drop(stale);
+        crate::relay_task::reap();
+    }
+
+    #[test]
+    fn a_client_that_ended_is_not_running_and_a_refusal_is_not_retried() {
+        let _serial = crate::relay_task::fixture_lock();
+        relay_fixture_runtime().block_on(finished_client_is_not_running());
+        crate::relay_task::reap();
+    }
+
+    async fn finished_client_is_not_running() {
+        let directory = crate::tests::unique_fixture_directory("relay-finished-client");
+        let _directory_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let empty = RelayBridge::default();
+        assert_eq!(empty.restart_due(), Some(false));
+
+        let bridge = bridge_holding_a_finished_client(&directory, "relay-fixture.lock").await;
+        assert_eq!(
+            bridge.restart_due(),
+            Some(true),
+            "an occupied slot whose client returned is due a restart"
+        );
+        let (state, state_rx) = watch::channel(ConnectionState::PairingRequired);
+        *bridge.state.lock().unwrap() = state_rx;
+        assert!(
+            !bridge.admit_finished_restart(),
+            "a refused credential waits for a new pairing"
+        );
+        state.send_replace(ConnectionState::InvalidEndpoint);
+        assert!(bridge.admit_finished_restart());
+        assert!(
+            !bridge.admit_finished_restart(),
+            "a second exit inside the delay is not restarted"
+        );
+
+        let running = RelayBridge::default();
+        let permit = crate::relay_task::Permit::acquire().unwrap();
+        let task = tauri::async_runtime::JoinHandle::Tokio(tokio::spawn(std::future::pending()));
+        *running.task.lock().unwrap() = Some(crate::relay_task::Owned::new(task, (), permit));
+        assert_eq!(running.restart_due(), None);
+        drop((bridge, running));
+        crate::relay_task::reap();
     }
 
     #[tokio::test]

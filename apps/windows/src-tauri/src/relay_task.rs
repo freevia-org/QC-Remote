@@ -129,6 +129,53 @@ pub(crate) fn reap() {
         .unwrap_or_else(|e| e.into_inner())
         .extend(pending);
 }
+/// When a relay client that ended on its own may be started again.
+///
+/// A credential the relay refused outright is never retried: only a new
+/// pairing (a different identity, which resets this) can change the answer.
+/// Any other exit is retried on a capped exponential delay so a host that
+/// keeps failing does not reconnect and rewrite its credential record on
+/// every settings pass.
+#[derive(Default)]
+pub(crate) struct RestartBackoff {
+    exits: u32,
+    last: Option<std::time::Instant>,
+}
+impl RestartBackoff {
+    pub(crate) const FIRST_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+    pub(crate) const MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(300);
+    /// A connected client or a changed identity starts the schedule again.
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
+    pub(crate) fn delay(&self) -> std::time::Duration {
+        match self.exits {
+            0 => std::time::Duration::ZERO,
+            exits => Self::FIRST_DELAY
+                .checked_mul(1u32.checked_shl(exits - 1).unwrap_or(u32::MAX))
+                .map_or(Self::MAX_DELAY, |delay| delay.min(Self::MAX_DELAY)),
+        }
+    }
+    /// Decide, and when the answer is yes record the attempt.
+    pub(crate) fn may_restart(
+        &mut self,
+        now: std::time::Instant,
+        last_state: qc_relay_client::ConnectionState,
+    ) -> bool {
+        if last_state == qc_relay_client::ConnectionState::PairingRequired {
+            return false;
+        }
+        if self
+            .last
+            .is_some_and(|last| now.saturating_duration_since(last) < self.delay())
+        {
+            return false;
+        }
+        self.exits = self.exits.saturating_add(1);
+        self.last = Some(now);
+        true
+    }
+}
 #[cfg(test)]
 pub(crate) fn fixture_lock() -> std::sync::MutexGuard<'static, ()> {
     tests::FIXTURES
@@ -175,6 +222,45 @@ mod tests {
             // Always bounded, including assertion unwind in the caller.
             let _ = self.release.recv_timeout(Duration::from_secs(30));
         }
+    }
+    #[test]
+    fn a_finished_client_restarts_on_a_capped_delay_and_never_after_a_refusal() {
+        use qc_relay_client::ConnectionState;
+        let start = Instant::now();
+        let mut backoff = RestartBackoff::default();
+        assert!(
+            !backoff.may_restart(start, ConnectionState::PairingRequired),
+            "a refused credential is not retried"
+        );
+        assert!(backoff.may_restart(start, ConnectionState::Reconnecting));
+        assert!(!backoff.may_restart(
+            start + Duration::from_secs(4),
+            ConnectionState::Reconnecting
+        ));
+        assert!(backoff.may_restart(
+            start + Duration::from_secs(5),
+            ConnectionState::InvalidEndpoint
+        ));
+        assert_eq!(backoff.delay(), Duration::from_secs(10));
+        let mut at = start + Duration::from_secs(5);
+        for _ in 0..40 {
+            at += backoff.delay();
+            assert!(backoff.may_restart(at, ConnectionState::Stopped));
+        }
+        assert_eq!(
+            backoff.delay(),
+            RestartBackoff::MAX_DELAY,
+            "delay is capped"
+        );
+        assert!(!backoff.may_restart(
+            at + RestartBackoff::MAX_DELAY - Duration::from_secs(1),
+            ConnectionState::Stopped
+        ));
+        backoff.reset();
+        assert!(
+            backoff.may_restart(at, ConnectionState::Stopped),
+            "a connection or a new identity restarts at once"
+        );
     }
     #[test]
     fn relay_stop_retains_original_host_lease_until_aborted_future_retires() {
