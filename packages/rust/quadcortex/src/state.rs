@@ -15,7 +15,7 @@ pub use model_preset_catalog::{
 pub(super) use projection::*;
 
 use crate::commands::DeviceOperation;
-use crate::compression::{maybe_gunzip, InflateError};
+use crate::compression::{maybe_gunzip_borrowed, InflateError};
 pub use crate::generated_payloads::{
     BlockDetails, BlockParameter, BulkOperationState, BypassExpression, BypassUpdate,
     CpuColumnLoad, FootswitchState, GridBlock, GridRoute, IoPortState, MidiOutMessage,
@@ -370,7 +370,7 @@ pub struct PresetFolderListing {
 /// Consumers must apply action semantics before treating its records as state.
 pub fn decode_file_message(payload: &[u8]) -> Result<pa::FileMessage, StateDecodeError> {
     validate_wire_payload(profile::MESSAGE_TYPE_FILE, payload)?;
-    let decoded = maybe_gunzip(payload)?;
+    let decoded = maybe_gunzip_borrowed(payload)?;
     decode::<pa::FileMessage>(profile::MESSAGE_TYPE_FILE, &decoded)
 }
 
@@ -1519,7 +1519,7 @@ impl StateDecoder {
         payload: &[u8],
     ) -> Result<Vec<StateUpdate>, StateDecodeError> {
         validate_wire_payload(message_type, payload)?;
-        let decoded = maybe_gunzip(payload)?;
+        let decoded = maybe_gunzip_borrowed(payload)?;
         let dispatched = match message_type {
             profile::MESSAGE_TYPE_GRID => self.decode_grid(&decoded),
             profile::MESSAGE_TYPE_GRID_MOVE => self.decode_grid_move(&decoded),
@@ -3711,7 +3711,7 @@ fn routing_parameter_options(node: Option<&str>, index: u32) -> Vec<String> {
 /// or parsed, is not an update message, or holds an invalid archive or catalog XML.
 pub fn parse_model_repo(payload: &[u8]) -> Result<ModelCatalog, StateDecodeError> {
     validate_wire_payload(profile::MESSAGE_TYPE_MODEL_REPO, payload)?;
-    let payload = maybe_gunzip(payload)?;
+    let payload = maybe_gunzip_borrowed(payload)?;
     let message = decode::<pa::ModelRepoMessage>(profile::MESSAGE_TYPE_MODEL_REPO, &payload)?;
     if !is_update_action(message.action) {
         return Err(StateDecodeError::UnexpectedAction {
@@ -3724,7 +3724,7 @@ pub fn parse_model_repo(payload: &[u8]) -> Result<ModelCatalog, StateDecodeError
     else {
         return Ok(ModelCatalog(HashMap::new()));
     };
-    let repo = maybe_gunzip(&repo)?;
+    let repo = maybe_gunzip_borrowed(&repo)?;
     Ok(ModelCatalog(parse_catalog(extract_xml(&repo)?)?))
 }
 

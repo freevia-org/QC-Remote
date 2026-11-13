@@ -1,5 +1,6 @@
 use crate::profile;
 use flate2::read::GzDecoder;
+use std::borrow::Cow;
 use std::io::Read;
 use thiserror::Error;
 
@@ -24,11 +25,23 @@ pub enum InflateError {
 /// payload (or a field inside it, such as the model repository's nested
 /// catalogue) for a gzip member, and hold that second expansion to the shared
 /// [`profile::MAX_INFLATED_BYTES`] ceiling. Each layer is bounded on its own.
+///
+/// This returns an owned copy even when nothing was inflated. Decoders that
+/// only borrow the result should call [`maybe_gunzip_borrowed`] instead.
 pub fn maybe_gunzip(payload: &[u8]) -> Result<Vec<u8>, InflateError> {
+    maybe_gunzip_borrowed(payload).map(Cow::into_owned)
+}
+
+/// [`maybe_gunzip`] without the copy: a payload that carries no gzip member is
+/// returned borrowed, and only an inflated one is owned.
+///
+/// The transport has already inflated a compressed envelope before a decoder
+/// sees it, so the borrowed case is the common one on the receive path.
+pub fn maybe_gunzip_borrowed(payload: &[u8]) -> Result<Cow<'_, [u8]>, InflateError> {
     if !payload.starts_with(&[0x1f, 0x8b]) {
-        return Ok(payload.to_vec());
+        return Ok(Cow::Borrowed(payload));
     }
-    gunzip(payload)
+    gunzip(payload).map(Cow::Owned)
 }
 
 // Per-message-type inflation limits
@@ -304,6 +317,33 @@ mod tests {
         let crc_offset = encoded.len() - 8;
         encoded[crc_offset] ^= 1;
         assert!(matches!(gunzip(&encoded), Err(InflateError::Decode(_))));
+    }
+
+    #[test]
+    fn sniffed_gzip_borrows_a_plain_payload_and_owns_only_an_inflated_one() {
+        let plain = [8u8, 1];
+        let borrowed = maybe_gunzip_borrowed(&plain).unwrap();
+        assert!(matches!(borrowed, Cow::Borrowed(_)));
+        assert!(std::ptr::eq(borrowed.as_ptr(), plain.as_ptr()));
+        assert_eq!(maybe_gunzip(&plain).unwrap(), plain);
+        assert!(matches!(
+            maybe_gunzip_borrowed(&[]).unwrap(),
+            Cow::Borrowed(&[])
+        ));
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(&[8, 1, 24, 2]).unwrap();
+        let encoded = encoder.finish().unwrap();
+        let inflated = maybe_gunzip_borrowed(&encoded).unwrap();
+        assert!(matches!(inflated, Cow::Owned(_)));
+        assert_eq!(&inflated[..], [8, 1, 24, 2]);
+        assert_eq!(maybe_gunzip(&encoded).unwrap(), [8, 1, 24, 2]);
+        // A sniffed member that fails to inflate is still an error, never the
+        // raw bytes handed back as if they were a payload.
+        assert!(matches!(
+            maybe_gunzip_borrowed(&encoded[..encoded.len() - 1]),
+            Err(InflateError::Decode(_))
+        ));
     }
 
     #[test]
