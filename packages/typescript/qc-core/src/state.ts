@@ -267,11 +267,10 @@ function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): Pr
   }
   if (state.kind === "dirty" && state.dirty !== undefined) return observed({ ...snapshot, dirty: state.dirty }, "dirty");
   if (state.kind === "master" && state.masterVolume !== undefined) {
-    // The contract says a master update is normalized, 0 to 1; a value above 1 is read as a
-    // percentage already, which is a convenience for callers that publish one. The two readings
-    // cannot be told apart for a value of exactly 1 (100% normalized, or 1%), and the scale of
-    // this field is being settled with the other volume and tempo scales.
-    const volume = state.masterVolume <= 1 ? state.masterVolume * 100 : state.masterVolume;
+    // Same reduction as the Rust host (`value.clamp(0.0, 1.0) * 100.0).round() as u32`): the
+    // update is normalized, so it is clamped to 0..1 and a NaN reads as 0, as the Rust cast does.
+    const normalized = Number.isNaN(state.masterVolume) ? 0 : Math.max(0, Math.min(1, state.masterVolume));
+    const volume = normalized * 100;
     return observed({ ...snapshot, masterVolume: Math.round(volume) }, "masterVolume");
   }
   if (state.kind === "mode" && state.mode) return observed({

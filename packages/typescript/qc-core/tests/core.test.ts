@@ -925,3 +925,14 @@ test("a bypass intent whose block left the preset is retired instead of polling 
   removed.reconcileFrame(command.snapshot, [{ kind: "blockRemoved", row: amp.row, column: amp.column, observedAt: 1_100 }], 1_100);
   assert.equal(removed.hasPendingCommands, false);
 });
+
+test("master volume updates clamp to the normalized range exactly like the Rust host", () => {
+  const volumeOf = (masterVolume: number) => applyQcStateUpdate(demoSnapshot, { kind: "master", masterVolume }).masterVolume;
+  assert.equal(volumeOf(0.5), 50);
+  assert.equal(volumeOf(1), 100);
+  assert.equal(volumeOf(1.0000001), 100);
+  assert.equal(volumeOf(1.02), 100);
+  assert.equal(volumeOf(57), 100);
+  assert.equal(volumeOf(-0.1), 0);
+  assert.equal(volumeOf(Number.NaN), 0);
+});
