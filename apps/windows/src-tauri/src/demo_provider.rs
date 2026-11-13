@@ -47,13 +47,16 @@ struct Worker {
     stop: Arc<AtomicBool>,
     socket: Arc<Mutex<Option<TcpStream>>>,
     pending: Arc<Mutex<Option<(Value, u64)>>>,
-    commands: mpsc::SyncSender<Command>,
+    // Dropped before any wait on the worker: the worker may sit in
+    // `recv_timeout` on this channel, and only a disconnect wakes it early.
+    commands: Option<mpsc::SyncSender<Command>>,
     original: Option<qc_native_platform::thread_owner::Owned>,
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        drop(self.commands.take());
         if let Some(socket) = self.socket.lock().unwrap_or_else(|p| p.into_inner()).take() {
             let _ = socket.shutdown(Shutdown::Both);
         }
@@ -553,7 +556,7 @@ fn run(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn start_demo_provider(
     app: AppHandle,
     window: WebviewWindow,
@@ -615,7 +618,7 @@ pub(crate) fn start_demo_provider(
             stop: worker_stop,
             socket: worker_socket,
             pending: worker_pending,
-            commands: send,
+            commands: Some(send),
             original: Some(original),
         })
     })
@@ -641,7 +644,10 @@ fn sender(
     {
         return Err("The demo request is no longer pending".into());
     }
-    Ok(worker.commands.clone())
+    worker
+        .commands
+        .clone()
+        .ok_or_else(|| "The demo provider is stopping".into())
 }
 
 #[tauri::command]
@@ -714,6 +720,7 @@ pub(crate) async fn clear_demo_selection(
         let old = take_matching_provider(&workers, expected_worker.as_deref());
         if let Some(mut old) = old {
             old.stop.store(true, Ordering::Release);
+            drop(old.commands.take());
             if let Some(socket) = old.socket.lock().unwrap_or_else(|p| p.into_inner()).take() {
                 let _ = socket.shutdown(Shutdown::Both);
             }
@@ -805,7 +812,7 @@ pub(crate) async fn clear_demo_selection(
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn stop_demo_provider(
     window: WebviewWindow,
     bridge: State<'_, DemoProviderBridge>,
@@ -931,6 +938,36 @@ mod tests {
     }
 
     #[test]
+    fn dropping_a_worker_wakes_one_blocked_on_its_request_at_once() {
+        let (send, receive) = mpsc::sync_channel::<Command>(8);
+        let original = qc_native_platform::thread_owner::Owned::spawn(
+            "qc-demo-provider-test",
+            &PROVIDER_THREADS,
+            (),
+            move || {
+                // The worker's wait for the editor's reply.
+                let _ = receive.recv_timeout(Duration::from_secs(20));
+            },
+        )
+        .unwrap();
+        let worker = Worker {
+            provider_id: "blocked".into(),
+            stop: Arc::new(AtomicBool::new(false)),
+            socket: Arc::new(Mutex::new(None)),
+            pending: Arc::new(Mutex::new(None)),
+            commands: Some(send),
+            original: Some(original),
+        };
+        let before = Instant::now();
+        drop(worker);
+        assert!(
+            before.elapsed() < Duration::from_millis(1500),
+            "drop waited out the worker's 20 s receive: {:?}",
+            before.elapsed()
+        );
+    }
+
+    #[test]
     fn stale_clear_never_retires_a_replacement_provider() {
         let (commands, _) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
@@ -939,7 +976,7 @@ mod tests {
             stop: stop.clone(),
             socket: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(None)),
-            commands,
+            commands: Some(commands),
             original: None,
         }));
         assert!(take_matching_provider(&workers, Some("old-provider")).is_none());
@@ -1064,7 +1101,7 @@ mod tests {
                 stop,
                 socket: Arc::new(Mutex::new(None)),
                 pending: Arc::new(Mutex::new(None)),
-                commands,
+                commands: Some(commands),
                 original: None,
             }
         }
@@ -1155,7 +1192,7 @@ mod tests {
             stop: Arc::new(AtomicBool::new(false)),
             socket: Arc::new(Mutex::new(Some(stream))),
             pending: pending.clone(),
-            commands,
+            commands: Some(commands),
             original: None,
         });
         assert!(sender(&bridge, "foreign-ui", &target, 1).is_err());
