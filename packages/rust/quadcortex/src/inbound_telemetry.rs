@@ -233,10 +233,9 @@ impl InboundTelemetry {
     /// A declared type that decoded and that no state handler claims.
     pub fn record_no_state_handler(&mut self, message_type: u16) {
         bump(&mut self.no_state_handler_types, message_type);
-        self.note(format!(
-            "{} decoded with no state handler",
-            describe_type(message_type)
-        ));
+        // Not "unacted": another lane may consume the frame, so it must not
+        // overwrite `last_unacted`, which names the most recent real loss.
+        self.revision = self.revision.saturating_add(1);
     }
 
     /// A frame dropped because its envelope declared an encrypted body.
@@ -674,10 +673,29 @@ mod tests {
         );
         assert_eq!(snapshot.unacted_frames, 1);
         assert_eq!(snapshot.no_state_handler_frames, 1);
-        assert_eq!(
-            snapshot.last_unacted.unwrap(),
-            "type 24 (ShowGigView) decoded with no state handler"
-        );
+        // Handler-less chatter on the state half never displaces the
+        // transport half's real loss.
+        assert_eq!(snapshot.last_unacted.unwrap(), "undeclared message type 73");
+    }
+
+    #[test]
+    fn no_state_handler_frames_never_hide_a_transport_loss() {
+        let mut transport = InboundTelemetry::default();
+        transport.record_framing_error("bad trailer");
+        let mut state = InboundTelemetry::default();
+        for _ in 0..3 {
+            state.record_no_state_handler(profile::MESSAGE_TYPE_SHOW_GIG_VIEW);
+        }
+        assert!(state.snapshot().last_unacted.is_none());
+        assert_eq!(state.snapshot().no_state_handler_frames, 3);
+        assert!(state.revision() > 0);
+        transport.merge(&state);
+        let snapshot = transport.snapshot();
+        assert!(snapshot
+            .last_unacted
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("framing error")));
+        assert_eq!(snapshot.no_state_handler_frames, 3);
     }
 
     #[test]
