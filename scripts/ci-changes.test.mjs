@@ -598,3 +598,30 @@ test('short CI orchestration jobs on the staged runner have bounded timeouts', (
     assert.match(body, /^ {4}timeout-minutes: 5$/m, job);
   }
 });
+
+// Self-hosted Linux and macOS jobs keep Cargo's output on the runner (the way the
+// Windows jobs do) instead of rebuilding from a GitHub cache that manual dispatch
+// rarely re-saves; GitHub-hosted runners keep restoring the master rust-cache.
+test('self-hosted Cargo jobs keep a persistent target directory and hosted jobs keep rust-cache', () => {
+  const action = readFileSync(path.join(root, '.github', 'actions', 'cargo-target-dir', 'action.yml'), 'utf8');
+  assert.match(action, /if: \$\{\{ runner\.environment == 'self-hosted' \}\}/);
+  assert.match(action, /rm -rf "\$dir"/);
+  assert.match(action, /echo "CARGO_TARGET_DIR=\$dir"/);
+  assert.match(action, /\^\[A-Za-z0-9\._-\]\+\$/);
+
+  const used = (text) => (text.match(/uses: \.\/\.github\/actions\/cargo-target-dir/g) ?? []).length;
+  assert.equal(used(workflow('ci.yml')), 2);
+  assert.equal(used(workflow('linux-broker.yml')), 2);
+  assert.equal(used(workflow('macos-build.yml')), 1);
+
+  // In ci.yml the rust-cache step right after the action is hosted-only.
+  const afterAction =
+    /cargo-target-dir\n {8}with:\n {10}name: [^\n]+\n {6}- uses: Swatinem[^\n]*\n {8}if: \$\{\{ runner\.environment == 'github-hosted' \}\}/g;
+  assert.equal((workflow('ci.yml').match(afterAction) ?? []).length, 2);
+  for (const name of ['macos-build.yml', 'linux-broker.yml']) {
+    for (const step of workflow(name).split('\n      - ')) {
+      if (!step.includes('Swatinem/rust-cache') || step.includes('key: linux-deb-release')) continue;
+      assert.match(step, /runner\.environment == 'github-hosted'/, `${name}: ${step.split('\n')[0]}`);
+    }
+  }
+});
