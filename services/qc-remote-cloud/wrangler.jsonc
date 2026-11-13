@@ -51,10 +51,19 @@
 			"simple": { "limit": 10, "period": 60 }
 		},
 		{
-			// GET /authorize and POST /register, counted separately per address.
+			// GET and POST /authorize, POST /register, POST /auth/apple/notifications
+			// and the Apple sign-in callbacks, counted separately per address.
 			"name": "QCRC_OAUTH_RATE_LIMIT",
 			"namespace_id": "41002",
 			"simple": { "limit": 30, "period": 60 }
+		},
+		{
+			// GET /v1/host/pairing-sessions/<id> (the hosts poll about every
+			// 1.5 s while a pairing is open) and GET /pair?hostSession=...,
+			// counted separately per address. Sized above that cadence.
+			"name": "QCRC_POLL_RATE_LIMIT",
+			"namespace_id": "41004",
+			"simple": { "limit": 120, "period": 60 }
 		}
 	],
 	"observability": {

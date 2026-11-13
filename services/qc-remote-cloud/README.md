@@ -126,8 +126,11 @@ The unauthenticated routes that write to KV are limited per client address
 through Workers rate-limiting bindings declared in `wrangler.jsonc`
 (`src/rate-limit.ts`): `QCRC_PAIRING_RATE_LIMIT` (10 per minute for each of
 `POST /v1/host/pairing-sessions`, `POST /pair/sign-in` and `POST /pair/cancel`)
-and `QCRC_OAUTH_RATE_LIMIT` (30 per minute for each of `GET /authorize` and
-`POST /register`). An exceeded limit answers 429 with `Retry-After: 60`. The
+`QCRC_OAUTH_RATE_LIMIT` (30 per minute for each of `GET /authorize`,
+`POST /authorize`, `POST /register`, the Apple sign-in callbacks and
+`POST /auth/apple/notifications`) and `QCRC_POLL_RATE_LIMIT` (120 per minute for
+each of `GET /v1/host/pairing-sessions/<id>` and `GET /pair?hostSession=`, above
+the hosts' poll cadence). An exceeded limit answers 429 with `Retry-After: 60`. The
 bindings are created by `wrangler deploy` and need no dashboard setup. In
 production a missing binding makes those routes answer 503 rather than run
 unprotected; outside production it is skipped.

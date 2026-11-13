@@ -1,4 +1,4 @@
-import { PublicError, fetchIdentityJson } from "./http-security.ts";
+import { PublicError, fetchIdentityJson, readBoundedText } from "./http-security.ts";
 import { QC_COLORS } from "@qc-remote/theme/server";
 
 export type IdentityProvider = "google" | "apple";
@@ -74,8 +74,8 @@ export async function normalizeAppleCallback(request: Request): Promise<Request>
   const origin = request.headers.get("origin");
   if (origin && origin !== "https://appleid.apple.com") throw new PublicError("Invalid Apple callback origin.");
   if (!(request.headers.get("content-type") ?? "").startsWith("application/x-www-form-urlencoded")) throw new PublicError("Invalid Apple callback format.");
-  const body = await request.text();
-  if (body.length > 16_384) throw new PublicError("Invalid Apple callback size.");
+  const body = await readBoundedText(request, 16_384);
+  if (body === null) throw new PublicError("Invalid Apple callback size.");
   const form = new URLSearchParams(body);
   // Never copy a token or untrusted account details into the callback URL.
   url.search = new URLSearchParams({ state: form.get("state") ?? "", code: form.get("code") ?? "" }).toString();
@@ -106,8 +106,8 @@ export async function openAppleDeletionToken(value: string, subject: string, sec
 
 
 export async function readAppleNotification(request: Request, env: AppleOAuthEnv): Promise<{ subject: string; eventTime: number } | null> {
-  const text = await request.text();
-  if (text.length > 16_384) throw new PublicError("Invalid Apple notification size.");
+  const text = await readBoundedText(request, 16_384);
+  if (text === null) throw new PublicError("Invalid Apple notification size.");
   const body = JSON.parse(text) as { payload?: string };
   if (typeof body.payload !== "string") throw new PublicError("Invalid Apple notification.");
   const claims = await verifyAppleToken(env, body.payload, undefined, Date.now(), true);

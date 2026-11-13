@@ -73,3 +73,29 @@ test("missing or oversized edge addresses use the existing unknown bucket", () =
   assert.equal(clientAddress(new Request("https://relay.example/mcp")), "unknown");
   assert.equal(clientAddress(request("/mcp", "POST", "x".repeat(65))), "unknown");
 });
+
+test("Apple callbacks, the consent post and the pairing lookups are limited under their own keys", () => {
+  const cases = [
+    ["/auth/apple/mcp/callback", "POST", "oauth-apple-callback", "QCRC_OAUTH_RATE_LIMIT"],
+    ["/auth/apple/pair/callback", "POST", "oauth-apple-callback", "QCRC_OAUTH_RATE_LIMIT"],
+    ["/auth/apple/delete/callback", "POST", "oauth-apple-callback", "QCRC_OAUTH_RATE_LIMIT"],
+    ["/auth/apple/notifications", "POST", "apple-notification", "QCRC_OAUTH_RATE_LIMIT"],
+    ["/authorize", "POST", "oauth-authorize-submit", "QCRC_OAUTH_RATE_LIMIT"],
+    ["/authorize", "GET", "oauth-authorize", "QCRC_OAUTH_RATE_LIMIT"],
+    ["/v1/host/pairing-sessions/" + "a".repeat(27), "GET", "pairing-poll", "QCRC_POLL_RATE_LIMIT"],
+    ["/pair?hostSession=" + "a".repeat(27), "GET", "pairing-page", "QCRC_POLL_RATE_LIMIT"],
+  ];
+  for (const [path, method, route, binding] of cases) assert.deepEqual(rateLimitedRoute(request(path, method)), { route, binding }, `${method} ${path}`);
+  for (const [path, method] of [["/pair", "GET"], ["/auth/apple/mcp/callback", "GET"], ["/v1/host/pairing-sessions/short", "GET"]]) assert.equal(rateLimitedRoute(request(path, method)), null, `${method} ${path}`);
+});
+
+test("the pairing poll budget sits above the hosts' 1.5 s cadence and is separate from session creation", async () => {
+  const seen = [];
+  const env = { QCRC_ENVIRONMENT: "production", QCRC_PAIRING_RATE_LIMIT: { async limit() { assert.fail("polls must not spend the creation budget"); } },
+    QCRC_POLL_RATE_LIMIT: { async limit({ key }) { seen.push(key); return { success: true }; } } };
+  for (let poll = 0; poll < 3; poll += 1) assert.equal(await enforceRateLimit(request("/v1/host/pairing-sessions/" + "b".repeat(27), "GET"), env), null);
+  assert.deepEqual(seen, Array(3).fill("pairing-poll:192.0.2.7"));
+  const over = await enforceRateLimit(request("/v1/host/pairing-sessions/" + "b".repeat(27), "GET"), { QCRC_ENVIRONMENT: "production", QCRC_POLL_RATE_LIMIT: { async limit() { return { success: false }; } } });
+  assert.equal(over.status, 429);
+  assert.equal(over.headers.get("retry-after"), "60");
+});
