@@ -7,6 +7,6 @@
   "exports": "./src/index.ts",
   "scripts": {
     "test": "node --experimental-strip-types --test tests/client-behavior.test.ts",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.tests.json"
   }
 }

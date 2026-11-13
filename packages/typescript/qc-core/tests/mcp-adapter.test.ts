@@ -36,7 +36,7 @@ const outcome = { accepted: true, verified: false, verification: 'accepted_unver
 function resultFor(rpc: string): any {
   const kind = GATEWAY_RESULT_KINDS[rpc as keyof typeof GATEWAY_RESULT_KINDS];
   if (kind === 'PresetSnapshot') return { presetName: 'Observed', blocks: [] };
-  if (kind === 'DeviceActionResult' || kind === 'DuplicateSetlistResult') return { ...outcome, ...(rpc === 'device.duplicateSetlist' ? { setlistKey: 'Observed' } : {}) };
+  if (kind === 'DeviceActionResult' || (kind as string) === 'DuplicateSetlistResult') return { ...outcome, ...(rpc === 'device.duplicateSetlist' ? { setlistKey: 'Observed' } : {}) };
   return { sentinel: rpc };
 }
 
