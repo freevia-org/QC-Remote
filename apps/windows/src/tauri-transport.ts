@@ -7,7 +7,7 @@ import type { VirtualDeviceStorage } from "@qc-remote/ui";
 import { callTauri } from "./tauri-invoke.ts";
 import { listenScoped } from "./scoped-listener.ts";
 
-export { publicRelay, publicRelayBrowserPairing } from "./public-relay-transport.ts";
+export { publicRelay } from "./public-relay-transport.ts";
 
 export interface PhysicalQcDevice { id: string; name: string; connected?: boolean; phase?: string }
 export const physicalDevices = {

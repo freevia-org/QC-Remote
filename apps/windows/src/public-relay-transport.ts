@@ -52,5 +52,3 @@ export const publicRelay: PublicRelayPort = {
   }
 };
 
-/** Backward-compatible alias; new consumers use `publicRelay.browserPairing`. */
-export const publicRelayBrowserPairing = publicRelay.browserPairing!;
