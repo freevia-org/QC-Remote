@@ -3023,6 +3023,38 @@ fn backup_traffic_defers_the_idle_keepalive_deadline() {
     assert!(session.keepalive_due(2 + quadcortex::profile::KEEPALIVE_INTERVAL_MS));
 }
 
+/// RC-20: a long tap waits longer than the keepalive interval on the thread
+/// that sends the keepalive. The wait must run its service step often enough
+/// that the keepalive goes out on its own clock, not after the hold.
+#[test]
+fn a_paced_wait_longer_than_the_keepalive_interval_still_sends_the_keepalive_on_time() {
+    let mut session = TransportRuntime::new(0);
+    session.transport_opened(0);
+    session.handshake_completed(1, true);
+    session.keepalive_sent(0);
+    let start = Instant::now();
+    let mut sent_at = Vec::new();
+    let hold = Duration::from_millis(quadcortex::profile::REMOTE_HOLD_INTERVAL_MS);
+    assert!(hold > Duration::from_millis(quadcortex::profile::KEEPALIVE_INTERVAL_MS));
+    pause_servicing(hold, || {
+        let now = start.elapsed();
+        if session.take_keepalive(now.as_millis() as u64).is_some() {
+            sent_at.push(now);
+        }
+    });
+    assert!(
+        start.elapsed() >= hold,
+        "the wait still lasts the whole hold"
+    );
+    let keepalive = Duration::from_millis(quadcortex::profile::KEEPALIVE_INTERVAL_MS);
+    assert_eq!(sent_at.len(), 1, "{sent_at:?}");
+    assert!(
+        sent_at[0] >= keepalive && sent_at[0] < keepalive + Duration::from_millis(150),
+        "the keepalive went out at {:?}, not within a slice of its due time",
+        sent_at[0]
+    );
+}
+
 #[test]
 fn an_abandoned_session_reports_to_the_backup_caller() {
     let (_owner, backup, receiver) = started_backup(Duration::from_secs(600));
