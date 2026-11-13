@@ -1487,20 +1487,22 @@ pub(super) fn bionic_device_knowledge_skill_path_in(home: &Path) -> PathBuf {
     current
 }
 
+// Both resolve the home through the one helper every other client path uses:
+// it reads HOME off Windows (and the App Store container home), where a bare
+// USERPROFILE read found nothing and failed every macOS/Linux pairing.
 pub(super) fn bionic_device_knowledge_skill_path() -> Option<PathBuf> {
-    Some(bionic_device_knowledge_skill_path_in(&PathBuf::from(
-        std::env::var_os("USERPROFILE")?,
-    )))
+    super::user_home_directory().map(|home| bionic_device_knowledge_skill_path_in(&home))
 }
 
 pub(super) fn antigravity_device_knowledge_skill_path() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").map(|home| {
-        PathBuf::from(home)
-            .join(".gemini")
-            .join("config")
-            .join("skills")
-            .join(DEVICE_KNOWLEDGE_SKILL_NAME)
-    })
+    super::user_home_directory().map(|home| antigravity_device_knowledge_skill_path_in(&home))
+}
+
+fn antigravity_device_knowledge_skill_path_in(home: &Path) -> PathBuf {
+    home.join(".gemini")
+        .join("config")
+        .join("skills")
+        .join(DEVICE_KNOWLEDGE_SKILL_NAME)
 }
 
 /// Backups are kept per host.  A shared root would let a ChatGPT unpair restore

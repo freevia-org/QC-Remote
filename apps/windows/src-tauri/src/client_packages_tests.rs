@@ -3978,6 +3978,26 @@ fn read_bionic_route(config: &Path, executable: &Path) -> ConfiguredJsonMcpRoute
 /// be written where Bionic actually reads - getting that backwards installs
 /// a skill that is never loaded and reports success for it.
 #[test]
+fn skill_paths_resolve_the_home_through_the_shared_helper() {
+    // Off Windows only HOME is set; a USERPROFILE read made both of these None
+    // and failed every Antigravity and LM Studio pairing and unpair.
+    let home = user_home_directory();
+    assert_eq!(
+        device_knowledge_skill::antigravity_device_knowledge_skill_path(),
+        home.as_ref().map(|home| home
+            .join(".gemini")
+            .join("config")
+            .join("skills")
+            .join("qc-device-knowledge"))
+    );
+    assert_eq!(
+        device_knowledge_skill::bionic_device_knowledge_skill_path(),
+        home.as_ref()
+            .map(|home| device_knowledge_skill::bionic_device_knowledge_skill_path_in(home))
+    );
+}
+
+#[test]
 fn the_bionic_skill_path_prefers_the_location_bionic_documents() {
     let home = crate::tests::unique_fixture_directory("client-package");
     let _fixture_guard = crate::tests::RemoveDirOnDrop::new(home.clone());
