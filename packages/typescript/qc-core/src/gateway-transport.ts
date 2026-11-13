@@ -16,43 +16,43 @@ export function createQcGatewayTransport(
 ): QcDeviceTransport {
   const expected = (snapshot?: PresetSnapshot) => snapshot ?? currentSnapshot();
   return {
-    currentSnapshot() {
+    async currentSnapshot() {
       return gateway.currentSnapshot();
     },
-    selectScene(scene, snapshot) {
+    async selectScene(scene, snapshot) {
       const state = expected(snapshot);
       return gateway.selectScene(scene, state.presetName, requirePresetIdentity(state));
     },
-    selectModeSlot(slot, snapshot) {
+    async selectModeSlot(slot, snapshot) {
       const state = expected(snapshot);
       return gateway.selectModeSlot(slot, state.presetName, requirePresetIdentity(state));
     },
-    movePreset(delta, snapshot) {
+    async movePreset(delta, snapshot) {
       const state = expected(snapshot);
       const position = adjacentPresetPosition(state.presetPosition, delta);
       // Recalling the loaded preset again is not a step and may reload it.
-      if (position === state.presetPosition) return Promise.resolve({ detail: presetBoundaryDetail(delta) });
+      if (position === state.presetPosition) return { detail: presetBoundaryDetail(delta) };
       // Recall guards describe the loaded preset, not the destination. The
       // cloud contract requires its name as well as its address and identity.
       return gateway.recallPreset(state.setlistKey, position, state.presetName, state.presetPosition, state.setlistKey, requirePresetIdentity(state));
     },
-    pressFootswitch(index, snapshot) {
+    async pressFootswitch(index, snapshot) {
       const state = expected(snapshot);
       return gateway.pressFootswitch(index, state.mode, state.presetName, requirePresetIdentity(state));
     },
-    setTempo(bpm, snapshot) {
+    async setTempo(bpm, snapshot) {
       const state = expected(snapshot);
       return gateway.setTempo(bpm, state.tempo, state.presetName, requirePresetIdentity(state));
     },
-    tapTempo(snapshot) {
+    async tapTempo(snapshot) {
       const state = expected(snapshot);
       return gateway.tapTempo(state.mode, state.presetName, requirePresetIdentity(state));
     },
-    blockDetails(row, column, snapshot) {
+    async blockDetails(row, column, snapshot) {
       const state = expected(snapshot);
       return gateway.blockDetails(row, column, state.presetName, requirePresetIdentity(state));
     },
-    setParameter(row, column, parameterIndex, value, snapshot) {
+    async setParameter(row, column, parameterIndex, value, snapshot) {
       const state = expected(snapshot);
       const route = state.routes.find((route) => route.row === row);
       const modelId = column < QC_GRID_COLUMNS
@@ -67,16 +67,16 @@ export function createQcGatewayTransport(
         return gateway.setParameter(row, column, parameterIndex, value, parameter.normalizedValue, state.activeScene, modelId, state.presetName, requirePresetIdentity(state));
       });
     },
-    setBypass(row, column, bypassed, snapshot) {
+    async setBypass(row, column, bypassed, snapshot) {
       const state = expected(snapshot);
       const block = state.blocks.find((candidate) => candidate.row === row && candidate.column === column);
-      if (!block) return Promise.reject(new Error(`No block exists at row ${row + 1}, column ${column + 1}.`));
+      if (!block) throw new Error(`No block exists at row ${row + 1}, column ${column + 1}.`);
       return gateway.toggleBypass(row, column, state.activeScene, block.bypassed ?? false, bypassed, requireModelId(block), state.presetName, requirePresetIdentity(state));
     },
-    setTuner(show) {
+    async setTuner(show) {
       return gateway.showTuner(show);
     },
-    setGigView(show) {
+    async setGigView(show) {
       return gateway.showGigView(show);
     }
   };
