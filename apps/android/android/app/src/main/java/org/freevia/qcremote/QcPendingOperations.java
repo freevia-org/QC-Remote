@@ -35,6 +35,13 @@ final class QcPendingOperations {
 
     boolean remove(Entry<?> entry) { return entries.remove(entry.id, entry); }
 
+    /** Fail one still-registered entry at once; false when it already completed. */
+    boolean fail(Entry<?> entry, Throwable error) {
+        if (!remove(entry)) return false;
+        entry.result.completeExceptionally(error);
+        return true;
+    }
+
     boolean isEmpty() { return entries.isEmpty(); }
 
     <T> List<Entry<T>> entries(Class<T> type) {
