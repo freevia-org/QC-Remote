@@ -101,6 +101,15 @@ pub struct PhaseProjection {
     pub synchronized: bool,
 }
 
+/// See [`DeviceController::connection_scalars`].
+#[derive(Debug, Clone)]
+pub struct ConnectionScalars {
+    pub phase: String,
+    pub connected: bool,
+    pub synchronized: bool,
+    pub connected_at_unix_ms: Option<u128>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerStatus {
@@ -1262,6 +1271,25 @@ impl DeviceController {
             connected: status.connected,
             synchronized: status.synchronized,
         }
+    }
+
+    /// The scalar connection fields request paths read, from the short status
+    /// lock alone (see [`Self::phase_projection`]); for the paths that took a
+    /// full [`Self::status`] to read one or two of them.
+    pub fn connection_scalars(&self) -> ConnectionScalars {
+        let status = self.state.lock_recover();
+        ConnectionScalars {
+            phase: status.phase.clone(),
+            connected: status.connected,
+            synchronized: status.synchronized,
+            connected_at_unix_ms: status.connected_at_unix_ms,
+        }
+    }
+
+    /// The session owner's suspension record alone, the same source
+    /// [`Self::status`] reports it from.
+    pub fn suspension(&self) -> quadcortex::device::owner::SuspensionDiagnostics {
+        self.session_owner.lock_recover().suspension()
     }
 
     pub fn status(&self) -> BrokerStatus {
