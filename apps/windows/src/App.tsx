@@ -17,6 +17,7 @@ import { useWindowsPrompts } from "./use-windows-prompts";
 import { BROWSER_PAIRING_EXPIRED, beginBrowserPairingOnPanelOpen, browserPairingPollFailureMessage, createBrowserPairingSession, startBrowserPairingLifecycle } from "./browser-pairing-session";
 import { shouldCloseBlockEditorOnEscape } from "./block-editor-keyboard";
 import { appendConnectionEvent, DIAGNOSTICS_EVENT_COUNT } from "./connection-events";
+import { connectorsNeedRefreshAfter, runConnectorUnlink, type ConnectorUnlinkOutcome } from "./relay-connectors";
 import { saveOpenedWorkspaceCopy } from "./workspace-copy";
 import { captureGatewaySession } from "@qc-remote/ui";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
@@ -1049,24 +1050,27 @@ export function App() {
     const epoch = relayConnectorMountEpoch.current;
     const current = () => relayConnectorMounted.current && epoch === relayConnectorMountEpoch.current && relayConnectorMutation.current === token;
     setRelayUnlinkingGrantId(grantId);
+    let outcome: ConnectorUnlinkOutcome = "cancelled";
     try {
-      if (!await appPrompts.confirm(`Unlink ${connector.name}? Its Remote MCP authorization will be revoked immediately.`) || !current()) return;
-      const connectors = await publicRelay.unlinkConnector(grantId);
-      if (!current()) return;
-      setRelayConnectors(connectors);
-      setRelayConnectorsError(undefined);
-      setNotice(`${connector.name} unlinked from Remote MCP.`);
-    } catch (error) {
-      if (!current()) return;
-      actionFailed(error);
-      setRelayConnectorsError(error instanceof Error ? error.message : String(error));
+      outcome = await runConnectorUnlink({
+        confirm: () => appPrompts.confirm(`Unlink ${connector.name}? Its Remote MCP authorization will be revoked immediately.`),
+        unlink: () => publicRelay.unlinkConnector!(grantId),
+        current,
+        onUnlinked: (connectors) => {
+          setRelayConnectors(connectors);
+          setRelayConnectorsError(undefined);
+          setNotice(`${connector.name} unlinked from Remote MCP.`);
+        },
+        onFailed: actionFailed
+      });
     } finally {
       if (relayConnectorMutation.current === token) {
         relayConnectorMutation.current = undefined;
         relayConnectorRead.current += 1;
         if (relayConnectorMounted.current) {
           setRelayUnlinkingGrantId(undefined);
-          if (epoch !== relayConnectorMountEpoch.current) void refreshRelayConnectors();
+          // A failed unlink may or may not have taken effect: read the list again.
+          if (epoch !== relayConnectorMountEpoch.current || connectorsNeedRefreshAfter(outcome)) void refreshRelayConnectors();
         }
       }
     }
