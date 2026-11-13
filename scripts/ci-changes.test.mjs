@@ -34,21 +34,19 @@ function declaredEvents(text) {
   return events;
 }
 
-test('workflow triggers are explicit, with the published Linux asset signer as the only release-event workflow', () => {
+test('every workflow is manual-only (workflow_dispatch), with no automatic trigger', () => {
   const files = readdirSync(path.join(root, '.github', 'workflows')).filter((name) => /\.ya?ml$/.test(name));
   assert.ok(files.length > 0, 'workflow files must exist');
   for (const name of files) {
-    const expected = name === 'sign-linux-release-assets.yml'
-      ? ['release', 'workflow_dispatch']
-      : ['workflow_dispatch'];
-    assert.deepEqual(declaredEvents(workflow(name)), expected, `${name} has an unexpected trigger`);
+    assert.deepEqual(declaredEvents(workflow(name)), ['workflow_dispatch'], `${name} has an unexpected trigger`);
   }
 });
 
-test('the Linux asset signer runs only for published releases and refuses draft releases', () => {
+test('the Linux asset signer is dispatched for an existing tag and refuses draft releases', () => {
   const text = workflow('sign-linux-release-assets.yml');
-  assert.match(text, /^  release:\n    types: \[published\]$/m);
   assert.match(text, /^    if: github\.event_name != 'release' \|\| github\.event\.release\.draft == false$/m);
+  assert.match(text, /\.isDraft' release\.json\)" != "false"/);
+  assert.match(text, /Refusing to sign a draft release\./);
 });
 
 test('qc-ui source, docs and root markdown are safe', () => {
