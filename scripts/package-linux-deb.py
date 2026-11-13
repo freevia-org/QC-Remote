@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import hashlib
 import json
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from typing import Iterator, Mapping, Sequence
 
@@ -28,6 +30,9 @@ APP = ROOT / "apps/windows/src-tauri"
 RULES = ROOT / "services/device-broker/linux/70-qc-remote.rules"
 PACKAGE_RULE_PATH = "/usr/share/qc-remote/70-qc-remote.rules"
 MAX_TIMEOUT_SECONDS = 3600
+# How much of a command's output a failure message carries (the tail).
+OUTPUT_TAIL_LINES = 200
+OUTPUT_TAIL_CHARS = 8000
 
 
 class PackageError(RuntimeError):
@@ -37,7 +42,12 @@ class PackageError(RuntimeError):
 def run_owned(
     command: Sequence[str], *, cwd: Path, timeout: float, env: Mapping[str, str] | None = None
 ) -> str:
-    """Run a build command in an owned process group and always reap it."""
+    """Run a build command in an owned process group and always reap it.
+
+    The command's combined output is forwarded to stderr line by line while it
+    runs, so a hung or cancelled build still leaves its log behind, and a bounded
+    tail is kept for the error message and returned to the caller.
+    """
     if os.name != "posix":
         raise PackageError("Linux packaging must run on Linux")
     if timeout <= 0 or timeout > MAX_TIMEOUT_SECONDS:
@@ -53,16 +63,19 @@ def run_owned(
         start_new_session=True,
         env=env,
     )
-    output = ""
+    tail: collections.deque[str] = collections.deque(maxlen=OUTPUT_TAIL_LINES)
+    pump = threading.Thread(target=_forward_output, args=(process, tail), daemon=True)
+    pump.start()
     group_stopped = False
     try:
-        output, _ = process.communicate(timeout=timeout)
+        process.wait(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         _stop_process_group(process)
         group_stopped = True
-        output, _ = process.communicate()
+        process.wait()
+        pump.join(timeout=5)
         raise PackageError(
-            f"command timed out after {timeout:g}s: {' '.join(command)}\n{output[-8000:]}"
+            f"command timed out after {timeout:g}s: {' '.join(command)}\n{_tail_text(tail)}"
         ) from exc
     finally:
         # Commands in this entrypoint are not allowed to leave persistent helpers.
@@ -72,11 +85,33 @@ def run_owned(
         if process.poll() is None:
             process.wait()
 
+    # A descendant that outlived the command can hold the pipe open; the group
+    # was stopped above, so the pump ends promptly.
+    pump.join(timeout=5)
+    output = _tail_text(tail)
     if process.returncode:
         raise PackageError(
-            f"command exited {process.returncode}: {' '.join(command)}\n{output[-8000:]}"
+            f"command exited {process.returncode}: {' '.join(command)}\n{output}"
         )
     return output
+
+
+def _forward_output(process: subprocess.Popen[str], tail: collections.deque[str]) -> None:
+    assert process.stdout is not None
+    try:
+        for line in process.stdout:
+            tail.append(line)
+            try:
+                sys.stderr.write(line)
+                sys.stderr.flush()
+            except (OSError, ValueError):
+                pass
+    except (OSError, ValueError):
+        pass
+
+
+def _tail_text(tail: collections.deque[str]) -> str:
+    return "".join(tail)[-OUTPUT_TAIL_CHARS:]
 
 
 def _stop_process_group(process: subprocess.Popen[str]) -> None:

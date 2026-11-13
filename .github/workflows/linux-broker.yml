@@ -587,7 +587,7 @@ jobs:
       - name: Build and verify Debian package from this source commit
         env:
           RUSTUP_TOOLCHAIN: stable
-        run: python3 scripts/package-linux-deb.py --timeout-seconds 3600
+        run: python3 scripts/package-linux-deb.py --timeout-seconds 2400
       - name: Name package and write checksum manifest
         run: |
           mapfile -t packages < <(find apps/windows/src-tauri/target -type f -path '*/bundle/deb/*.deb' -print)
