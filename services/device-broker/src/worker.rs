@@ -3927,7 +3927,34 @@ fn run_leased(
                     reply,
                 } => {
                     let result = if let Some(connected) = connection.as_mut() {
-                        thread::sleep(delay);
+                        // The waits of a paced sequence (a long tap holds for
+                        // longer than the keepalive interval) run on this
+                        // thread, which also owns the 1 Hz keepalive. Sleeping
+                        // through the wait made one keepalive late every time
+                        // (RC-20), so the wait is sliced and the keepalive is
+                        // sent from inside it, on the same clock and under
+                        // the same stand-down rule as the main loop. Wire
+                        // bytes and cadence are unchanged.
+                        let connected = std::cell::RefCell::new(connected);
+                        let pause = |duration: Duration| {
+                            pause_servicing(duration, || {
+                                if backup.is_some() || relay_pump.is_running() {
+                                    return;
+                                }
+                                let now_ms = session_clock.elapsed().as_millis() as u64;
+                                let keepalive =
+                                    session.lock_recover().transport.take_keepalive(now_ms);
+                                if let Some(keepalive) = keepalive {
+                                    // A failed write is left for the main loop's
+                                    // own keepalive to find and tear down on.
+                                    let mut connected = connected.borrow_mut();
+                                    if connected.usb.send_command(keepalive).is_ok() {
+                                        update_usb_telemetry(&state, &connected);
+                                    }
+                                }
+                            });
+                        };
+                        pause(delay);
                         send_paced_sequence(
                             &messages,
                             release_on_failure.as_ref(),
@@ -3937,6 +3964,7 @@ fn run_leased(
                                 // this same loop already started on this same
                                 // connection, so it is not fenced by the
                                 // admission that the failure may have exhausted.
+                                let mut connected = connected.borrow_mut();
                                 let sent = connected
                                     .send_command_checked(
                                         message.clone(),
@@ -3945,11 +3973,11 @@ fn run_leased(
                                     )
                                     .map_err(|error| error.to_string());
                                 if sent.is_ok() {
-                                    update_usb_telemetry(&state, connected);
+                                    update_usb_telemetry(&state, &connected);
                                 }
                                 sent
                             },
-                            thread::sleep,
+                            pause,
                         )
                     } else {
                         Err("Quad Cortex is not connected".into())
@@ -5649,6 +5677,25 @@ fn update_message(
 /// known to be pressed, and a release is itself a click on some screens. `send`
 /// receives `true` for the release frame. If the release cannot be sent either,
 /// the error carries [`TOUCH_UP_UNSENT`] so a hold can record the pointer as held.
+/// How often a wait inside [`pause_servicing`] stops to run its service step.
+/// Far below the keepalive interval, so a keepalive falling due mid-wait goes
+/// out within one slice of its clock.
+const PAUSE_SERVICE_SLICE: Duration = Duration::from_millis(20);
+
+/// Wait `duration` on the device thread without starving its timers: sleep in
+/// slices of at most [`PAUSE_SERVICE_SLICE`] and run `service` after each one.
+fn pause_servicing(duration: Duration, mut service: impl FnMut()) {
+    let deadline = Instant::now() + duration;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        thread::sleep(remaining.min(PAUSE_SERVICE_SLICE));
+        service();
+    }
+}
+
 fn send_paced_sequence(
     messages: &[OutboundMessage],
     release: Option<&OutboundMessage>,
