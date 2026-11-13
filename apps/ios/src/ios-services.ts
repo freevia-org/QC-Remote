@@ -56,8 +56,14 @@ async function load(): Promise<void> {
   if (loading) return loading;
   const pending = (async () => {
     const raw = (await QCIosNativeBridge.secureGet({ key: storageKey })).value;
-    const value: unknown = raw == null ? {} : JSON.parse(raw);
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The saved sign-in data is invalid.");
+    let value: unknown;
+    try { value = raw == null ? {} : JSON.parse(raw); } catch { value = undefined; }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      // A corrupt item can never become valid and would fail every later read, sign-in included.
+      // Discard it; the person signs in again. A Keychain read failure above still throws and retries.
+      await QCIosNativeBridge.secureRemove({ key: storageKey });
+      value = {};
+    }
     stored = value as Stored;
     loaded = true;
   })();
@@ -230,9 +236,10 @@ async function invokeRemote(method: string, args: Record<string, unknown>, conte
 const nativePlugin = {
   async scan() {
     await load();
-    if (Capacitor.isNativePlatform()) {
+    // Paired-host mode never uses the direct driver, so do not pay the native capability probe.
+    if (!prefersRemoteHost() && Capacitor.isNativePlatform()) {
       const capabilities = await QCIosNativeBridge.platformCapabilities();
-      if (capabilities.deviceFamily === "ipad" && !prefersRemoteHost()) {
+      if (capabilities.deviceFamily === "ipad") {
         const driver = await QCIosNativeBridge.scanUsbDriver();
         if (driver.available || driver.connected) {
           directIpadSession = Boolean(driver.connected);
@@ -250,9 +257,10 @@ const nativePlugin = {
 
   },
   async connect() {
-    if (Capacitor.isNativePlatform()) {
+    // Paired-host mode never uses the direct driver, so do not pay the native capability probe.
+    if (!prefersRemoteHost() && Capacitor.isNativePlatform()) {
       const capabilities = await QCIosNativeBridge.platformCapabilities();
-      if (capabilities.deviceFamily === "ipad" && !prefersRemoteHost()) {
+      if (capabilities.deviceFamily === "ipad") {
         const driver = await QCIosNativeBridge.scanUsbDriver();
         if (driver.available || directIpadSession) {
           const result = await QCIosNativeBridge.connectUsbDriver();
