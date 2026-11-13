@@ -209,16 +209,23 @@ fn streamed_skill_hash_with_inspection(
     Ok((digest_hex(hash.finalize()), bytes))
 }
 
+/// A pure function of the embedded bundle (about 1.8 MB), so it is hashed
+/// once per process instead of on every status poll of every host.
 fn bundled_device_knowledge_skill_hashes() -> serde_json::Map<String, Value> {
-    DEVICE_KNOWLEDGE_SKILL_FILES
-        .iter()
-        .map(|file| {
-            (
-                file.path.to_string(),
-                Value::String(sha256_hex(file.contents)),
-            )
+    static HASHES: std::sync::OnceLock<serde_json::Map<String, Value>> = std::sync::OnceLock::new();
+    HASHES
+        .get_or_init(|| {
+            DEVICE_KNOWLEDGE_SKILL_FILES
+                .iter()
+                .map(|file| {
+                    (
+                        file.path.to_string(),
+                        Value::String(sha256_hex(file.contents)),
+                    )
+                })
+                .collect()
         })
-        .collect()
+        .clone()
 }
 
 pub(super) fn bundled_device_knowledge_skill_marker() -> Value {
