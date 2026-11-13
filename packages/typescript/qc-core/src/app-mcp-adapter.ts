@@ -2,6 +2,11 @@ import { brokerTargetKey, selectedBrokerTarget, GATEWAY_CLIENT_METHODS, type Bro
 import { controlAccessPermitsAction, type ControlAccessMode } from "./control-access.ts";
 import { SHARED_QC_ACTIONS } from "./generated-actions.ts";
 
+// Built once: the catalogue is large and invokeAppMcp runs on every gateway call.
+const GATEWAY_RPCS: ReadonlySet<string> = new Set(Object.values(GATEWAY_CLIENT_METHODS).map((entry) => entry.rpc));
+const ACTION_BY_RPC = new Map<string, (typeof SHARED_QC_ACTIONS)[number]>();
+for (const action of SHARED_QC_ACTIONS) if (!ACTION_BY_RPC.has(action.rpc)) ACTION_BY_RPC.set(action.rpc, action);
+
 /** Dedicated read tools are deliberately separate from execute_qc_action. */
 export const APP_MCP_READ_TOOLS: Readonly<Record<string, string>> = {
   "system.status": "get_qc_status",
@@ -34,13 +39,13 @@ export function snakeCaseKey(key: string): string {
 }
 
 export function appMcpRequest(method: string, args: Record<string, unknown> = {}) {
-  if (!Object.values(GATEWAY_CLIENT_METHODS).some(entry => entry.rpc === method)) throw new Error(`Unknown app gateway method: ${method}`);
+  if (!GATEWAY_RPCS.has(method)) throw new Error(`Unknown app gateway method: ${method}`);
   const readTool = APP_MCP_READ_TOOLS[method];
   if (readTool) {
     if (Object.keys(args).length) throw new Error(`${method} does not accept arguments.`);
     return { name: readTool, arguments: {} };
   }
-  const action = SHARED_QC_ACTIONS.find(entry => entry.rpc === method);
+  const action = ACTION_BY_RPC.get(method);
   if (!action) throw new Error(`The cloud host does not publish the ${method} action.`);
   const params = Object.fromEntries(Object.entries(args).map(([key, value]) => [snakeCaseKey(key), value]));
   if (action.name === "list_models") params.query = null;
@@ -59,7 +64,7 @@ export async function invokeAppMcp(method: string, args: Record<string, unknown>
   const expectedBrokerTarget = options.expectedBrokerTarget ? { ...options.expectedBrokerTarget } : undefined;
   brokerTargetKey(expectedBrokerTarget);
   const guardSupported = options.brokerTargetGuardSupported === true;
-  const action = SHARED_QC_ACTIONS.find(entry => entry.rpc === method);
+  const action = ACTION_BY_RPC.get(method);
   if (action) {
     if (!controlAccessPermitsAction(options.accessMode, action.name)) throw new Error(`The current ${options.accessMode} access mode does not allow ${action.name}.`);
     if (action.classification !== "read" && expectedBrokerTarget && !guardSupported) throw new Error("The cloud service cannot safely bind this write to the selected device. Update QC Remote Cloud before editing.");
