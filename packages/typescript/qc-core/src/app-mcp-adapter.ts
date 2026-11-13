@@ -28,6 +28,11 @@ export function parseAppMcpResult(result: any): any {
   try { return JSON.parse(text); } catch { return text; }
 }
 
+/** The MCP action schemas spell every operand in snake_case. */
+export function snakeCaseKey(key: string): string {
+  return key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+}
+
 export function appMcpRequest(method: string, args: Record<string, unknown> = {}) {
   if (!Object.values(GATEWAY_CLIENT_METHODS).some(entry => entry.rpc === method)) throw new Error(`Unknown app gateway method: ${method}`);
   const readTool = APP_MCP_READ_TOOLS[method];
@@ -37,7 +42,7 @@ export function appMcpRequest(method: string, args: Record<string, unknown> = {}
   }
   const action = SHARED_QC_ACTIONS.find(entry => entry.rpc === method);
   if (!action) throw new Error(`The cloud host does not publish the ${method} action.`);
-  const params = Object.fromEntries(Object.entries(args).map(([key, value]) => [key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`), value]));
+  const params = Object.fromEntries(Object.entries(args).map(([key, value]) => [snakeCaseKey(key), value]));
   if (action.name === "list_models") params.query = null;
   if (action.name === "rename_current_preset") {
     params.new_name = params.name;

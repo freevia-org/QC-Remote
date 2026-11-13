@@ -3,6 +3,9 @@ import { adoptModelPresetCatalog } from "./model-preset-catalog.ts";
 import { samePresetAddress } from "./preset-address.ts";
 export type { QcStateUpdate } from "@qc-remote/client";
 
+/** How long an optimistic command outranks contradicting device state before the device wins. */
+export const QC_OPTIMISTIC_COMMAND_GRACE_MS = 3_000;
+
 export type PendingBypassIntent = { bypassed: boolean; issuedAt: number; commandId?: number };
 export type PendingBypassIntents = Map<string, PendingBypassIntent>;
 
@@ -51,7 +54,7 @@ export function reconcilePendingBypass(
   state: QcStateUpdate,
   pending: PendingBypassIntents,
   now = Date.now(),
-  graceMs = 3_000,
+  graceMs = QC_OPTIMISTIC_COMMAND_GRACE_MS,
   observationStartedAt = state.observedAt ?? now
 ): QcStateUpdate | null {
   const accept = (row: number, column: number, bypassed: boolean): boolean => {
@@ -105,7 +108,7 @@ export function reconcileQcStateUpdates(
   states: readonly QcStateUpdate[],
   pending: PendingBypassIntents,
   now = Date.now(),
-  graceMs = 3_000
+  graceMs = QC_OPTIMISTIC_COMMAND_GRACE_MS
 ): QcStateUpdate[] {
   const reconciled: QcStateUpdate[] = [];
   for (const state of states) {
@@ -121,7 +124,7 @@ export function reduceQcStateFrame(
   states: readonly QcStateUpdate[],
   pending: PendingBypassIntents,
   now = Date.now(),
-  graceMs = 3_000
+  graceMs = QC_OPTIMISTIC_COMMAND_GRACE_MS
 ): { snapshot: PresetSnapshot; states: QcStateUpdate[] } {
   const reconciled = reconcileQcStateUpdates(states, pending, now, graceMs);
   return { snapshot: applyQcStateUpdates(snapshot, reconciled), states: reconciled };
@@ -133,7 +136,7 @@ export function reconcilePresetSnapshot(
   pending: PendingBypassIntents,
   observedAt = Date.now(),
   now = Date.now(),
-  graceMs = 3_000
+  graceMs = QC_OPTIMISTIC_COMMAND_GRACE_MS
 ): PresetSnapshot {
   const update = reconcilePendingBypass(
     { kind: "preset", blocks: incoming.blocks, catalogRefresh: true, observedAt },
@@ -233,10 +236,18 @@ export function modeSlotIsActive(snapshot: PresetSnapshot, slot: 0 | 1 | 2): boo
   const selected = selectModeSlotInSnapshot(snapshot, slot);
   if (selected === snapshot || selected.mode !== snapshot.mode) return false;
   if (snapshot.mode !== "HYBRID") return true;
-  const expected = selected.footswitchModes;
-  const observed = snapshot.footswitchModes;
-  return expected !== undefined && observed !== undefined && expected.length === observed.length
-    && expected.every((mode, index) => mode === observed[index]);
+  return sameModePair(selected.footswitchModes, snapshot.footswitchModes);
+}
+
+/** A projected block names the same live block only with the same cell and a known, equal model. */
+export function matchesProjection(block: Pick<GridBlock, "row" | "column" | "modelId">, item: Pick<GridBlock, "row" | "column" | "modelId">): boolean {
+  return item.row === block.row && item.column === block.column
+    && item.modelId !== undefined && item.modelId === block.modelId;
+}
+
+/** Ordered footswitch-mode pairs are equal only when both are known and match entry by entry. */
+export function sameModePair(a: PresetSnapshot["footswitchModes"], b: PresetSnapshot["footswitchModes"]): boolean {
+  return a !== undefined && b !== undefined && a.length === b.length && a.every((mode, index) => mode === b[index]);
 }
 
 /** Native revisions compare reductions within one session, never across sessions. */
@@ -265,8 +276,7 @@ function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): Pr
       }) };
     if (!state.blocks) return next;
     return { ...next, blocks: next.blocks.map((block) => {
-      const observed = state.blocks!.find((item) => item.row === block.row && item.column === block.column
-        && item.modelId !== undefined && item.modelId === block.modelId);
+      const observed = state.blocks!.find((item) => matchesProjection(block, item));
       return { ...block, bypassed: observed?.bypassed };
     }) };
   }
@@ -313,8 +323,7 @@ function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): Pr
   }
   if (state.kind === "bypassBatch" && state.blocks) {
     return { ...snapshot, footswitchStates: state.footswitchStates ?? snapshot.footswitchStates, blocks: snapshot.blocks.map((block) => {
-      const observed = state.blocks!.find((item) => item.row === block.row && item.column === block.column
-        && item.modelId !== undefined && item.modelId === block.modelId);
+      const observed = state.blocks!.find((item) => matchesProjection(block, item));
       return observed ? { ...block, bypassed: observed.bypassed } : block;
     }) };
   }

@@ -4,6 +4,9 @@ import { samePresetAddress, type PresetAddress } from "./preset-address.ts";
 import {
   applyQcStateUpdate,
   bypassAddress,
+  matchesProjection,
+  QC_OPTIMISTIC_COMMAND_GRACE_MS,
+  sameModePair,
   movePresetInSnapshot,
   presetLocationLabel,
   reconcilePresetSnapshot,
@@ -80,7 +83,7 @@ type FootswitchBase = {
 /** Older than every real observation: a base taken from the pre-intent snapshot. */
 const PRE_INTENT = Number.NEGATIVE_INFINITY;
 
-export const QC_OPTIMISTIC_COMMAND_GRACE_MS = 3_000;
+export { QC_OPTIMISTIC_COMMAND_GRACE_MS };
 
 /** Opaque handle used to settle or safely roll back one optimistic command. */
 export interface QcCommandToken {
@@ -309,8 +312,7 @@ export class QcCommandCoordinator {
         const projection = scalar.blocks;
         const complete = scalar.kind === "scene";
         scalar = { ...scalar, blocks: next.blocks.flatMap((block) => {
-          const observed = projection.find((item) => item.row === block.row && item.column === block.column
-            && item.modelId !== undefined && item.modelId === block.modelId);
+          const observed = projection.find((item) => matchesProjection(block, item));
           return complete || observed ? [{ ...block, bypassed: observed?.bypassed }] : [];
         }) };
       }
@@ -525,8 +527,7 @@ function adoptScalarBase(intent: ScalarIntent, state: ScalarState, observedAt: n
 function modeIntentMatches(intent: ScalarIntent, modes: PresetSnapshot["footswitchModes"]): boolean {
   if (intent.key !== "mode" || intent.target !== "HYBRID") return true;
   const expected = intent.applied.previousFootswitchModes;
-  return expected === undefined || (modes !== undefined && expected.length === modes.length
-    && expected.every((mode, index) => mode === modes[index]));
+  return expected === undefined || sameModePair(expected, modes);
 }
 
 function stripObservedAt(base: ScalarBase): ScalarState {
