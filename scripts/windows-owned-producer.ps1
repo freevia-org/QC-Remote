@@ -187,7 +187,10 @@ while (-not $protocolInput.TryLine(64, [ref]$go, [ref]$ended)) {
 }
 if ($go -cne 'go') { throw 'Producer bootstrap admission refused before dispatch.' }
 function Forward-ProducerOutput($Original) {
+    # Count the frames handled so the caller can sleep only when the job was idle.
+    $script:forwardedFrames = 0
     foreach ($frame in @(Receive-Job -Job $Original -ErrorAction Stop)) {
+        $script:forwardedFrames++
         if ($frame.kind -eq 'stdout' -or $frame.kind -eq 'stderr') {
             Write-ProducerFrame @{schemaVersion=1;id=$request.id;kind=$frame.kind;text=$frame.text}
         } elseif ($frame.kind -eq 'producer-exit') { Set-Variable -Name exitCode -Value ([int]$frame.code) -Scope 1 }
@@ -311,6 +314,7 @@ try {
             $watch = [Diagnostics.Stopwatch]::StartNew()
             $exitDrain = $null
             while (-not ($done[0] -and $done[1] -and $process.HasExited)) {
+                $progress = $false
                 # Do not await a pending read held open by a grandchild after
                 # cancellation. Parent still owns and retires the native Job.
                 if ([IO.File]::Exists("$Owner.cancel")) { throw 'Producer child acknowledged cooperative cancellation.' }
@@ -322,6 +326,7 @@ try {
                 for ($index=0; $index -lt 2; $index++) {
                     if ($done[$index] -or -not $pending[$index].IsCompleted) { continue }
                     $count = $pending[$index].GetAwaiter().GetResult()
+                    $progress = $true
                     if ($count -eq 0) { $done[$index] = $true; continue }
                     $text = [string]::new($buffers[$index],0,$count)
                     $used[$index] += [Text.Encoding]::UTF8.GetByteCount($text)
@@ -329,7 +334,11 @@ try {
                     [pscustomobject]@{ kind=(@('stdout','stderr')[$index]); text=$text }
                     $pending[$index] = $readers[$index].ReadAsync($buffers[$index],0,4096)
                 }
-                Start-Sleep -Milliseconds 10
+                # Sleep only when neither stream produced anything this pass, so a
+                # chatty child is drained at pipe speed instead of one 4 KiB chunk
+                # per timer tick. Deadline, cancellation and envelope checks above
+                # still run on every pass.
+                if (-not $progress) { Start-Sleep -Milliseconds 10 }
             }
             [pscustomobject]@{kind='producer-exit';code=$process.ExitCode}
         } catch {
@@ -368,6 +377,7 @@ try {
         }
         if (-not $followsCaller -and $clock.ElapsedMilliseconds -ge $timeoutMs) { throw 'Producer host deadline expired.' }
         Forward-ProducerOutput $job
+        $hostProgress = $script:forwardedFrames -gt 0
         if ($job.State -in @('Completed','Failed','Stopped')) {
             # Drain again after terminal observation; state may have advanced
             # immediately after the preceding Receive-Job snapshot.
@@ -375,7 +385,8 @@ try {
             if ($null -eq $exitCode -and $null -eq $failure) { $failure = 'Producer ended without a complete exit result.' }
             break
         }
-        Start-Sleep -Milliseconds 10
+        # Poll again at once while frames are flowing; sleep only when idle.
+        if (-not $hostProgress) { Start-Sleep -Milliseconds 10 }
     }
 } catch { $failure = [string]$_.Exception.Message }
 finally {

@@ -674,6 +674,32 @@ test("actual caller-lifetime commands preserve streamed output and nonzero outco
   }
 });
 
+test("actual owned command streams a megabyte of output without per-chunk throttling, byte-exact", { skip: process.platform !== "win32" }, async () => {
+  // The relay used to sleep unconditionally after every 4 KiB chunk per stream,
+  // capping throughput; measured on a slow Windows host 1 MiB took 134 s
+  // before and 22 s after. It must now drain while data is available. The bound
+  // is deliberately loose (start-up is a few seconds to a minute on a loaded host).
+  const lineLength = 1009; // 16 * 63 + 1
+  const total = lineLength * 1038; // about 1 MiB
+  const { createHash } = await import("node:crypto");
+  const expected = createHash("sha256");
+  const actual = createHash("sha256");
+  const line = "0123456789abcdef".repeat(63) + "\n"; // 1 KiB, ASCII
+  for (let written = 0; written < total; written += line.length) expected.update(line);
+  let received = 0;
+  const started = Date.now();
+  const result = await runOwnedWindowsCommand({
+    command: process.execPath,
+    arguments: ["-e", `const l=${JSON.stringify(line)};let n=${total};function w(){while(n>0){n-=l.length;if(!process.stdout.write(l)){process.stdout.once('drain',w);return;}}}w();`],
+    cwd: process.cwd(), timeoutMilliseconds: 120_000,
+  }, { onStdout(value) { received += Buffer.byteLength(value); actual.update(value); } });
+  const elapsed = Date.now() - started;
+  assert.deepEqual(result, { code: 0, retirementAcknowledged: true });
+  assert.equal(received, total);
+  assert.equal(actual.digest("hex"), expected.digest("hex"), "output is byte-exact and in order");
+  assert.ok(elapsed < 100_000, `1 MiB took ${elapsed} ms; the relay is throttling output`);
+});
+
 for (const fixture of [
   { allow: false, createDirectory: false }, { allow: true, createDirectory: false },
   { allow: false, createDirectory: true }, { allow: true, createDirectory: true },
