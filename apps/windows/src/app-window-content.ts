@@ -95,6 +95,13 @@ export const DEFAULT_BROKER_TRAY_STATUS: BrokerTrayStatus = {
   trayEnabled: true, idleDisconnectMinutes: 15, trayRunning: false, trayStopping: false, updaterRelayEnabled: true, lastError: null
 };
 
+/** Whether two tray statuses say the same thing; the poll keeps the held object when they do. */
+export function sameBrokerTrayStatus(a: BrokerTrayStatus, b: BrokerTrayStatus): boolean {
+  return a.trayEnabled === b.trayEnabled && a.idleDisconnectMinutes === b.idleDisconnectMinutes
+    && a.trayRunning === b.trayRunning && a.trayStopping === b.trayStopping
+    && a.updaterRelayEnabled === b.updaterRelayEnabled && a.lastError === b.lastError;
+}
+
 export type SettingsSetting = "form-factor" | "control-access-mode" | "follow-qc-screen" | "tray-enabled" | "idle-disconnect-minutes" | "updater-relay-enabled";
 
 /** The Settings row for internet requests initiated by the connected Quad Cortex. */
