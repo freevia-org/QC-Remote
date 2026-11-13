@@ -404,3 +404,29 @@ test("a corrupt saved sign-in is discarded so the person can sign in again", asy
   assert.equal((await service.publicRelay.status()).paired, false, "later reads no longer fail");
   state.saved = JSON.stringify(["not", "an", "object"]);
 });
+
+test("sign-out revokes the refresh token at an advertised endpoint and still clears locally if that fails", async t => {
+  for (const outcome of ["revoked", "fails", "no-endpoint"] as const) {
+    const { state, service } = await loadService(t);
+    const requests: Array<{ url: string; body: string }> = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      requests.push({ url: String(input), body: String(init?.body) });
+      if (outcome === "fails") throw new Error("offline");
+      return new Response("", { status: 200 });
+    }) as typeof fetch;
+    t.after(() => { globalThis.fetch = original; });
+    state.saved = JSON.stringify({ client: { client_id: "ios-client" }, tokens: { access_token: "a", refresh_token: "r", token_type: "bearer" },
+      discovery: outcome === "no-endpoint" ? { authorizationServerMetadata: {} } : { authorizationServerMetadata: { revocation_endpoint: "https://relay.example/oauth/revoke" } } });
+    assert.equal((await service.publicRelay.status()).paired, true);
+    assert.equal((await service.publicRelay.unpair()).paired, false, "local credentials are cleared in every case");
+    if (outcome === "no-endpoint") assert.equal(requests.length, 0);
+    else {
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].url, "https://relay.example/oauth/revoke");
+      assert.match(requests[0].body, /token=r/);
+      assert.match(requests[0].body, /client_id=ios-client/);
+    }
+    globalThis.fetch = original;
+  }
+});

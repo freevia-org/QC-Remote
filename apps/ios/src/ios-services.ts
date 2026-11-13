@@ -70,6 +70,19 @@ async function load(): Promise<void> {
   loading = pending;
   try { await pending; } finally { if (loading === pending) loading = undefined; }
 }
+/** Best-effort RFC 7009 revocation before the local copy is dropped. Failure never blocks sign-out. */
+async function revokeStoredTokens(): Promise<void> {
+  const metadata = (stored.discovery as { authorizationServerMetadata?: { revocation_endpoint?: unknown } } | undefined)?.authorizationServerMetadata;
+  const token = stored.tokens?.refresh_token ?? stored.tokens?.access_token;
+  if (typeof metadata?.revocation_endpoint !== "string" || !token) return;
+  try {
+    const endpoint = new URL(metadata.revocation_endpoint);
+    if (endpoint.protocol !== "https:") return;
+    const body = new URLSearchParams({ token, token_type_hint: stored.tokens?.refresh_token ? "refresh_token" : "access_token" });
+    if (stored.client?.client_id) body.set("client_id", stored.client.client_id);
+    await remoteTraffic.fetch(endpoint, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body, signal: AbortSignal.timeout(5_000) });
+  } catch { /* the local sign-out below still proceeds */ }
+}
 async function save(): Promise<void> { await QCIosNativeBridge.secureSet({ key: storageKey, value: JSON.stringify(stored) }); }
 function emit(name: string, value: unknown): void {
   if (name === "qcStateBatch" && directIpadSession) {
@@ -387,7 +400,7 @@ export const publicRelay: PublicRelayPort = {
   async usage(): Promise<PublicRelayUsage> { const value = await callTool("get_remote_usage", {}); return { day: value.day ?? "", commands: value.commands ?? 0, lastCommandAt: value.lastCommandAt, platformUsage: value.platformUsage }; },
   async pair() { await connectMcp(); return status(); },
   async start() { await connectMcp(); },
-  async unpair() { await nativePlugin.disconnect(); stored = {}; await save(); return status(); },
+  async unpair() { await nativePlugin.disconnect(); await load(); await revokeStoredTokens(); stored = {}; await save(); return status(); },
   async setAccessMode(value) { mode = value; localStorage.setItem("qc-control.device-access-mode-v1", mode); return status(); },
   browserPairing: {
     async begin() { await connectMcp(); return { expiresAt: Date.now() + 600_000 }; },
