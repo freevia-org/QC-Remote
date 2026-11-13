@@ -339,7 +339,7 @@ jobs:
           node-version: 22
       - name: Verify dependency security workflow covers public lockfiles
         run: node --test scripts/security-audit-workflow.test.mjs
-      - run: node --test scripts/verify-third-party-notices.test.mjs scripts/verify-license-carveout.test.mjs scripts/vite-qc-legal-assets.test.mjs
+      - run: node --test scripts/verify-third-party-notices.test.mjs scripts/verify-license-carveout.test.mjs scripts/vite-qc-legal-assets.test.mjs scripts/entry-point-link.test.mjs
       - run: node scripts/verify-third-party-notices.mjs
       - run: node scripts/verify-license-carveout.mjs
       # Cargo, npm and Android toolchain manifests agreeing with each other and
