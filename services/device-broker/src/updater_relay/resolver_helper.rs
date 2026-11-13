@@ -256,7 +256,7 @@ impl Drop for ResolverOwner {
         original.terminate();
         let confirmed = original.terminal(Duration::from_secs(1));
         if !confirmed {
-            eprintln!("Resolver retirement unconfirmed; retaining original child {:?} and its admission capacity", original.child.id());
+            crate::diagnostics::diag!("Resolver retirement unconfirmed; retaining original child {:?} and its admission capacity", original.child.id());
         }
         retain_unconfirmed(
             original,

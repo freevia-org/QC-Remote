@@ -202,10 +202,12 @@ impl Supervisor {
             match catch_unwind(AssertUnwindSafe(start)) {
                 Ok(Ok(running)) => *host = Some(running),
                 Ok(Err(error)) => {
-                    eprintln!("The background MCP host could not start; retrying: {error}")
+                    crate::diagnostics::diag!(
+                        "The background MCP host could not start; retrying: {error}"
+                    )
                 }
                 Err(_) => {
-                    eprintln!("The background MCP host panicked while starting")
+                    crate::diagnostics::diag!("The background MCP host panicked while starting")
                 }
             }
         }
@@ -408,7 +410,7 @@ impl Drop for Supervisor {
 
 fn stop_quietly(running: &mut dyn RunningHost, within: Duration) {
     if catch_unwind(AssertUnwindSafe(|| running.stop(within))).is_err() {
-        eprintln!("The background MCP host panicked while stopping");
+        crate::diagnostics::diag!("The background MCP host panicked while stopping");
     }
 }
 

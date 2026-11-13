@@ -162,7 +162,9 @@ mod tests {
                     break;
                 }
                 if Instant::now() >= deadline {
-                    eprintln!("controlled worker did not retire; original handle remains owned");
+                    crate::diagnostics::diag!(
+                        "controlled worker did not retire; original handle remains owned"
+                    );
                     break;
                 }
                 thread::sleep(Duration::from_millis(1));

@@ -229,7 +229,7 @@ impl QueueBudget {
         self.counters.record_subscriber_drop(self.kind, bytes);
         let dropped = self.dropped_frames.fetch_add(1, Ordering::Relaxed) + 1;
         if dropped.is_power_of_two() {
-            eprintln!(
+            crate::diagnostics::diag!(
                 "Dropped a {}-byte frame for a slow {} subscriber ({why}; {} bytes queued of {}); {dropped} dropped for this subscriber so far",
                 bytes,
                 self.kind.label(),

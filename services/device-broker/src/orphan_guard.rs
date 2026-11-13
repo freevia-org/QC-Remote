@@ -164,7 +164,7 @@ pub fn watch(
                 if !clock.try_commit_reaping() {
                     continue;
                 }
-                eprintln!(
+                crate::diagnostics::diag!(
                     "QC device broker's parent process {parent_pid} is gone and no request has \
                  arrived in {:?}; exiting rather than holding the device as a leftover.",
                     clock.idle_for()
