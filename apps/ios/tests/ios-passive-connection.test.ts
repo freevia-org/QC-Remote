@@ -37,7 +37,7 @@ async function loadService(t: any) {
     "@qc-remote/client": `export {selectedBrokerTarget,brokerTargetKey} from "real-client";export const validateGatewayResult=(method,x)=>x;export const GATEWAY_CLIENT_METHODS={};export const withDeviceConnectionSource=x=>x;export const createGatewayClientTransport=fn=>({invoke:fn});`,
     "@qc-remote/core": `export const parseControlAccessMode=()=>"read-only";export const controlAccessPermitsAction=()=>true;export const SHARED_QC_ACTIONS=[{rpc:"device.setMasterVolume",name:"set_master_volume",classification:"live-write"}];export const createQcGatewayTransport=x=>x;export {parseAppMcpResult} from "real-adapter";export const invokeAppMcp=async(method,args,opts)=>{globalThis.__qcIosTest.invocations.push({method,target:opts.expectedBrokerTarget,supported:opts.brokerTargetGuardSupported});const result=await opts.callTool(method==='system.status'?'get_qc_status':'get_current_preset',args);if(method==='system.status')opts.onStatus?.(result);return result;};`,
     "@qc-remote/theme": `export const QC_BRAND={publicRelayEndpoint:'https://example.test'};`,
-    "../native-bridge": `export const QCIosNativeBridge={secureGet:async()=>{const s=globalThis.__qcIosTest;s.secureReads++;if(s.secureReadError)throw Error("Keychain temporarily unavailable");if(s.secureReadGate)await s.secureReadGate;return {value:s.saved};},secureSet:async({value})=>{globalThis.__qcIosTest.saved=value;},addListener:async()=>({remove:async()=>{}}),setScreenAwake:async()=>{},platformCapabilities:async()=>({deviceFamily:'iphone'})};`,
+    "../native-bridge": `export const QCIosNativeBridge={secureGet:async()=>{const s=globalThis.__qcIosTest;s.secureReads++;if(s.secureReadError)throw Error("Keychain temporarily unavailable");if(s.secureReadGate)await s.secureReadGate;return {value:s.saved};},secureSet:async({value})=>{globalThis.__qcIosTest.saved=value;},secureRemove:async()=>{const s=globalThis.__qcIosTest;s.saved=null;s.removes=(s.removes||0)+1;},addListener:async()=>({remove:async()=>{}}),setScreenAwake:async()=>{},platformCapabilities:async()=>{const s=globalThis.__qcIosTest;s.capabilityProbes=(s.capabilityProbes||0)+1;return {deviceFamily:'iphone'};}};`,
     "./workflow-confirmations": `export const confirmIosWorkflow=async()=>true;`,
   };
   const result = await build({ entryPoints: [fileURLToPath(new URL("../src/ios-services.ts", import.meta.url))], bundle: true, write: false, platform: "node", format: "esm", plugins: [{ name: "synthetic-native-and-sdk", setup(build) {
@@ -386,4 +386,21 @@ test("explicit disconnect cancels the old first status and a newer demand cannot
   assert.deepEqual(service.remoteConnection().brokerTarget, newTarget);
   assert.equal(service.remoteObservation(), observed); assert.equal(state.calls.length, calls);
   assert.equal(state.saved, saved); assert.equal(state.browserOpens, 0);
+});
+
+test("paired-host scan and connect never probe native platform capabilities", async t => {
+  const { state, service } = await loadService(t);
+  state.failConnect = false;
+  await service.QcUsbNative.scan();
+  await service.QcUsbNative.connect();
+  assert.equal((state as any).capabilityProbes ?? 0, 0, "the direct-driver probe enumerates the app bundle natively");
+});
+
+test("a corrupt saved sign-in is discarded so the person can sign in again", async t => {
+  const { state, service } = await loadService(t);
+  state.saved = "{not json";
+  assert.equal((await service.publicRelay.status()).paired, false);
+  assert.equal((state as any).removes, 1, "the unreadable item is removed from the Keychain");
+  assert.equal((await service.publicRelay.status()).paired, false, "later reads no longer fail");
+  state.saved = JSON.stringify(["not", "an", "object"]);
 });
