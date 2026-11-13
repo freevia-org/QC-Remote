@@ -20,11 +20,6 @@
 /* The production Tuner keeps the captured CorOS drawing but gives every
    visible control a semantic HTML target. The native select and range remain
    over their drawn controls rather than introducing a second visual language. */
-.coros-tuner > footer > section > label[for="qc-tuner-reference"] {
-  display: block;
-  margin-bottom: 1.2cqw;
-  font-size: 2cqw;
-}
 .tuner-frequency > input[type="range"] {
   position: absolute;
   inset: -.5cqw 0 0 7.8cqw;
