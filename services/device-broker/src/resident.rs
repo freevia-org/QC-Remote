@@ -156,6 +156,68 @@ pub trait RunningHost: Send {
 
 const TICK: Duration = Duration::from_millis(250);
 const RESTART_BACKOFF: Duration = Duration::from_secs(5);
+/// The longest wait between attempts to start a host that keeps failing.
+const RESTART_BACKOFF_CEILING: Duration = Duration::from_secs(5 * 60);
+/// A host that stayed up this long was healthy: its next restart starts the
+/// back-off over instead of continuing to escalate.
+const HOST_HEALTHY_AFTER: Duration = Duration::from_secs(60);
+/// Log a failure that repeats unchanged only once in this many attempts.
+const REPEATED_FAILURE_LOG_EVERY: u32 = 100;
+
+/// How long to wait before starting the host again, and which failures are
+/// worth a log line. A host that cannot start (its port is taken, a
+/// configuration file is unreadable) used to be retried every five seconds and
+/// logged every time for as long as the broker lived.
+#[derive(Default)]
+struct RestartPolicy {
+    /// Consecutive starts that failed or whose host ended young.
+    failures: u32,
+    last_error: Option<String>,
+    repeats: u32,
+    started_at: Option<Instant>,
+}
+
+impl RestartPolicy {
+    /// The wait after a start: [`RESTART_BACKOFF`], doubling per consecutive
+    /// failure up to [`RESTART_BACKOFF_CEILING`].
+    fn delay(&self) -> Duration {
+        let doublings = self.failures.saturating_sub(1).min(16);
+        RESTART_BACKOFF
+            .saturating_mul(1 << doublings)
+            .min(RESTART_BACKOFF_CEILING)
+    }
+
+    /// The host this policy started has ended and is about to be replaced.
+    fn host_ended(&mut self, now: Instant) {
+        match self.started_at.take() {
+            Some(started) if now.saturating_duration_since(started) >= HOST_HEALTHY_AFTER => {
+                self.failures = 0;
+            }
+            _ => self.failures = self.failures.saturating_add(1),
+        }
+    }
+
+    fn started(&mut self, now: Instant) {
+        self.started_at = Some(now);
+        self.last_error = None;
+        self.repeats = 0;
+    }
+
+    /// A start that failed. `true` when it should be logged: the first of its
+    /// kind, a different failure than the last, or every
+    /// [`REPEATED_FAILURE_LOG_EVERY`]th repeat.
+    fn failed(&mut self, error: &str) -> bool {
+        self.failures = self.failures.saturating_add(1);
+        if self.last_error.as_deref() == Some(error) {
+            self.repeats = self.repeats.saturating_add(1);
+            self.repeats.is_multiple_of(REPEATED_FAILURE_LOG_EVERY)
+        } else {
+            self.last_error = Some(error.to_owned());
+            self.repeats = 1;
+            true
+        }
+    }
+}
 /// How long a supervisor tick may spend stopping the host it no longer wants.
 const STOP_BOUND: Duration = Duration::from_secs(3);
 
@@ -170,6 +232,7 @@ pub struct Supervisor {
     directory: PathBuf,
     paused: AtomicBool,
     exiting: AtomicBool,
+    restarts: Mutex<RestartPolicy>,
 }
 
 impl Supervisor {
@@ -197,19 +260,39 @@ impl Supervisor {
         } else if host.as_ref().is_none_or(|running| running.finished())
             && Instant::now() >= *next_attempt
         {
+            let mut restarts = self
+                .restarts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if host.is_some() {
+                restarts.host_ended(Instant::now());
+            }
             *host = None;
-            *next_attempt = Instant::now() + RESTART_BACKOFF;
+            // Set before the start, so a start that panics or never returns
+            // is not retried on the very next tick; widened below once the
+            // outcome is known.
+            *next_attempt = Instant::now() + restarts.delay();
             match catch_unwind(AssertUnwindSafe(start)) {
-                Ok(Ok(running)) => *host = Some(running),
+                Ok(Ok(running)) => {
+                    restarts.started(Instant::now());
+                    *host = Some(running);
+                }
                 Ok(Err(error)) => {
-                    crate::diagnostics::diag!(
-                        "The background MCP host could not start; retrying: {error}"
-                    )
+                    if restarts.failed(&error) {
+                        crate::diagnostics::diag!(
+                            "The background MCP host could not start; retrying: {error}"
+                        );
+                    }
                 }
                 Err(_) => {
-                    crate::diagnostics::diag!("The background MCP host panicked while starting")
+                    if restarts.failed("The background MCP host panicked while starting") {
+                        crate::diagnostics::diag!(
+                            "The background MCP host panicked while starting"
+                        );
+                    }
                 }
             }
+            *next_attempt = Instant::now() + restarts.delay();
         }
     }
     /// Starts the supervising thread for a published broker.
@@ -227,6 +310,7 @@ impl Supervisor {
             directory,
             paused: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
+            restarts: Mutex::new(RestartPolicy::default()),
         });
         static BUDGET: qc_native_platform::thread_owner::Budget =
             qc_native_platform::thread_owner::Budget::new(32);
@@ -1276,6 +1360,7 @@ mod tests {
             directory: PathBuf::new(),
             paused: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
+            restarts: Mutex::new(RestartPolicy::default()),
         }
     }
 
@@ -1364,6 +1449,58 @@ mod tests {
         stopped.store(true, Ordering::SeqCst);
         assert!(supervisor.pause(Duration::ZERO));
         assert!(!supervisor.host_running());
+    }
+
+    /// DB-15: a host that cannot start is retried with an escalating wait and
+    /// an unchanged failure is logged once, not every attempt.
+    #[test]
+    fn a_host_that_cannot_start_backs_off_and_a_healthy_one_resets_it() {
+        let supervisor = supervisor_with(FakeHost {
+            stopped: Arc::new(AtomicBool::new(true)),
+            wedged: false,
+        });
+        assert!(supervisor.pause(Duration::ZERO));
+        supervisor.resume();
+        let failing = || -> Result<Box<dyn RunningHost>, String> { Err("port is taken".into()) };
+        let mut waits = Vec::new();
+        let mut next = Instant::now();
+        for _ in 0..8 {
+            supervisor.reconcile_host(true, &mut next, failing);
+            waits.push(
+                next.saturating_duration_since(Instant::now())
+                    .as_secs_f32()
+                    .round() as u64,
+            );
+            next = Instant::now();
+        }
+        assert_eq!(waits, [5, 10, 20, 40, 80, 160, 300, 300], "{waits:?}");
+
+        // The same failure is logged once and then every hundredth repeat.
+        let mut policy = RestartPolicy::default();
+        let logged: Vec<bool> = (0..201).map(|_| policy.failed("port is taken")).collect();
+        assert_eq!(logged.iter().filter(|logged| **logged).count(), 3);
+        assert!(logged[0] && logged[99] && logged[199]);
+        assert!(
+            policy.failed("a different failure"),
+            "a new failure is logged"
+        );
+
+        // A host that stayed up past the healthy mark starts the wait over; one
+        // that died young keeps escalating.
+        let mut policy = RestartPolicy {
+            failures: 4,
+            ..RestartPolicy::default()
+        };
+        let now = Instant::now();
+        policy.started(now - HOST_HEALTHY_AFTER - Duration::from_secs(1));
+        policy.host_ended(now);
+        assert_eq!(policy.delay(), RESTART_BACKOFF);
+        policy.started(now - Duration::from_secs(3));
+        policy.host_ended(now);
+        assert_eq!(policy.delay(), RESTART_BACKOFF);
+        policy.started(now - Duration::from_secs(3));
+        policy.host_ended(now);
+        assert_eq!(policy.delay(), RESTART_BACKOFF * 2);
     }
 
     #[test]
