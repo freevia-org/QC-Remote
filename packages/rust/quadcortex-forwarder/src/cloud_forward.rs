@@ -45,6 +45,12 @@ pub const BROKER_ANSWER_STATUS: i32 = 500;
 pub const DEFAULT_TIMEOUT_MS: i32 = 30_000;
 /// Flight-record lines retained between drains.
 const MAX_EVENTS: usize = 64;
+/// Exchanges forwarded at once. The real unit sends a handful; the excess from
+/// a misbehaving peer is answered `busy` rather than given a thread and a TLS
+/// client each.
+const MAX_CONCURRENT_EXCHANGES: usize = 8;
+/// Refusals held for the writer; the oldest is dropped beyond this.
+const MAX_REFUSALS: usize = 64;
 
 /// Only the action of a CloudLogin (Type 18). The username and tokens it can
 /// carry are skipped by the decoder rather than copied and zeroized.
@@ -303,6 +309,14 @@ impl CloudForwardRelay {
              remaining_ms={}",
             remaining_ms(refusal.deadline)
         ));
+        while self.refusals.len() >= MAX_REFUSALS {
+            if let Some(oldest) = self.refusals.pop_front() {
+                self.event(format!(
+                    "cloud-request-unanswered id={} reason=refusal-backlog",
+                    oldest.cloud_request_id
+                ));
+            }
+        }
         self.refusals.push_back(refusal);
     }
     /// Move finished exchanges into `held`; one that ended without an
@@ -445,6 +459,19 @@ impl CloudForwardRelay {
                     key_generation: origin.key_generation,
                 },
                 "relay-off",
+            );
+            return;
+        }
+        if self.pending.len() >= MAX_CONCURRENT_EXCHANGES {
+            zeroize_request(&mut request);
+            self.refuse(
+                Refusal {
+                    cloud_request_id: cloud_id,
+                    request_id,
+                    deadline,
+                    key_generation: origin.key_generation,
+                },
+                "busy",
             );
             return;
         }
@@ -614,6 +641,7 @@ impl CloudForwardRelay {
             let reason = match reply.answer {
                 Some(ProductAnswer::TimedOut) => " reason=timeout",
                 Some(ProductAnswer::NetworkFailed) => " reason=network",
+                Some(ProductAnswer::TooLarge) => " reason=too-large",
                 Some(ProductAnswer::Server(_)) | None => "",
             };
             self.event(format!(
@@ -927,6 +955,66 @@ mod tests {
         assert!(String::from_utf8_lossy(&request[..end])
             .to_ascii_lowercase()
             .contains("x-device-49: exact"));
+    }
+
+    #[test]
+    fn exchanges_beyond_the_concurrency_cap_are_answered_busy_not_given_a_thread() {
+        use std::{io::Read, net::TcpListener, sync::atomic::AtomicBool as Flag};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let done = Arc::new(Flag::new(false));
+        let stop = Arc::clone(&done);
+        let server = thread::spawn(move || {
+            let mut held = Vec::new();
+            while !stop.load(Ordering::Acquire) {
+                if let Ok((mut socket, _)) = listener.accept() {
+                    let _ = socket.set_nonblocking(false);
+                    let _ = socket.set_read_timeout(Some(Duration::from_millis(50)));
+                    let mut block = [0; 4096];
+                    let _ = socket.read(&mut block);
+                    held.push(socket);
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+        });
+        let mut relay = CloudForwardRelay::default();
+        relay.set_enabled(true);
+        for id in 0..20_u64 {
+            let mut payload = account_request(300 + id, &format!("http://{address}/"), 60_000);
+            relay.on_product_forward(&mut payload, origin(7));
+        }
+        assert_eq!(relay.tasks.len(), MAX_CONCURRENT_EXCHANGES);
+        assert_eq!(relay.pending.len(), MAX_CONCURRENT_EXCHANGES);
+        let events = relay.take_events();
+        let busy = events
+            .iter()
+            .filter(|line| line.contains("cloud-request-refused") && line.contains("reason=busy"))
+            .count();
+        assert_eq!(busy, 20 - MAX_CONCURRENT_EXCHANGES);
+        let mut answered = 0;
+        while let Some(reply) = relay.take_response_when(7, KEY) {
+            assert_eq!(answer(&reply).2, BROKER_ANSWER_STATUS);
+            answered += 1;
+        }
+        assert_eq!(answered, busy, "every refused request is answered once");
+        drop(relay);
+        done.store(true, Ordering::Release);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn the_refusal_backlog_is_bounded_and_names_what_it_drops() {
+        let mut relay = CloudForwardRelay::default();
+        for id in 0..(MAX_REFUSALS as u64 + 5) {
+            let mut payload = account_request(500 + id, "http://127.0.0.1:9/", 60_000);
+            relay.on_product_forward(&mut payload, origin(7));
+        }
+        assert_eq!(relay.refusals.len(), MAX_REFUSALS);
+        assert_eq!(
+            relay.refusals.front().map(|r| r.cloud_request_id),
+            Some(505)
+        );
     }
 
     #[test]

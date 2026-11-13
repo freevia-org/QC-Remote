@@ -228,6 +228,45 @@ pub enum ProductAnswer {
     TimedOut,
     /// The exchange failed (connection, TLS, protocol).
     NetworkFailed,
+    /// The body could not fit one device frame; it was abandoned unread.
+    TooLarge,
+}
+
+/// Largest product answer body that still fits one USB frame once the
+/// protobuf envelope and ids are added.
+pub const MAX_PRODUCT_ANSWER_BYTES: usize = quadcortex::profile::MAX_FRAME_BYTES - 64 * 1024;
+
+enum ProductFailure {
+    Fetch(fetch::FetchFailure),
+    TooLarge,
+}
+
+impl From<fetch::FetchFailure> for ProductFailure {
+    fn from(failure: fetch::FetchFailure) -> Self {
+        Self::Fetch(failure)
+    }
+}
+
+/// Read a response body, refusing as soon as it is known not to fit a frame.
+/// Whatever was buffered is zeroized on the way out.
+fn read_bounded_body(
+    body: &mut dyn fetch::HttpBody,
+    content_length: Option<u64>,
+    limit: usize,
+    timeout: Duration,
+) -> Result<Zeroizing<Vec<u8>>, ProductFailure> {
+    if content_length.is_some_and(|length| length > limit as u64) {
+        return Err(ProductFailure::TooLarge);
+    }
+    let mut bytes = Zeroizing::new(Vec::new());
+    while let Some(piece) = body.next_chunk(timeout)? {
+        let piece = Zeroizing::new(piece);
+        if bytes.len().saturating_add(piece.len()) > limit {
+            return Err(ProductFailure::TooLarge);
+        }
+        bytes.extend_from_slice(&piece);
+    }
+    Ok(bytes)
 }
 
 /// Forward one decrypted Type 29 and answer it, as `forward_with_fetcher_at`
@@ -280,7 +319,7 @@ pub fn forward_product_with_fetcher_at(
             Some(pa::http_operation::Enum::Put) => ::http::Method::PUT,
             Some(pa::http_operation::Enum::Post) => ::http::Method::POST,
             Some(pa::http_operation::Enum::Delete) => ::http::Method::DELETE,
-            None => return Err(fetch::FetchFailure::Protocol),
+            None => return Err(fetch::FetchFailure::Protocol.into()),
         };
         let mut response = fetcher.send_until(
             method,
@@ -290,11 +329,13 @@ pub fn forward_product_with_fetcher_at(
             answer_by,
             Arc::clone(&cancel),
         )?;
-        let mut bytes = Zeroizing::new(Vec::new());
-        while let Some(piece) = response.body.next_chunk(timeout)? {
-            bytes.extend_from_slice(&piece);
-        }
-        Ok((response.status, std::mem::take(&mut *bytes)))
+        let mut bytes = read_bounded_body(
+            &mut *response.body,
+            response.content_length,
+            MAX_PRODUCT_ANSWER_BYTES,
+            timeout,
+        )?;
+        Ok::<_, ProductFailure>((response.status, std::mem::take(&mut *bytes)))
     })();
     // Only cancellation (session retired, relay owner gone) or a
     // missed device deadline suppresses the answer; an HTTP timeout
@@ -307,10 +348,15 @@ pub fn forward_product_with_fetcher_at(
             let status = i32::from(status);
             (status, bytes, ProductAnswer::Server(status))
         }
-        Err(fetch::FetchFailure::Timeout) => (
+        Err(ProductFailure::Fetch(fetch::FetchFailure::Timeout)) => (
             cloud_forward::BROKER_ANSWER_STATUS,
             Vec::new(),
             ProductAnswer::TimedOut,
+        ),
+        Err(ProductFailure::TooLarge) => (
+            cloud_forward::BROKER_ANSWER_STATUS,
+            Vec::new(),
+            ProductAnswer::TooLarge,
         ),
         Err(_) => (
             cloud_forward::BROKER_ANSWER_STATUS,

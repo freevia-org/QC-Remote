@@ -319,3 +319,76 @@ fn a_failed_account_exchange_is_answered_and_reported_as_a_network_failure() {
     };
     assert_eq!(response.error_code, cloud_forward::BROKER_ANSWER_STATUS);
 }
+
+struct ChunkedBody {
+    remaining: usize,
+    chunk: usize,
+    pulled: usize,
+}
+impl fetch::HttpBody for ChunkedBody {
+    fn next_chunk(&mut self, _: Duration) -> Result<Option<Vec<u8>>, fetch::FetchFailure> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        let piece = self.chunk.min(self.remaining);
+        self.remaining -= piece;
+        self.pulled += piece;
+        Ok(Some(vec![7; piece]))
+    }
+}
+
+#[test]
+fn an_oversized_product_body_is_abandoned_at_the_frame_limit_not_downloaded() {
+    let mut body = ChunkedBody {
+        remaining: 2 * 1024 * 1024,
+        chunk: 16 * 1024,
+        pulled: 0,
+    };
+    let result = read_bounded_body(
+        &mut body,
+        None,
+        MAX_PRODUCT_ANSWER_BYTES,
+        Duration::from_secs(1),
+    );
+    assert!(matches!(result, Err(ProductFailure::TooLarge)));
+    assert!(body.pulled <= MAX_PRODUCT_ANSWER_BYTES + 16 * 1024);
+    assert!(body.remaining > 1024 * 1024, "the rest was never fetched");
+}
+
+#[test]
+fn a_declared_oversize_length_is_refused_before_any_byte_is_read() {
+    let mut body = ChunkedBody {
+        remaining: 10,
+        chunk: 10,
+        pulled: 0,
+    };
+    let result = read_bounded_body(
+        &mut body,
+        Some(MAX_PRODUCT_ANSWER_BYTES as u64 + 1),
+        MAX_PRODUCT_ANSWER_BYTES,
+        Duration::from_secs(1),
+    );
+    assert!(matches!(result, Err(ProductFailure::TooLarge)));
+    assert_eq!(body.pulled, 0);
+}
+
+#[test]
+fn a_body_at_the_limit_is_delivered_with_envelope_headroom() {
+    let mut body = ChunkedBody {
+        remaining: MAX_PRODUCT_ANSWER_BYTES,
+        chunk: 8192,
+        pulled: 0,
+    };
+    let bytes = read_bounded_body(
+        &mut body,
+        Some(MAX_PRODUCT_ANSWER_BYTES as u64),
+        MAX_PRODUCT_ANSWER_BYTES,
+        Duration::from_secs(1),
+    )
+    .ok()
+    .unwrap();
+    assert_eq!(bytes.len(), MAX_PRODUCT_ANSWER_BYTES);
+    let message = cloud_forward::product_forward_response(Some(1), 2, bytes.to_vec(), 200);
+    // Envelope, ids and any encryption trailer fit in the 64 KiB headroom.
+    assert!(message.payload.len() + 1024 <= quadcortex::profile::MAX_FRAME_BYTES);
+}
