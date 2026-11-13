@@ -46,6 +46,18 @@ test("a partial CPU update keeps the other reading, and unrelated states are ign
   host.renderer.unmount();
 });
 
+test("identical consecutive CPU frames keep the same columns array identity (TU-14)", () => {
+  const host = mount();
+  const frame = () => [{ core: 1, load: 40 }, { core: 2, load: 12 }] as unknown as NonNullable<QcStateUpdate["cpuColumns"]>;
+  act(() => host.value.consume([cpu({ cpuColumns: frame() })]));
+  const first = host.value.cpuColumns;
+  act(() => host.value.consume([cpu({ cpuColumns: frame() })]));
+  assert.equal(host.value.cpuColumns, first, "equal values must not replace the array");
+  act(() => host.value.consume([cpu({ cpuColumns: [{ core: 1, load: 41 }, { core: 2, load: 12 }] as any })]));
+  assert.notEqual(host.value.cpuColumns, first, "a changed load replaces it");
+  host.renderer.unmount();
+});
+
 test("the monitor overlay carries the tracked readings only while it is open", () => {
   const host = mount();
   const columns = [{ column: 3, load: 80 }] as unknown as NonNullable<QcStateUpdate["cpuColumns"]>;

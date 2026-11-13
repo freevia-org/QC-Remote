@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CpuColumnLoad } from "@qc-remote/client";
 import type { PresetLifetime, QcStateUpdate } from "@qc-remote/core";
 
+/** Telemetry frames usually repeat the same columns; keeping the previous array spares the host a render. */
+export function sameCpuColumns(a: readonly CpuColumnLoad[], b: readonly CpuColumnLoad[]): boolean {
+  return a === b || (a.length === b.length && a.every((item, index) => item.core === b[index].core && item.load === b[index].load));
+}
+
 /** What the surface needs to lay the CPU Monitor over the live Grid. */
 export interface QcCpuMonitorProps {
   cpuLoad?: number;
@@ -58,7 +63,7 @@ export function useQcCpuTelemetry(lifetime?: PresetLifetime): QcCpuTelemetry {
       if (state.kind !== "cpuLoad") continue;
       if (state.cpuTotalLoad !== undefined) setCpuLoad(state.cpuTotalLoad);
       // Column indices name blocks in one preset layout, unlike the total.
-      if (state.cpuColumns && (!origin || lifetime!.current(origin))) setCpuColumns(state.cpuColumns);
+      if (state.cpuColumns && (!origin || lifetime!.current(origin))) { const next = state.cpuColumns; setCpuColumns((previous) => sameCpuColumns(previous, next) ? previous : next); }
     }
   }, [lifetime, origin, renderedMount]);
   const monitor = useCallback((open: boolean, returnFocusTarget: "grid-menu" | undefined, onClose: () => void) => (
