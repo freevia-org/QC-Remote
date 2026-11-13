@@ -265,7 +265,7 @@ test("losing the session re-arms following, so the screen showing on resume is f
   await host.rerender({ follow: false });
   await host.rerender({ follow: true });
   act(() => host.follower.observe(observation("gig")));
-  assert.ok(host.log.includes("view:gig") || host.log.length === 0, "re-armed (the app already shows Gig, so only the latch is observable)");
+  assert.ok(host.log.includes("view:gig"), "re-armed: the Gig screen is followed again after follow was switched off and on");
   host.renderer.unmount();
 });
 

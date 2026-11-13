@@ -55,7 +55,8 @@ test("the display draws the same markup for a Windows-like and an Android-like h
 
 test("the screens that must come from the live workflows are really in the markup", async () => {
   const markup = async (scenario: Scenario) => module.render("windows", { ...scenario, presentation: "display" });
-  assert.match(await markup({ view: "tuner" }), /coros-tuner|tuner/i);
+  assert.match(await markup({ view: "tuner" }), /coros-tuner tuner-official/, "the Tuner screen itself, not the chassis' always-present tuner hint");
+  assert.doesNotMatch(await markup({ view: null }), /coros-tuner tuner-official/, "the Grid does not draw the Tuner screen");
   assert.match(await markup({ view: "modes" }), /coros-modes-configuration/);
   assert.match(await markup({ view: "looper-editor" }), /coros-looper/);
   assert.match(await markup({ view: "cpu-monitor" }), /CPU Monitor/);
