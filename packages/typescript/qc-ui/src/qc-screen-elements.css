@@ -249,7 +249,8 @@
 }
 .qc-scroll-rail::-webkit-scrollbar { width: 3px; }
 .qc-scroll-rail::-webkit-scrollbar-track { background: var(--qc-transparent); }
-.qc-scroll-rail::-webkit-scrollbar-thumb { border-radius: 2px; background: var(--qc-scroll-thumb); }
+/* Where no ancestor defines --qc-scroll-thumb the thumb has always painted transparent; the fallback says so instead of relying on an invalid var(). */
+.qc-scroll-rail::-webkit-scrollbar-thumb { border-radius: 2px; background: var(--qc-scroll-thumb, transparent); }
 .qc-scroll-rail::-webkit-scrollbar-button { display: none; }
 
 }
