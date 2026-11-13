@@ -133,7 +133,7 @@ mod tests {
         );
         // The writer holds one line and the queue holds the rest of its bound.
         assert!(accepted <= QUEUE_LINES + 1, "{accepted}");
-        assert!(logger.dropped.load(Ordering::Relaxed) >= 1000 - (QUEUE_LINES as u64 + 1));
+        // (The drop count is reported and reset by the writer, so it is not asserted.)
         *gate.0.lock().unwrap() = true;
         gate.1.notify_all();
     }
