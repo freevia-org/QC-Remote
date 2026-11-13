@@ -152,7 +152,10 @@ export function useQcController(initialSnapshot: PresetSnapshot): QcController {
           arm();
         } catch {
           // A transient refresh failure must not make optimistic state
-          // permanent. Retry slowly while the same command remains pending.
+          // permanent. Retry slowly while the same command remains pending;
+          // a forced read (a late success with no intent left) re-arms itself,
+          // because `arm` would otherwise see nothing pending and give up.
+          forceNext = force;
           arm(1_000);
         }
       }, Math.max(minimumDelay, delay === undefined ? 0 : delay + 1));
