@@ -247,7 +247,7 @@ test('Linux checks use the local runner and release requires the hosted AppArmor
   assert.match(probe, /^    runs-on: ubuntu-24\.04$/m);
   assert.match(probe, /actions\/download-artifact@[0-9a-f]{40} # v[\d.]+/);
   assert.match(probe, /scripts\/run-linux-tray-probe\.py/);
-  assert.match(probe, /sudo apt-get install/);
+  assert.match(probe, /sudo apt-get -o Acquire::Retries=3 install/);
 });
 
 test('manual CI dispatch includes native, TypeScript and cloud jobs', () => {

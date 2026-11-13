@@ -92,3 +92,10 @@ test('every Python test module and the header-glyph generator check is run by a 
   }
   assert.match(all, /python3 scripts\/generate-coros-header-font\.py --check/);
 });
+
+test('apt-get calls retry transient mirror failures', () => {
+  const text = readFileSync(path.join(workflows, 'linux-broker.yml'), 'utf8');
+  const calls = text.match(/apt-get [^\n]*/g) ?? [];
+  assert.ok(calls.length > 0);
+  for (const call of calls) assert.match(call, /-o Acquire::Retries=3/, call);
+});

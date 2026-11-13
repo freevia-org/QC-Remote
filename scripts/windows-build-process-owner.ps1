@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('Inspect', 'Stop')][string]$Action,
+    [Parameter(Mandatory = $true)][ValidateSet('Inspect')][string]$Action,
     [Parameter(Mandatory = $true)][int]$ProcessId,
     [long]$ExpectedCreatedAtFileTime,
     [int]$ExpectedParentProcessId,
@@ -115,40 +115,6 @@ namespace QcOwnedProcess {
             } finally { CloseHandle(parent); }
         }
 
-        // PS5/.NET Framework treats empty managed environment values as
-        // deletion. Select native NULL in C#, not PowerShell's null->string
-        // conversion, so absent and inherited present-empty stay distinct.
-        public static void SetProcessEnvironmentExact(string name, bool present, string value) {
-            if (String.IsNullOrEmpty(name) || name.IndexOf('=') >= 0 || name.IndexOf('\0') >= 0)
-                throw new ArgumentException("Invalid process environment name.");
-            if (present && (value == null || value.IndexOf('\0') >= 0))
-                throw new ArgumentException("A present process environment value must be a string without NUL.");
-            if (!SetEnvironmentVariableExact(name, present ? value : null)) {
-                int error = Marshal.GetLastWin32Error();
-                if (!present && error == 203) return; // Already absent is exact deletion.
-                throw new Win32Exception(error, "SetEnvironmentVariableW");
-            }
-        }
-
-        // Direct OS observation, independent of framework/provider environment
-        // enumeration. NULL means absent; String.Empty means present-empty.
-        // Win32's documented per-variable maximum is 32,767 characters.
-        public static string ReadProcessEnvironmentExact(string name) {
-            if (String.IsNullOrEmpty(name) || name.IndexOf('=') >= 0 || name.IndexOf('\0') >= 0)
-                throw new ArgumentException("Invalid process environment name.");
-            var value = new StringBuilder(32768);
-            ClearNativeLastError(0);
-            uint length = GetEnvironmentVariableExact(name, value, (uint)value.Capacity);
-            int error = Marshal.GetLastWin32Error();
-            if (length == 0) {
-                if (error == 203) return null;
-                if (error != 0) throw new Win32Exception(error, "GetEnvironmentVariableW");
-                return String.Empty;
-            }
-            if (length >= value.Capacity) throw new InvalidOperationException("Process environment variable exceeds the Win32 per-variable envelope.");
-            return value.ToString();
-        }
-
         public static Snapshot Inspect(int processId) {
             IntPtr handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
             if (handle == IntPtr.Zero) {
@@ -176,29 +142,6 @@ namespace QcOwnedProcess {
             } finally { CloseHandle(handle); }
         }
 
-        public static void Stop(int processId, long expectedCreatedAtFileTime, int expectedParentProcessId, string expectedImagePath) {
-            IntPtr handle = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION | 0x00100000, false, processId);
-            if (handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "OpenProcess(terminate)");
-            try {
-                FILETIME created, exited, kernel, user;
-                Check(GetProcessTimes(handle, out created, out exited, out kernel, out user), "GetProcessTimes");
-                var name = new StringBuilder(32768);
-                int capacity = name.Capacity;
-                Check(QueryFullProcessImageName(handle, 0, name, ref capacity), "QueryFullProcessImageName");
-                var basic = new PROCESS_BASIC_INFORMATION();
-                int returned;
-                int status = NtQueryInformationProcess(handle, ProcessBasicInformation, ref basic, Marshal.SizeOf(typeof(PROCESS_BASIC_INFORMATION)), out returned);
-                if (status != 0) throw new InvalidOperationException("NtQueryInformationProcess failed with NTSTATUS 0x" + status.ToString("x8"));
-                int parent = unchecked((int)basic.InheritedFromUniqueProcessId.ToInt64());
-                if (FileTime(created) != expectedCreatedAtFileTime || parent != expectedParentProcessId
-                    || !String.Equals(name.ToString(), expectedImagePath, StringComparison.OrdinalIgnoreCase)) {
-                    throw new InvalidOperationException("Process identity changed; refusing to stop it.");
-                }
-                Check(TerminateProcess(handle, 1), "TerminateProcess");
-                if (WaitForSingleObject(handle, 5000) != WAIT_OBJECT_0)
-                    throw new TimeoutException("Owned process did not exit within five seconds.");
-            } finally { CloseHandle(handle); }
-        }
     }
     // Build dispatch is gated until the parent owns this original Job and
     // process handle. Handles, not a later PID lookup, survive root exit.
@@ -258,12 +201,10 @@ namespace QcOwnedProcess {
         public Snapshot Root { get; private set; }
         public string Name { get; private set; }
         public bool Acknowledged { get; private set; }
-        public static int RetainedCount { get { lock (RegistryGate) { return Retained.Count; } } }
         bool quiesced;
         public static BuildJob Find(string key) {
             lock (RegistryGate) { BuildJob owner; return Retained.TryGetValue(key, out owner) ? owner : null; }
         }
-        public static bool HasAdmission(string key) { lock (RegistryGate) { return Retained.ContainsKey(key); } }
         public static object OriginalScriptJob(string key) {
             lock (RegistryGate) { object original; return ScriptJobs.TryGetValue(key, out original) ? original : null; }
         }
@@ -509,9 +450,3 @@ if ($Action -eq 'Inspect') {
     } | ConvertTo-Json -Compress
     exit 0
 }
-
-if (-not $ExpectedImagePath -or $ExpectedCreatedAtFileTime -le 0 -or $ExpectedParentProcessId -le 0) {
-    throw 'Expected PID, creation time, parent PID and image path are required for termination.'
-}
-[QcOwnedProcess.Native]::Stop($ProcessId, $ExpectedCreatedAtFileTime, $ExpectedParentProcessId, $ExpectedImagePath)
-Write-Output '{"stopped":true}'
