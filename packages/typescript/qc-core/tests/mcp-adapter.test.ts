@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createGatewayClientTransport, GATEWAY_CLIENT_METHODS, GATEWAY_RESULT_KINDS } from '../../qc-client/src/generated-gateway-methods.ts';
-import { APP_MCP_READ_TOOLS, invokeAppMcp, parseAppMcpResult } from '../src/app-mcp-adapter.ts';
+import { APP_MCP_READ_TOOLS, invokeAppMcp, parseAppMcpResult, snakeCaseKey } from '../src/app-mcp-adapter.ts';
 import { SHARED_QC_ACTIONS } from '../src/generated-actions.ts';
 import { controlAccessPermitsAction } from '../src/control-access.ts';
 import { projectAction } from '../../../../services/qc-remote-cloud/src/action-projection.ts';
@@ -22,7 +22,7 @@ function sample(schema: any, index = 0): any {
 function argumentsFor(descriptor: any, action: any): Record<string, unknown> {
   const props = action?.inputSchema.properties ?? {};
   const args = Object.fromEntries(descriptor.params.map((name: string) => {
-    const key = action?.name === 'rename_current_preset' && name === 'name' ? 'new_name' : name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+    const key = action?.name === 'rename_current_preset' && name === 'name' ? 'new_name' : snakeCaseKey(name);
     const schema = props[key] ?? {};
     const value = name === 'confirmRename' ? true : sample(schema);
     return [name, typeof value === 'string' && !schema.enum && !schema.const && !schema.pattern?.includes('#') ? `Observed_${name}`.slice(0, schema.maxLength ?? 256) : value];
