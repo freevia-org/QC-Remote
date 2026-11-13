@@ -1602,7 +1602,9 @@ struct MidiWorker {
 }
 
 /// Per-device MIDI owners. Worker records are retained for the broker lifetime,
-/// including poisoned workers, so a timed-out WinMM call is never replaced.
+/// including poisoned workers: a timed-out WinMM call is never abandoned or
+/// replaced while it is outstanding. Only after that call has returned does
+/// its own owner thread reopen the endpoint and clear the poison.
 /// The map is capped to prevent arbitrary device identities growing threads.
 /// Dropping the registry disconnects queues and transfers unfinished originals
 /// to the shared bounded owner. Global permits survive send, endpoint close and
@@ -1735,9 +1737,16 @@ impl PerformanceMidiWorkers {
                         endpoint.send(&command.device_id, command.controller, command.value);
                     if command.reply.send(result).is_err() || command.acknowledged.recv().is_err() {
                         // A caller that timed out after dispatch dropped its
-                        // acknowledgement. Retire this owner before accepting
-                        // later work, even if native work returned late.
-                        worker_poisoned.store(true, Ordering::Release);
+                        // reply or acknowledgement, and has already marked
+                        // this worker poisoned (and quarantined writes). The
+                        // native call has now returned on this thread, so
+                        // nothing is outstanding any more: close the endpoint
+                        // here, on its owner thread, open a fresh one and
+                        // accept work again. A call that never returns never
+                        // reaches this line, so the poison stands for exactly
+                        // as long as the native call does.
+                        endpoint = factory();
+                        worker_poisoned.store(false, Ordering::Release);
                     }
                 }
                 // Endpoint drop stays here; the original permit is retained
@@ -13842,6 +13851,80 @@ mod tcp_tests {
         let (released, changed) = &*gate;
         *released.lock().unwrap() = true;
         changed.notify_all();
+    }
+
+    /// DB-6: a native call that returned late left the worker healthy but
+    /// refusing all work for the life of the process. Once that call has
+    /// returned, the same owner thread reopens its endpoint and accepts work;
+    /// while the call is still outstanding the poison stands.
+    #[test]
+    fn a_performance_midi_worker_recovers_once_its_late_native_call_returns() {
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release_gate = ReleaseGate(Arc::clone(&gate));
+        let started = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let endpoints = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (factory_gate, factory_started, factory_calls, factory_endpoints) = (
+            Arc::clone(&gate),
+            Arc::clone(&started),
+            Arc::clone(&calls),
+            Arc::clone(&endpoints),
+        );
+        let mut workers = PerformanceMidiWorkers::with_factory(move || {
+            factory_endpoints.fetch_add(1, Ordering::AcqRel);
+            Box::new(GatedMidiEndpoint {
+                gate: Arc::clone(&factory_gate),
+                started: Arc::clone(&factory_started),
+                calls: Arc::clone(&factory_calls),
+            })
+        });
+        workers.budget = Duration::from_millis(40);
+        let workers = Arc::new(workers);
+        let caller = Arc::clone(&workers);
+        let request = test_support::FixtureJob::spawn_with_gate(Arc::clone(&gate), move || {
+            caller.send("late-device", 1, 2, || {})
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !started.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(started.load(Ordering::Acquire), "the native call began");
+        assert!(request
+            .join()
+            .unwrap()
+            .err()
+            .unwrap()
+            .contains("outcome is unknown"));
+        // Still inside the native call: refused.
+        let refused = workers.send("late-device", 3, 4, || {});
+        assert!(refused.err().unwrap().contains("poisoned"));
+        assert_eq!(endpoints.load(Ordering::Acquire), 1);
+
+        // The native call returns late; the worker reopens its endpoint.
+        let (released, changed) = &*gate;
+        *released.lock().unwrap() = true;
+        changed.notify_all();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while workers.workers.lock().unwrap()["late-device"]
+            .poisoned
+            .load(Ordering::Acquire)
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !workers.workers.lock().unwrap()["late-device"]
+                .poisoned
+                .load(Ordering::Acquire),
+            "the worker stayed poisoned after its native call returned"
+        );
+        assert_eq!(
+            endpoints.load(Ordering::Acquire),
+            2,
+            "a fresh endpoint replaced the one the late call used"
+        );
+        assert!(workers.send("late-device", 5, 6, || {}).is_ok());
+        assert_eq!(calls.load(Ordering::Acquire), 2);
     }
 
     #[test]
