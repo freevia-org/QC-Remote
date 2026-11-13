@@ -3248,6 +3248,23 @@ fn clear_revoked_state_publications(
     *published = None;
 }
 
+/// Wake the decoder from the device worker thread without ever blocking it.
+/// One pending wake is enough: the decoder drains every staged publication
+/// each time it runs, so a full queue already holds a wake that will pick this
+/// one up. A blocking send here parked the device thread (no HID drain, no
+/// keepalive, no Stop) whenever the decoder fell more than a queue behind.
+fn wake_decoder(
+    sender: &mpsc::SyncSender<StateDecoderCommand>,
+    wake: StateDecoderCommand,
+) -> Result<(), String> {
+    match sender.try_send(wake) {
+        Ok(()) | Err(mpsc::TrySendError::Full(_)) => Ok(()),
+        Err(mpsc::TrySendError::Disconnected(_)) => {
+            Err("The state decoder has stopped".to_string())
+        }
+    }
+}
+
 fn queue_state_observation(
     sender: &mpsc::SyncSender<StateDecoderCommand>,
     owner: &Arc<Mutex<SessionRuntime>>,
@@ -3261,9 +3278,7 @@ fn queue_state_observation(
             .lock_recover()
             .queue_model_repo(ticket, message.payload)
         {
-            sender
-                .send(StateDecoderCommand::MetadataWake)
-                .map_err(|error| error.to_string())?;
+            wake_decoder(sender, StateDecoderCommand::MetadataWake)?;
         }
         Ok(())
     } else {
@@ -3279,9 +3294,7 @@ fn queue_state_observation(
             (result, owner.state_publications_ready())
         };
         if ready {
-            sender
-                .send(StateDecoderCommand::StateWake)
-                .map_err(|error| error.to_string())?;
+            wake_decoder(sender, StateDecoderCommand::StateWake)?;
         }
         result.map(|_| ())
     }

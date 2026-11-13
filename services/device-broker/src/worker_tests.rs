@@ -3091,6 +3091,36 @@ fn a_ready_wait_notices_an_error_phase_without_waiting_for_a_state_frame() {
     assert!(started.elapsed() >= Duration::from_millis(250));
 }
 
+/// DB-16: the device worker wakes the decoder once per inbound state message.
+/// A decoder that stops consuming must never park the device thread.
+#[test]
+fn waking_a_decoder_that_stopped_consuming_never_blocks_the_device_thread() {
+    let (sender, receiver) = mpsc::sync_channel::<StateDecoderCommand>(2);
+    let started = Instant::now();
+    for _ in 0..10_000 {
+        wake_decoder(&sender, StateDecoderCommand::StateWake)
+            .expect("a full queue is not an error");
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "wakes waited on a full queue: {:?}",
+        started.elapsed()
+    );
+    // Exactly the queue's capacity is pending; the rest were coalesced.
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(StateDecoderCommand::StateWake)
+    ));
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(StateDecoderCommand::StateWake)
+    ));
+    assert!(receiver.try_recv().is_err());
+    // A decoder that has gone away is still reported.
+    drop(receiver);
+    assert!(wake_decoder(&sender, StateDecoderCommand::StateWake).is_err());
+}
+
 #[test]
 fn an_abandoned_session_reports_to_the_backup_caller() {
     let (_owner, backup, receiver) = started_backup(Duration::from_secs(600));
