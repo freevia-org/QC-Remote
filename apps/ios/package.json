@@ -17,7 +17,7 @@
     "@capacitor/app": "^8.0.0",
     "@capacitor/browser": "^8.0.0",
     "@capacitor/core": "^8.5.3",
-    "@capacitor/ios": "^8.5.0",
+    "@capacitor/ios": "^8.6.0",
     "@capacitor/status-bar": "^8.0.4",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@qc-remote/ios-native-bridge": "file:./native-bridge",
@@ -30,12 +30,12 @@
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@capacitor/cli": "8.4.3",
+    "@capacitor/cli": "8.6.0",
     "esbuild": "0.28.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "6.1.2",
+    "@vitejs/plugin-react": "6.3.0",
     "typescript": "^7.0.2",
-    "vite": "^8.3.5"
+    "vite": "^8.3.7"
   }
 }
