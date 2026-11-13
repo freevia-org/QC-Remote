@@ -53,6 +53,7 @@ public class QcUsbPlugin extends Plugin {
     private static final int MIDI_WRITE_TIMEOUT_MS = 250;
     private static final int MAINTENANCE_POLL_MS = 1000;
     private static final int HID_INPUT_REQUEST_DEPTH = 32;
+    private static final int HID_READER_NULL_WAIT_LIMIT = 5;
     // Automatic recovery is useful for a transient cable or reader interruption,
     // but repeatedly opening and closing a device that cannot synchronize is not.
     // After this many failed opens, leave an actionable error and wait for an
@@ -104,6 +105,12 @@ public class QcUsbPlugin extends Plugin {
     private volatile long decodeErrors;
     private volatile long expectedWriteStalls;
     private volatile long terminalHidWriteFailures;
+    /** Diagnostics only: negative writes that took about the whole timeout (possible timeouts, not STALLs). */
+    private volatile long slowNegativeWrites;
+    /** Diagnostics only: completed input requests that carried no bytes. */
+    private volatile long emptyReads;
+    /** Diagnostics only: input reports that were not a full 128/129-byte HID report. */
+    private volatile long malformedReports;
     /** Set once a mutation reached the wire but its outcome could not be
      * established - the Android analog of the desktop broker's
      * `DeviceSession.writes_quarantined` (services/device-broker/src/worker.rs,
@@ -243,7 +250,20 @@ public class QcUsbPlugin extends Plugin {
             if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(intent.getAction())) {
                 if (flight != null) flight.event("usb-detached");
                 rejectPendingConnect("The Quad Cortex was unplugged before USB permission was answered.");
-                if (device != null && device.getDeviceId() == changed.getDeviceId()) closeConnection();
+                if (device != null && device.getDeviceId() == changed.getDeviceId()) {
+                    // The unit is gone: no goodbye frames, and never block the main thread on
+                    // the transport monitor or a write timeout.
+                    final int detachedId = changed.getDeviceId();
+                    try {
+                        lifecycleTeardown.execute(() -> {
+                            synchronized (QcUsbPlugin.this) {
+                                if (device != null && device.getDeviceId() == detachedId) closeConnection(null, false);
+                            }
+                        });
+                    } catch (java.util.concurrent.RejectedExecutionException stopping) {
+                        // Shutdown already owns the teardown.
+                    }
+                }
                 // A connectedDevice foreground service is only valid while the
                 // app owns an attached device. Keep pairing credentials, but
                 // stop the relay until USB permission is available again.
@@ -1579,7 +1599,7 @@ public class QcUsbPlugin extends Plugin {
                     throw new RelayException("READBACK_TIMEOUT", "The QC read expired before USB submission.");
                 }
                 if (!isReady()) throw new RelayException("NOT_CONNECTED", "Quad Cortex USB disconnected before the read.");
-                pending.operation.afterMessageSequence = usbDiagnostics.snapshot().messagesReceived;
+                pending.operation.afterMessageSequence = usbDiagnostics.messagesReceived();
                 writeMessages(plan.messages, 0, admission);
             } catch (Exception error) {
                 pendingOperations.remove(pending);
@@ -2070,7 +2090,9 @@ public class QcUsbPlugin extends Plugin {
     @PluginMethod
     public void diagnostics(PluginCall call) {
         JSObject result = usbDiagnostics();
-        if (flight != null) result.put("flightRecorder", flight.snapshot());
+        // The two-second health poll only needs the booleans; it opts out of the 256-entry record.
+        if (flight != null && !Boolean.FALSE.equals(call.getBoolean("includeFlightRecorder", true)))
+            result.put("flightRecorder", flight.snapshot());
         call.resolve(result);
     }
 
@@ -2153,6 +2175,9 @@ public class QcUsbPlugin extends Plugin {
         result.put("decodeErrors", decodeErrors);
         result.put("expectedWriteStalls", expectedWriteStalls);
         result.put("terminalHidWriteFailures", terminalHidWriteFailures);
+        result.put("slowNegativeWrites", slowNegativeWrites);
+        result.put("emptyReads", emptyReads);
+        result.put("malformedReports", malformedReports);
         result.put("lastMessageType", lastMessageType);
         result.put("connectedAt", connectedAt);
         result.put("setlistKnown", currentSetlist != null);
@@ -2415,6 +2440,9 @@ public class QcUsbPlugin extends Plugin {
         decodeErrors = 0;
         expectedWriteStalls = 0;
         terminalHidWriteFailures = 0;
+        slowNegativeWrites = 0;
+        emptyReads = 0;
+        malformedReports = 0;
         lastMessageType = -1;
         lastError = null;
         relayAdmissionGuard.resetForNewSession();
@@ -2545,10 +2573,10 @@ public class QcUsbPlugin extends Plugin {
      * it. Hand it to the ordinary terminal-failure path instead, which closes
      * the transport and re-arms the reconnect loop. */
     private synchronized void scheduleSilentSessionWatchdog() {
-        final long baseline = usbDiagnostics.snapshot().messagesReceived;
+        final long baseline = usbDiagnostics.messagesReceived();
         final QcSilentSessionWatchdog watchdog = new QcSilentSessionWatchdog(
             connectionGeneration.get(), baseline, connectionGeneration::get,
-            () -> usbDiagnostics.snapshot().messagesReceived, this::isReady,
+            () -> usbDiagnostics.messagesReceived(), this::isReady,
             () -> terminalTransportFailed(
                 "The Quad Cortex accepted the USB session but sent no state.", "session-silent"));
         keepalive.schedule(() -> {
@@ -2576,7 +2604,7 @@ public class QcUsbPlugin extends Plugin {
     private void drainLifecycle() {
         long generation = connectionGeneration.get();
         if (connection == null) return;
-        final long diagnosticEpoch = usbDiagnostics.snapshot().sessionEpoch;
+        final long diagnosticEpoch = usbDiagnostics.sessionEpoch();
         try {
             QcNativeStateDecoder.LifecycleBatch batch;
             while ((batch = stateDecoder.lifecycleNextBatch(
@@ -2740,7 +2768,7 @@ public class QcUsbPlugin extends Plugin {
     private synchronized void writeMessage(
         QcNativeStateDecoder.EncodedMessage message, boolean withReportId, String dispatchTicket, long forwardingTask
     ) {
-        long diagnosticEpoch = usbDiagnostics.snapshot().sessionEpoch;
+        long diagnosticEpoch = usbDiagnostics.sessionEpoch();
         long stabilizationDelayMs = commandNotBeforeMs - monotonicMillis();
         if (stabilizationDelayMs > 0) {
             try {
@@ -2797,6 +2825,8 @@ public class QcUsbPlugin extends Plugin {
                 lastHidWriteDurationMs = monotonicMillis() - writeStartedAt;
                 maxHidWriteDurationMs = Math.max(maxHidWriteDurationMs, lastHidWriteDurationMs);
                 lastHidWriteResult = written;
+                if (QcHidWritePolicy.negativeResultTookFullTimeout(written, lastHidWriteDurationMs, reportTimeout))
+                    slowNegativeWrites++;
                 lastHidWriteIncludedReportId = withReportId;
                 // A healthy -1 is the QC's accepted data stage followed by its
                 // deliberate status-stage STALL. Preserve every remaining report.
@@ -2842,7 +2872,7 @@ public class QcUsbPlugin extends Plugin {
         if (inputEndpoint == null) return;
         reading = true;
         long nativeConnection = nativeConnectionToken;
-        long diagnosticEpoch = usbDiagnostics.snapshot().sessionEpoch;
+        long diagnosticEpoch = usbDiagnostics.sessionEpoch();
         long generation = connectionGeneration.incrementAndGet();
         readerTerminatedGeneration = -1;
         readerIo.execute(() -> {
@@ -2937,10 +2967,19 @@ public class QcUsbPlugin extends Plugin {
             while (readerIsActive(activeConnection, generation)) {
                 readerWaiting = true;
                 UsbRequest completed = null;
+                int nullWaits = 0;
                 while (completed == null && readerIsActive(activeConnection, generation)) {
                     readAttempts++;
                     try { completed = activeConnection.requestWait(); }
                     finally { readerWaiting = false; }
+                    // requestWait returns null at once on an ioctl error such as a vanished
+                    // device. Retrying forever spins a core until the detach is handled.
+                    if (completed == null && ++nullWaits >= HID_READER_NULL_WAIT_LIMIT
+                        && readerIsActive(activeConnection, generation)) {
+                        lastReaderError = "requestWait returned no completion " + nullWaits + " times in a row";
+                        lastError = "QC HID reader stopped: " + lastReaderError;
+                        return;
+                    }
                 }
                 long receivedAtMs = monotonicMillis();
                 long reportEpoch = stateDecoder.captureReportEpoch(nativeConnection);
@@ -2956,6 +2995,8 @@ public class QcUsbPlugin extends Plugin {
                     byte[] bytes = new byte[count];
                     buffer.get(bytes);
                     consumeInputReport(bytes, count, nativeConnection, reportEpoch, diagnosticEpoch, receivedAtMs, generation);
+                } else {
+                    emptyReads++;
                 }
                 buffer.clear();
                 if (!completed.queue(buffer)) {
@@ -3027,6 +3068,7 @@ public class QcUsbPlugin extends Plugin {
             android.util.Log.w("QcUsbPlugin", lastError);
             return;
         }
+        if (count != QcNativeStateDecoder.REPORT_SIZE && count != QcNativeStateDecoder.REPORT_SIZE - 1) malformedReports++;
         QcPendingOperations.Entry<PendingBackup> activeBackup = pendingBackup;
         if (activeBackup != null) {
             activeBackup.operation.rawReports += 1;
@@ -3058,9 +3100,11 @@ public class QcUsbPlugin extends Plugin {
         usbDiagnostics.messageReceived(diagnosticEpoch, decoded.messageType);
         if (flight != null) flight.inbound(decoded.messageType);
         lastMessageType = decoded.messageType;
+        // The handshake thread clears this field when an attempt times out.
+        CountDownLatch pendingResetReply = resetReply;
         if (decoded.messageType == QcUsbProfile.MESSAGE_TYPE_RESET_COMMS_BUFFERS
-            && decoded.lifecycle.sessionValidated && resetReply != null) {
-            resetReply.countDown();
+            && decoded.lifecycle.sessionValidated && pendingResetReply != null) {
+            pendingResetReply.countDown();
         }
         if (decoded.messageType == QcUsbProfile.MESSAGE_TYPE_GENERAL_SETTINGS
             || decoded.messageType == QcUsbProfile.MESSAGE_TYPE_IO_SETTINGS) {
@@ -3258,7 +3302,7 @@ public class QcUsbPlugin extends Plugin {
         for (QcPendingOperations.Entry<PendingGatewayRead> entry : pendingOperations.entries(PendingGatewayRead.class)) {
             PendingGatewayRead pending = entry.operation;
             if (entry.result.isDone() || !gatewayReadEpochCurrent(entry)
-                || usbDiagnostics.snapshot().messagesReceived <= pending.afterMessageSequence) continue;
+                || usbDiagnostics.messagesReceived() <= pending.afterMessageSequence) continue;
             int response = stateDecoder.gatewayResponseDecision(
                 pending.plan, messageType, payload, pending.startedAtMs, monotonicMillis());
             if (response == QcNativeStateDecoder.RESPONSE_EXPIRED) {

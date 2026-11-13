@@ -53,7 +53,7 @@ interface QcUsbNativePlugin {
   scan(): Promise<{ devices: QcUsbDevice[]; connected: boolean; synchronized: boolean }>;
   connect(options?: { allowPermissionPrompt?: boolean; requestId?: string }): Promise<{ connected: boolean; synchronized: boolean; name: string; deviceId: number }>;
   disconnect(): Promise<void>;
-  diagnostics(): Promise<AndroidUsbDiagnostics>;
+  diagnostics(options?: { includeFlightRecorder?: boolean }): Promise<AndroidUsbDiagnostics>;
   gatewayInvoke<T>(options: { method: string; params?: Record<string, unknown>; expectedState?: Record<string, unknown>; expectedBrokerTarget?: AndroidDemoRequest["brokerTarget"]; requireAcceptedBrokerTarget?: boolean }): Promise<T>;
   addListener(eventName: "qcStateBatch", listener: (frame: NativeStateFrame<QcStateUpdate>) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "qcConnection", listener: (status: { state: "available" | "disconnected"; name?: string }) => void): Promise<PluginListenerHandle>;
@@ -97,8 +97,8 @@ interface QcRelayNativePlugin {
 export const QcUsbNative = registerPlugin<QcUsbNativePlugin>("QcUsb");
 
 /** Adapt Android's native diagnostics to the runtime contract shared with Windows. */
-export async function androidUsbRuntimeDiagnostics(): Promise<NonNullable<RuntimeStatus["usbDiagnostics"]> & { android: AndroidUsbDiagnostics }> {
-  const android = await QcUsbNative.diagnostics();
+export async function androidUsbRuntimeDiagnostics(options?: { includeFlightRecorder?: boolean }): Promise<NonNullable<RuntimeStatus["usbDiagnostics"]> & { android: AndroidUsbDiagnostics }> {
+  const android = await QcUsbNative.diagnostics(options);
   const phase = android.phase;
   const detail = android.lastError ?? (android.writesQuarantined
     ? android.writeQuarantineReason ?? "Writes are paused until the USB session is reset."

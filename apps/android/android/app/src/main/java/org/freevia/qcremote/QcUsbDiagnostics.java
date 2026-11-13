@@ -85,6 +85,11 @@ final class QcUsbDiagnostics {
         messagesSentByType.merge(messageType, 1L, Long::sum);
     }
 
+    /** Cheap reads for hot paths that need one counter, not a copy of both maps. */
+    synchronized long sessionEpoch() { return sessionEpoch; }
+
+    synchronized long messagesReceived() { return messagesReceived; }
+
     synchronized Snapshot snapshot() {
         return new Snapshot(sessionEpoch, messagesReceived,
             new HashMap<>(messagesReceivedByType), rawReportsReceived,

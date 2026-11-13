@@ -10,6 +10,17 @@ import org.junit.Test;
 
 public class QcHidWritePolicyTest {
     @Test
+    public void onlyANegativeResultThatTookTheWholeTimeoutIsCountedAsASlowWrite() {
+        assertEquals(false, QcHidWritePolicy.negativeResultTookFullTimeout(-1, 3, 250));
+        assertEquals(true, QcHidWritePolicy.negativeResultTookFullTimeout(-1, 250, 250));
+        assertEquals(true, QcHidWritePolicy.negativeResultTookFullTimeout(-1, 400, 250));
+        assertEquals(false, QcHidWritePolicy.negativeResultTookFullTimeout(129, 400, 250));
+        // The classification itself is unchanged: the QC's expected STALL must stay non-fatal.
+        assertEquals(QcHidWritePolicy.Outcome.EXPECTED_STATUS_STALL,
+            QcHidWritePolicy.classify(-1, 129, true, true, false));
+    }
+
+    @Test
     public void rejectedDispatchBeforeFirstReportLeavesTheSessionAlone() {
         List<String> terminal = new ArrayList<>();
         RuntimeException rejected = new IllegalStateException("expired queued operation");

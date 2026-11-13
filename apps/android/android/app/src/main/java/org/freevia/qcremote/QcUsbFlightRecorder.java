@@ -101,13 +101,7 @@ final class QcUsbFlightRecorder {
         if (closed) return;
         entries.addLast(entry);
         while (entries.size() > MAX_ENTRIES) {
-            JSONObject evicted = null;
-            for (JSONObject candidate : entries) {
-                if (isRoutineLiveness(candidate)) {
-                    evicted = candidate;
-                    break;
-                }
-            }
+            JSONObject evicted = evictionCandidate(entries);
             if (evicted == null) entries.removeFirst();
             else entries.remove(evicted);
         }
@@ -143,7 +137,23 @@ final class QcUsbFlightRecorder {
         }
     }
 
-    private boolean isRoutineLiveness(JSONObject entry) {
+    /** Keepalives go first, then any other traffic entry, so ordinary traffic can never push the
+     * lifecycle events (attach, handshake attempts, startup failures) out of the record. */
+    static JSONObject evictionCandidate(Iterable<JSONObject> entries) {
+        JSONObject traffic = null;
+        for (JSONObject candidate : entries) {
+            if (isRoutineLiveness(candidate)) return candidate;
+            if (traffic == null && isTraffic(candidate)) traffic = candidate;
+        }
+        return traffic;
+    }
+
+    private static boolean isTraffic(JSONObject entry) {
+        String event = entry.optString("event");
+        return "outbound".equals(event) || "inbound".equals(event);
+    }
+
+    private static boolean isRoutineLiveness(JSONObject entry) {
         String event = entry.optString("event");
         return ("outbound".equals(event) || "inbound".equals(event))
             && entry.optInt("messageType", -1) == QcUsbProfile.MESSAGE_TYPE_KEEP_ALIVE;
