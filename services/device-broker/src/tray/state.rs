@@ -190,7 +190,13 @@ fn run(
                 let spawned = std::thread::Builder::new()
                     .name("qc-broker-tray-action".into())
                     .spawn(move || {
-                        let outcome = match action {
+                        // Always report, even if the action panics: the state
+                        // thread's `busy` latch is cleared only by this send,
+                        // and a missing one left every later Connect,
+                        // Disconnect, Unlink and Quit answered "Waiting for the
+                        // previous action to finish" for the life of the
+                        // process.
+                        let outcome = run_action_reporting(|| match action {
                             MenuAction::Connect => handle.reconnect(),
                             MenuAction::Disconnect => handle.disconnect(),
                             // Handled on the state thread above; never a
@@ -215,7 +221,7 @@ fn run(
                                 // user action brings QC Remote back.
                                 handle.quit_by_user(forced)
                             }
-                        };
+                        });
                         let _ = finished.send(outcome.unwrap_or_else(|error| error));
                     });
                 if let Err(error) = spawned {
@@ -231,6 +237,13 @@ fn run(
             }
         }
     }
+}
+
+/// The notice a menu action leaves behind: its own outcome, or, when it
+/// panicked, a plain failure. Never unwinds, so the caller can always report.
+fn run_action_reporting(action: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(action))
+        .unwrap_or_else(|_| Err("The action failed unexpectedly".into()))
 }
 
 fn ui_disconnected(shared: &Shared, handle: &BrokerHandle) {
@@ -562,6 +575,92 @@ mod tests {
             unlink_remote_session(None, "relay-1"),
             "No background MCP host runs in this process"
         );
+    }
+
+    /// A host whose remote unlink panics, as an `expect` on that path would.
+    struct PanickingHost;
+
+    impl ResidentHost for PanickingHost {
+        fn start(
+            &self,
+            _: &Path,
+            _: &str,
+            _: DeviceReadinessProbe,
+        ) -> Result<Box<dyn RunningHost>, String> {
+            Err("not under test".into())
+        }
+        fn unlink_remote_session(&self, _: &str) -> Result<RemoteUnlink, String> {
+            panic!("injected unlink failure");
+        }
+    }
+
+    #[test]
+    fn a_panicking_action_reports_and_does_not_leave_the_menu_busy() {
+        assert_eq!(
+            run_action_reporting(|| panic!("boom")),
+            Err("The action failed unexpectedly".into())
+        );
+        assert_eq!(
+            run_action_reporting(|| Ok("done".into())),
+            Ok("done".into())
+        );
+
+        let handle = crate::rpc::test_support::handle();
+        let shared = Arc::new(Shared {
+            snapshot: Mutex::new(Snapshot::default()),
+            wanted: AtomicBool::new(true),
+            registered: AtomicBool::new(true),
+            refreshed: Mutex::new(Instant::now()),
+        });
+        let (actions, received) = mpsc::channel();
+        let ui_shared = Arc::clone(&shared);
+        let host: Arc<dyn ResidentHost> = Arc::new(PanickingHost);
+        let started = Instant::now();
+        let stage = std::sync::atomic::AtomicU32::new(0);
+        // Action one panics on its thread. Action two (a different action, so
+        // its notice cannot be mistaken for the first's) must then be
+        // accepted rather than answered "Waiting for the previous action".
+        run(
+            handle.clone(),
+            Some(host),
+            Arc::clone(&shared),
+            received,
+            Box::new(move || {
+                let detail = ui_shared.snapshot.lock().unwrap().action_detail.clone();
+                let current = stage.load(Ordering::Acquire);
+                assert!(
+                    started.elapsed() < Duration::from_secs(20),
+                    "stage {current} never settled: {detail:?}"
+                );
+                match current {
+                    0 => {
+                        stage.store(1, Ordering::Release);
+                        let _ = actions.send(MenuAction::UnlinkRemoteSession {
+                            session_id: "relay-1".into(),
+                            app: "App".into(),
+                        });
+                    }
+                    1 if detail == "The action failed unexpectedly" => {
+                        stage.store(2, Ordering::Release);
+                        let _ = actions.send(MenuAction::UnlinkLinkedApp {
+                            entry_id: "app-1".into(),
+                            app: "App".into(),
+                        });
+                    }
+                    2 if detail != "The action failed unexpectedly" && detail != "Working…" => {
+                        assert_ne!(
+                            detail, "Waiting for the previous action to finish",
+                            "a panicked action left the menu busy"
+                        );
+                        assert!(detail.starts_with("Unlink failed"), "{detail}");
+                        return NotifyStatus::Retired;
+                    }
+                    _ => {}
+                }
+                NotifyStatus::Alive
+            }),
+        );
+        crate::rpc::test_support::finish(&handle);
     }
 
     struct OldHost;
