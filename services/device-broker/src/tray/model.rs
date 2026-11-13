@@ -588,12 +588,13 @@ fn client_rows(snapshot: &Snapshot) -> (usize, usize, Vec<MenuRow>) {
     let mut remote = count(true);
     if let Some(apps) = loaded_linked_apps(snapshot) {
         let activity = activity_known(snapshot);
-        for app in apps {
+        let labels = linked_app_labels(apps, snapshot);
+        for (app, label) in apps.iter().zip(labels) {
             let sessions = linked_app_sessions(snapshot, app);
             remote += sessions.len();
             rows.push(MenuRow::Submenu {
-                label: linked_app_label(app, apps, snapshot),
-                rows: linked_app_rows(app, apps, &sessions, activity, snapshot),
+                rows: linked_app_rows(app, &label, &sessions, activity, snapshot),
+                label,
             });
         }
     }
@@ -661,11 +662,12 @@ fn linked_app_sessions(snapshot: &Snapshot, app: &LinkedApp) -> Vec<HostClient> 
     sessions
 }
 
-/// "Claude (remote)"; when two linked apps share a name, what tells them
-/// apart: where each was authorized and when.
-fn linked_app_base_label(app: &LinkedApp, apps: &[LinkedApp], snapshot: &Snapshot) -> String {
+/// "Claude (remote)"; when two linked apps share a name (`same_name` counts
+/// them, this one included), what tells them apart: where each was authorized
+/// and when.
+fn linked_app_base_label(app: &LinkedApp, same_name: usize, snapshot: &Snapshot) -> String {
     let name = client_label(&app.name);
-    if apps.iter().filter(|other| other.name == app.name).count() < 2 {
+    if same_name < 2 {
         return format!("{name} (remote)");
     }
     let linked = ago(snapshot.observed_at_unix_ms, app.authorized_at_unix_ms)
@@ -682,42 +684,66 @@ fn linked_app_base_label(app: &LinkedApp, apps: &[LinkedApp], snapshot: &Snapsho
     }
 }
 
-/// The entry's menu label, unique within the menu: two entries that would
-/// still read the same get the shortest unique suffix (at least four characters)
-/// (stable for as long as the grant stays listed).
-fn linked_app_label(app: &LinkedApp, apps: &[LinkedApp], snapshot: &Snapshot) -> String {
-    let base = linked_app_base_label(app, apps, snapshot);
-    let twins = apps
-        .iter()
-        .filter(|other| linked_app_base_label(other, apps, snapshot) == base)
-        .count();
-    if twins < 2 {
-        return base;
+/// Every entry's menu label, in the order of `apps`, each unique within the
+/// menu: two entries that would still read the same get the shortest unique
+/// suffix (at least four characters) (stable for as long as the grant stays
+/// listed).
+///
+/// The base labels are built once for the whole list. Building them again for
+/// every entry, and again for every entry's peers, made the menu cubic in the
+/// number of linked apps (up to 32 are accepted), four times a second.
+fn linked_app_labels(apps: &[LinkedApp], snapshot: &Snapshot) -> Vec<String> {
+    let mut same_name: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for app in apps {
+        *same_name.entry(app.name.as_str()).or_default() += 1;
     }
-    let chars: Vec<char> = app.entry_id.chars().collect();
-    let peers: Vec<Vec<char>> = apps
+    let bases: Vec<String> = apps
         .iter()
-        .filter(|other| {
-            other.entry_id != app.entry_id && linked_app_base_label(other, apps, snapshot) == base
-        })
-        .map(|other| other.entry_id.chars().collect())
+        .map(|app| linked_app_base_label(app, same_name[app.name.as_str()], snapshot))
         .collect();
-    let width = (4..=chars.len().max(4))
-        .find(|width| {
-            let suffix = &chars[chars.len().saturating_sub(*width)..];
-            peers
+    apps.iter()
+        .enumerate()
+        .map(|(index, app)| {
+            let base = &bases[index];
+            let twins = bases.iter().filter(|other| *other == base).count();
+            if twins < 2 {
+                return base.clone();
+            }
+            let chars: Vec<char> = app.entry_id.chars().collect();
+            let peers: Vec<Vec<char>> = apps
                 .iter()
-                .all(|other| suffix != &other[other.len().saturating_sub(*width)..])
+                .zip(&bases)
+                .filter(|(other, other_base)| other.entry_id != app.entry_id && *other_base == base)
+                .map(|(other, _)| other.entry_id.chars().collect())
+                .collect();
+            let width = (4..=chars.len().max(4))
+                .find(|width| {
+                    let suffix = &chars[chars.len().saturating_sub(*width)..];
+                    peers
+                        .iter()
+                        .all(|other| suffix != &other[other.len().saturating_sub(*width)..])
+                })
+                .unwrap_or(chars.len());
+            let tag: String = chars[chars.len().saturating_sub(width)..].iter().collect();
+            format!("{base} #{tag}")
         })
-        .unwrap_or(chars.len());
-    let tag: String = chars[chars.len().saturating_sub(width)..].iter().collect();
-    format!("{base} #{tag}")
+        .collect()
+}
+
+/// One entry's label from [`linked_app_labels`].
+#[cfg(test)]
+fn linked_app_label(app: &LinkedApp, apps: &[LinkedApp], snapshot: &Snapshot) -> String {
+    let index = apps
+        .iter()
+        .position(|other| other.entry_id == app.entry_id)
+        .expect("the app is in the list");
+    linked_app_labels(apps, snapshot).swap_remove(index)
 }
 
 /// The details of one linked app, its live sessions, and its Unlink.
 fn linked_app_rows(
     app: &LinkedApp,
-    apps: &[LinkedApp],
+    label: &str,
     sessions: &[HostClient],
     activity_known: bool,
     snapshot: &Snapshot,
@@ -786,7 +812,7 @@ fn linked_app_rows(
             enabled: true,
             action: MenuAction::UnlinkLinkedApp {
                 entry_id: app.entry_id.clone(),
-                app: linked_app_label(app, apps, snapshot),
+                app: label.to_owned(),
             },
         });
     } else {
@@ -1636,6 +1662,33 @@ mod tests {
         assert!(
             all.contains(&"ChatGPT web (remote)".into()),
             "unmapped session stays visible"
+        );
+    }
+
+    /// DB-20: up to 32 linked apps are accepted. Labels are built once for
+    /// the list, and stay distinct however many share a name and a base label.
+    #[test]
+    fn thirty_two_same_named_linked_apps_get_distinct_labels() {
+        let snapshot = ready();
+        let apps: Vec<LinkedApp> = (0..32)
+            .map(|index| linked(&format!("grant-{index:02}-aaaa"), "Claude", "Android", 0))
+            .collect();
+        let labels = linked_app_labels(&apps, &snapshot);
+        assert_eq!(labels.len(), 32);
+        let distinct: std::collections::HashSet<&String> = labels.iter().collect();
+        assert_eq!(distinct.len(), 32, "{labels:?}");
+        // The list-wide pass gives exactly what the per-entry wrapper gives.
+        for (app, label) in apps.iter().zip(&labels) {
+            assert_eq!(&linked_app_label(app, &apps, &snapshot), label);
+        }
+        let started = std::time::Instant::now();
+        for _ in 0..50 {
+            linked_app_labels(&apps, &snapshot);
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "50 label passes took {:?}",
+            started.elapsed()
         );
     }
 
