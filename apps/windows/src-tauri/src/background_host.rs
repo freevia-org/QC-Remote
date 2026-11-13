@@ -216,6 +216,8 @@ async fn run(
     let mut relay_identity = String::new();
     let mut last_settings = Instant::now() - Duration::from_secs(5);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
+    // A stalled pass must not be followed by a burst of catch-up ticks.
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut maintenance: Option<tokio::task::JoinHandle<()>> = None;
     let (credential_tx, mut credential_rx) =
         watch::channel(None::<Result<Option<Credentials>, String>>);

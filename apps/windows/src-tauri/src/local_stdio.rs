@@ -2611,6 +2611,8 @@ async fn wait_for_bridge_stop(
     let started = std::time::Instant::now();
     let mut report = HeartbeatReport::default();
     let mut interval = tokio::time::interval(Duration::from_secs(1));
+    // A stalled pass must not be followed by a burst of catch-up ticks.
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         if std::time::Instant::now() >= next_heartbeat {
             let row = announcement.borrow_and_update().clone();
