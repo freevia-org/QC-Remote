@@ -70,7 +70,7 @@ rand = "0.10"
 quadcortex = { path = "../../../packages/rust/quadcortex" }
 qc-relay-client = { path = "../../../packages/rust/qc-relay-client" }
 qc-remote-mcp = { path = "../../../services/rust-mcp" }
-rfd = "0.15"
+rfd = "0.17"
 reqwest = { version = "0.13", features = ["form", "json"] }
 rmcp = { version = "3.2", features = ["server", "transport-io"] }
 serde = { version = "1", features = ["derive"] }
