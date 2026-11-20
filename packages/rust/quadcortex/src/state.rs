@@ -1918,6 +1918,57 @@ impl StateDecoder {
                 model,
             ));
         }
+        // Sparse parameter state is keyed by Grid address, but it belongs to
+        // the model that was observed there. Relocate it from the validated
+        // pre-move snapshot so swaps and cycles cannot consume one another's
+        // entries. Entries for vacated sources and replaced empty destinations
+        // are discarded unless that address is also a destination in the batch.
+        let source_addresses: HashSet<_> = message
+            .r#move
+            .iter()
+            .map(|item| (item.from_row, item.from_col))
+            .collect();
+        let destinations: HashMap<_, _> = message
+            .r#move
+            .iter()
+            .map(|item| ((item.from_row, item.from_col), (item.to_row, item.to_col)))
+            .collect();
+        let empty_destination_addresses: HashSet<_> = message
+            .r#move
+            .iter()
+            .map(|item| (item.to_row, item.to_col))
+            .filter(|destination| !source_addresses.contains(destination))
+            .collect();
+        self.parameter_overrides = std::mem::take(&mut self.parameter_overrides)
+            .into_iter()
+            .filter_map(|((row, column, index), value)| {
+                let address = (row, column);
+                if let Some(&(to_row, to_column)) = destinations.get(&address) {
+                    Some(((to_row, to_column, index), value))
+                } else if source_addresses.contains(&address)
+                    || empty_destination_addresses.contains(&address)
+                {
+                    None
+                } else {
+                    Some(((row, column, index), value))
+                }
+            })
+            .collect();
+        self.stale_parameters = std::mem::take(&mut self.stale_parameters)
+            .into_iter()
+            .filter_map(|(row, column, index)| {
+                let address = (row, column);
+                if let Some(&(to_row, to_column)) = destinations.get(&address) {
+                    Some((to_row, to_column, index))
+                } else if source_addresses.contains(&address)
+                    || empty_destination_addresses.contains(&address)
+                {
+                    None
+                } else {
+                    Some((row, column, index))
+                }
+            })
+            .collect();
         let mut removals: HashMap<usize, Vec<usize>> = HashMap::new();
         for (chain_index, model_index) in empty_destinations {
             removals.entry(chain_index).or_default().push(model_index);
@@ -6418,6 +6469,168 @@ mod tests {
                 .is_none(),
             "an ambiguous row must fail closed instead of picking the first matching chain"
         );
+    }
+
+    #[test]
+    fn stale_parameter_authority_follows_models_across_a_grid_swap() {
+        let model = |id, column, value| Model {
+            hash: Some(model::Hash::Hash(id)),
+            column: Some(model::Column::Column(column)),
+            params: vec![Param {
+                index: Some(param::Index::Index(0)),
+                scene_mode: Some(param::SceneMode::SceneMode(true)),
+                param_values: vec![ParamValue {
+                    value: Some(param_value::Value::FloatValue(value)),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut decoder = StateDecoder::new();
+        decoder.preset = Some(BinaryPreset {
+            chains: vec![Chain {
+                row: Some(chain::Row::Row(0)),
+                models: vec![model(100, 0, 0.2), model(200, 1, 0.8)],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        decoder.grid_layout_exact = true;
+        decoder.parameter_overrides.insert((0, 0, 0), 0.6);
+
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_SCENE,
+                &pa::SceneMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    selected_scene: Some(pa::scene_message::SelectedScene::SelectedScene(1)),
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        assert!(decoder.stale_parameters.contains(&(0, 0, 0)));
+
+        let movement = |from_col, to_col| pa::GridMoveElement {
+            from_row: 0,
+            from_col,
+            to_row: 0,
+            to_col,
+            is_drop: true,
+        };
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_GRID_MOVE,
+                &pa::GridMoveMessage {
+                    r#move: vec![movement(0, 1), movement(1, 0)],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+
+        assert!(decoder.stale_parameters.contains(&(0, 1, 0)));
+        assert!(!decoder.stale_parameters.contains(&(0, 0, 0)));
+        let fresh_model = decoder.block_details(0, 0).unwrap();
+        assert_eq!(fresh_model.model_id, 200);
+        assert_eq!(
+            fresh_model.parameters[0].normalized_value,
+            Some(0.8_f32 as f64)
+        );
+        let stale_model = decoder.block_details(0, 1).unwrap();
+        assert_eq!(stale_model.model_id, 100);
+        assert!(stale_model.parameters.is_empty());
+
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_GRID_MOVE,
+                &pa::GridMoveMessage {
+                    r#move: vec![movement(1, 3)],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        assert!(decoder.stale_parameters.contains(&(0, 3, 0)));
+        assert!(!decoder.stale_parameters.contains(&(0, 1, 0)));
+        assert_eq!(decoder.block_details(0, 3).unwrap().model_id, 100);
+        assert!(decoder.block_details(0, 3).unwrap().parameters.is_empty());
+    }
+
+    #[test]
+    fn sparse_parameter_overrides_follow_models_across_a_grid_swap() {
+        let mut decoder = StateDecoder::new();
+        decoder.preset = Some(BinaryPreset {
+            chains: vec![Chain {
+                row: Some(chain::Row::Row(0)),
+                models: vec![
+                    Model {
+                        hash: Some(model::Hash::Hash(100)),
+                        column: Some(model::Column::Column(0)),
+                        ..Default::default()
+                    },
+                    Model {
+                        hash: Some(model::Hash::Hash(200)),
+                        column: Some(model::Column::Column(1)),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        decoder.parameter_overrides.insert((0, 0, 3), 0.6);
+        decoder.parameter_overrides.insert((0, 1, 7), 0.9);
+
+        let movement = |from_col, to_col| pa::GridMoveElement {
+            from_row: 0,
+            from_col,
+            to_row: 0,
+            to_col,
+            is_drop: true,
+        };
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_GRID_MOVE,
+                &pa::GridMoveMessage {
+                    r#move: vec![movement(0, 1), movement(1, 0)],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+
+        assert_eq!(decoder.parameter_overrides.get(&(0, 1, 3)), Some(&0.6));
+        assert_eq!(decoder.parameter_overrides.get(&(0, 0, 7)), Some(&0.9));
+        assert!(!decoder.parameter_overrides.contains_key(&(0, 0, 3)));
+        assert!(!decoder.parameter_overrides.contains_key(&(0, 1, 7)));
+
+        let mut decoder = StateDecoder::new();
+        decoder.preset = Some(BinaryPreset {
+            chains: vec![Chain {
+                row: Some(chain::Row::Row(0)),
+                models: vec![Model {
+                    hash: Some(model::Hash::Hash(100)),
+                    column: Some(model::Column::Column(0)),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        decoder.parameter_overrides.insert((0, 0, 3), 0.6);
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_GRID_MOVE,
+                &pa::GridMoveMessage {
+                    r#move: vec![movement(0, 4)],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        assert_eq!(decoder.parameter_overrides.get(&(0, 4, 3)), Some(&0.6));
+        assert!(!decoder.parameter_overrides.contains_key(&(0, 0, 3)));
     }
 
     #[test]
