@@ -61,4 +61,4 @@ protoc-bin-vendored = "3"
 
 [dev-dependencies]
 # proptest 1.12 requires Rust 1.88; keep the declared Rust 1.87 test gate usable.
-proptest = "=1.12.0"
+proptest = "=1.11.0"
