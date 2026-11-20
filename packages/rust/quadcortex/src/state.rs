@@ -1051,6 +1051,9 @@ pub struct StateDecoder {
     licenses_enabled: Option<bool>,
     licenses_deactivated: Option<bool>,
     parameter_overrides: HashMap<(u32, u32, u32), f64>,
+    // A sparse value observed in another scene makes the original full-preset
+    // value unsafe to reuse until a new full preset is received.
+    stale_parameters: HashSet<(u32, u32, u32)>,
     metadata_observations: PresetMetadataObservations,
     // Projection evidence only: at most the 4x8 Grid addresses and eight
     // relevant scene values per address, witnessed by the retained model id.
@@ -1067,6 +1070,7 @@ impl StateDecoder {
         self.preset_exact = false;
         self.grid_layout_exact = false;
         self.parameter_overrides.clear();
+        self.stale_parameters.clear();
         self.scene_bypasses.clear();
         self.metadata_observations = Default::default();
         self.state_revision = self.state_revision.saturating_add(1);
@@ -2110,7 +2114,11 @@ impl StateDecoder {
                 self.parameter_overrides
                     .get(&(row, column, index))
                     .copied()
-                    .or_else(|| normalized_parameter(parameter, self.active_scene, &options)),
+                    .or_else(|| {
+                        (!self.stale_parameters.contains(&(row, column, index)))
+                            .then(|| normalized_parameter(parameter, self.active_scene, &options))
+                            .flatten()
+                    }),
             );
         }
         let category_key = info
@@ -2231,7 +2239,11 @@ impl StateDecoder {
             .parameter_overrides
             .get(&(row, column, index))
             .copied()
-            .or_else(|| normalized_parameter(parameter, self.active_scene, &options))?;
+            .or_else(|| {
+                (!self.stale_parameters.contains(&(row, column, index)))
+                    .then(|| normalized_parameter(parameter, self.active_scene, &options))
+                    .flatten()
+            })?;
         let minimum = spec.map(|item| item.minimum).unwrap_or(0.0);
         let maximum = spec.map(|item| item.maximum).unwrap_or(1.0);
         let units = spec.map(|item| item.units.clone()).unwrap_or_default();
@@ -2362,7 +2374,11 @@ impl StateDecoder {
                 self.parameter_overrides
                     .get(&(row, column, index))
                     .copied()
-                    .or_else(|| normalized_parameter(parameter, self.active_scene, &options)),
+                    .or_else(|| {
+                        (!self.stale_parameters.contains(&(row, column, index)))
+                            .then(|| normalized_parameter(parameter, self.active_scene, &options))
+                            .flatten()
+                    }),
             );
         }
         let category_key = info
@@ -2525,11 +2541,14 @@ impl StateDecoder {
         if scene >= domain::SCENE_COUNT {
             return Err(StateDecodeError::InvalidSelectedScene(scene));
         }
-        // The sparse numeric cache is not scene-qualified. Rather than carry
-        // an active-scene edit into another scene (or revive its old raw value
-        // on return), require one event-driven full publication.
-        let invalidated = (self.active_scene != scene && !self.parameter_overrides.is_empty())
-            .then(|| self.withdraw_preset_authority());
+        // Sparse numeric values describe the previous scene. Do not reuse them
+        // or fall back to their now-stale full-preset values in another scene.
+        // The preset identity and topology are independent of those values.
+        if self.active_scene != scene {
+            self.stale_parameters
+                .extend(self.parameter_overrides.keys().copied());
+            self.parameter_overrides.clear();
+        }
         self.active_scene = scene;
         self.state_revision = self.state_revision.saturating_add(1);
         let mut update = StateUpdate::new("scene");
@@ -2555,9 +2574,7 @@ impl StateDecoder {
         } else {
             Vec::new()
         });
-        let mut updates = vec![update];
-        updates.extend(invalidated);
-        Ok(updates)
+        Ok(vec![update])
     }
 
     fn decode_position(&mut self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
@@ -2598,6 +2615,7 @@ impl StateDecoder {
         };
         validate_preset_expression_projection(&preset, profile::MESSAGE_TYPE_RECALL_PRESET)?;
         self.parameter_overrides.clear();
+        self.stale_parameters.clear();
         self.metadata_observations = Default::default();
         self.sparse_state_invalidated = false;
         self.scene_bypasses = witnessed_scene_bypasses(&preset, &preset.bypass);
@@ -2678,6 +2696,7 @@ impl StateDecoder {
             && !self.sparse_parameter_budget_fits(&preset)
         {
             self.parameter_overrides = HashMap::new();
+            self.stale_parameters.clear();
             self.metadata_observations = Default::default();
             self.scene_bypasses.clear();
             self.preset = None;
@@ -2937,12 +2956,11 @@ impl StateDecoder {
             .as_ref()
             .and_then(|preset| preset.tempo_program_data.first());
         let mut tempo_count = tempo.map_or(0, |model| model.params.len());
-        if self.parameter_overrides.len().saturating_add(tempo_count)
-            > RETAINED_SPARSE_PARAMETER_LIMIT
-        {
+        let mut keys: HashSet<_> = self.parameter_overrides.keys().copied().collect();
+        keys.extend(self.stale_parameters.iter().copied());
+        if keys.len().saturating_add(tempo_count) > RETAINED_SPARSE_PARAMETER_LIMIT {
             return false;
         }
-        let mut keys: HashSet<_> = self.parameter_overrides.keys().copied().collect();
         let mut tempo_keys: HashSet<_> = tempo
             .into_iter()
             .flat_map(|model| model.params.iter().enumerate())
@@ -3138,6 +3156,8 @@ impl StateDecoder {
         }
         self.parameter_overrides
             .retain(|&(row, column, _), _| !targets.contains(&(row, column)));
+        self.stale_parameters
+            .retain(|&(row, column, _)| !targets.contains(&(row, column)));
         self.scene_bypasses
             .retain(|address, _| !targets.contains(address));
         targets
@@ -9458,11 +9478,24 @@ mod tests {
                 .ingest(profile::MESSAGE_TYPE_SCENE, &scene(7))
                 .unwrap();
             assert!(
-                detail(&runtime).is_none(),
+                detail(&runtime).unwrap().parameters.is_empty(),
                 "stale scalar is unavailable before full refresh, target {column}"
             );
-            assert!(!runtime.snapshot().has_preset);
-            assert!(runtime.snapshot().preset_identity.is_none());
+            assert!(runtime.snapshot().has_preset);
+            runtime
+                .ingest(profile::MESSAGE_TYPE_SCENE, &scene(0))
+                .unwrap();
+            assert!(
+                runtime.snapshot().has_preset,
+                "second scene change keeps the preset"
+            );
+            assert!(
+                detail(&runtime).unwrap().parameters.is_empty(),
+                "returning to the original scene cannot revive the stale raw value"
+            );
+            runtime
+                .ingest(profile::MESSAGE_TYPE_SCENE, &scene(7))
+                .unwrap();
             runtime
                 .ingest(profile::MESSAGE_TYPE_RECALL_PRESET, &full(0.4))
                 .unwrap();

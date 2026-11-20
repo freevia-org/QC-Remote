@@ -619,6 +619,74 @@ mod tests {
     }
 
     #[test]
+    fn repeated_scene_changes_keep_the_current_preset_after_sparse_grid_updates() {
+        use crate::proto::{
+            binary_preset, chain, model, param, param_value, BinaryPreset, Chain, Model, Param,
+            ParamValue,
+        };
+        let (mut owner, connection) = live_owner();
+        let model = Model {
+            hash: Some(model::Hash::Hash(1234)),
+            column: Some(model::Column::Column(0)),
+            params: vec![Param {
+                scene_mode: Some(param::SceneMode::SceneMode(true)),
+                param_values: vec![ParamValue {
+                    value: Some(param_value::Value::FloatValue(0.5)),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let preset = BinaryPreset {
+            name: Some(binary_preset::Name::Name("Test".into())),
+            chains: vec![Chain {
+                row: Some(chain::Row::Row(0)),
+                models: vec![model],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        observe_preflight(
+            &mut owner,
+            connection,
+            crate::profile::MESSAGE_TYPE_RECALL_PRESET,
+            pa::RecallPresetMessage {
+                action: pa::message_action::Enum::Update as i32,
+                preset: Some(pa::recall_preset_message::Preset::Preset(preset.clone())),
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        );
+        owner.state.snapshot_mut().preset_location = "1D".into();
+        observe_preflight(
+            &mut owner,
+            connection,
+            crate::profile::MESSAGE_TYPE_SCENE,
+            vec![8, 1, 24, 1],
+        );
+        observe_preflight(
+            &mut owner,
+            connection,
+            crate::profile::MESSAGE_TYPE_GRID,
+            pa::GridMessage {
+                action: pa::message_action::Enum::Update as i32,
+                preset: Some(pa::grid_message::Preset::Preset(preset)),
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        );
+        observe_preflight(
+            &mut owner,
+            connection,
+            crate::profile::MESSAGE_TYPE_SCENE,
+            vec![8, 1, 24, 2],
+        );
+        let current = owner.current_preset().expect("preset remains available");
+        assert_eq!(current.preset_location, "1D");
+        assert_eq!(current.active_scene, 2);
+    }
+
+    #[test]
     fn scene_preflight_rejects_a_stale_noop_and_retains_the_planned_scene_until_dispatch() {
         use crate::{commands::DeviceCommand, profile::MESSAGE_TYPE_SCENE as SCENE};
         use serde_json::json;
