@@ -1554,6 +1554,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "flate2",
+      "version": "1.1.11",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/rust-lang/flate2-rs",
+      "licenseTextHashes": [
+        "1b7402ea003f3186c7365a26343794193828b67f2650bdbb75d5a4f588e56c7d",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "fnv",
       "version": "1.0.7",
       "license": "Apache-2.0 / MIT",
@@ -3390,6 +3401,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "prettyplease",
+      "version": "0.3.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/dtolnay/prettyplease",
+      "licenseTextHashes": [
+        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
+        "85ad950cce8752f716dbf49be95b2639172cb49f291336d57f1fdc9989e38179"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "proc-macro-crate",
       "version": "1.3.1",
       "license": "MIT OR Apache-2.0",
@@ -3466,8 +3488,28 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "prost-build",
+      "version": "0.14.6",
+      "license": "Apache-2.0",
+      "sourceUrl": "https://github.com/tokio-rs/prost",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "prost-derive",
       "version": "0.14.4",
+      "license": "Apache-2.0",
+      "sourceUrl": "https://github.com/tokio-rs/prost",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "prost-derive",
+      "version": "0.14.6",
       "license": "Apache-2.0",
       "sourceUrl": "https://github.com/tokio-rs/prost",
       "licenseTextHashes": [
@@ -3486,8 +3528,28 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "prost-types",
+      "version": "0.14.6",
+      "license": "Apache-2.0",
+      "sourceUrl": "https://github.com/tokio-rs/prost",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "prost",
       "version": "0.14.4",
+      "license": "Apache-2.0",
+      "sourceUrl": "https://github.com/tokio-rs/prost",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "prost",
+      "version": "0.14.6",
       "license": "Apache-2.0",
       "sourceUrl": "https://github.com/tokio-rs/prost",
       "licenseTextHashes": [
@@ -4522,6 +4584,17 @@
       "ecosystem": "cargo",
       "name": "signal-hook",
       "version": "0.4.5",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/vorner/signal-hook",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
+        "aaac889d0a4a18753c87911502e36f2e04185d0c8bab33b42895c8bcc2570cfd"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "signal-hook",
+      "version": "0.4.6",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/vorner/signal-hook",
       "licenseTextHashes": [
@@ -5578,7 +5651,7 @@
     {
       "ecosystem": "cargo",
       "name": "uuid",
-      "version": "1.29.0",
+      "version": "1.29.2",
       "license": "Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/uuid-rs/uuid",
       "licenseTextHashes": [
@@ -8836,7 +8909,7 @@
       ],
       "components": [
         "cargo:uuid@1.26.0",
-        "cargo:uuid@1.29.0"
+        "cargo:uuid@1.29.2"
       ]
     },
     {
@@ -9029,7 +9102,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:flate2@1.1.10"
+        "cargo:flate2@1.1.10",
+        "cargo:flate2@1.1.11"
       ]
     },
     {
@@ -9561,6 +9635,7 @@
         "cargo:piper@0.2.5",
         "cargo:polling@3.11.0",
         "cargo:prettyplease@0.2.37",
+        "cargo:prettyplease@0.3.0",
         "cargo:proc-macro-crate@1.3.1",
         "cargo:proc-macro-crate@2.0.2",
         "cargo:proc-macro-crate@3.5.0",
@@ -10798,6 +10873,7 @@
         "cargo:libc@0.2.191",
         "cargo:pastey@0.2.3",
         "cargo:prettyplease@0.2.37",
+        "cargo:prettyplease@0.3.0",
         "cargo:proc-macro2@1.0.107",
         "cargo:quote@1.0.47",
         "cargo:ref-cast-impl@1.0.27",
@@ -11050,6 +11126,7 @@
         "cargo:find-msvc-tools@0.1.13",
         "cargo:fixedbitset@0.5.7",
         "cargo:flate2@1.1.10",
+        "cargo:flate2@1.1.11",
         "cargo:fnv@1.0.7",
         "cargo:form_urlencoded@1.2.2",
         "cargo:futures-lite@2.6.1",
@@ -11096,9 +11173,13 @@
         "cargo:polling@3.11.0",
         "cargo:pollster@0.4.0",
         "cargo:prost-build@0.14.4",
+        "cargo:prost-build@0.14.6",
         "cargo:prost-derive@0.14.4",
+        "cargo:prost-derive@0.14.6",
         "cargo:prost-types@0.14.4",
+        "cargo:prost-types@0.14.6",
         "cargo:prost@0.14.4",
+        "cargo:prost@0.14.6",
         "cargo:regex-automata@0.4.18",
         "cargo:regex-syntax@0.8.11",
         "cargo:regex@1.13.1",
@@ -11116,6 +11197,7 @@
         "cargo:servo_arc@0.4.3",
         "cargo:signal-hook-registry@1.4.8",
         "cargo:signal-hook@0.4.5",
+        "cargo:signal-hook@0.4.6",
         "cargo:simd_cesu8@1.2.0",
         "cargo:smallvec@1.15.2",
         "cargo:smallvec@1.16.1",
@@ -11135,7 +11217,7 @@
         "cargo:unicode-segmentation@1.13.3",
         "cargo:url@2.5.8",
         "cargo:uuid@1.26.0",
-        "cargo:uuid@1.29.0",
+        "cargo:uuid@1.29.2",
         "cargo:version_check@0.9.5",
         "cargo:web_atoms@0.2.6",
         "cargo:window-vibrancy@0.6.0",
@@ -11400,7 +11482,8 @@
       ],
       "components": [
         "cargo:signal-hook-registry@1.4.8",
-        "cargo:signal-hook@0.4.5"
+        "cargo:signal-hook@0.4.5",
+        "cargo:signal-hook@0.4.6"
       ]
     },
     {
