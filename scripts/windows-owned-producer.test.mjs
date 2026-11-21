@@ -37,6 +37,16 @@ function successfulProtocolHost(observe) {
 const here = dirname(fileURLToPath(import.meta.url));
 const pwsh = process.platform === "win32" ? resolvePowerShell7() : null;
 
+test("native process environment helpers preserve absent, empty and exact values", { skip: process.platform !== "win32" }, () => {
+  const result = spawnSync(pwsh, ["-NoProfile", "-NonInteractive", "-File",
+    join(here, "windows-process-environment-exact.test.ps1"),
+    "-HelperPath", join(here, "windows-build-process-owner.ps1")],
+  { encoding: "utf8", timeout: 30_000, windowsHide: true });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /Exact process environment read\/write tests passed\./);
+});
+
 test("Node original admission proves exact native membership and rejects the unrelated observer", { skip: process.platform !== "win32" }, async () => {
   const root = await mkdtemp(join(tmpdir(), "qc-node-original-admission-"));
   const checker = join(here, "windows-owned-admission.ps1");
