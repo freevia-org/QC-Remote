@@ -28,7 +28,7 @@ jobs:
   native-linux:
     name: Headless broker on native Linux
     if: ${{ !cancelled() && !inputs.build_linux_draft }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ubuntu-24.04
     timeout-minutes: 80
     steps:
       - name: Start original execution budget after admission
@@ -85,8 +85,10 @@ jobs:
           CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
           CI_STEP_LIMIT: 360
         run: *runner_budget_guard_native_linux
-      - name: Verify preinstalled isolated tray probe dependencies
+      - name: Install isolated tray probe dependencies
         run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install --yes apparmor-utils bubblewrap dbus-daemon gir1.2-glib-2.0 python3-gi
           for package in apparmor-utils bubblewrap dbus-daemon gir1.2-glib-2.0 python3-gi; do
             if ! dpkg-query -W -f='${Status}\n' "$package" 2>/dev/null | grep -Fxq 'install ok installed'; then
               echo "::error::Required runner package is missing: $package"
@@ -305,7 +307,7 @@ jobs:
   linux-desktop-host:
     name: Linux Tauri host and resident tray
     if: ${{ !cancelled() && !inputs.build_linux_draft }}
-    runs-on: qc-remote-i5-linux
+    runs-on: ubuntu-24.04
     timeout-minutes: 105
     env:
       RUSTUP_TOOLCHAIN: stable
@@ -364,8 +366,11 @@ jobs:
           CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
           CI_STEP_LIMIT: 360
         run: *runner_budget_guard_linux_desktop_host
-      - name: Verify preinstalled Tauri, tray and Secret Service development libraries
+      - name: Install Tauri, tray and Secret Service development libraries
         run: |
+          packages=(build-essential curl file libayatana-appindicator3-dev libdbus-1-dev libgtk-3-dev libsecret-1-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev pkg-config python3)
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install --yes "${packages[@]}"
           for package in build-essential curl file libayatana-appindicator3-dev libdbus-1-dev \
               libgtk-3-dev libsecret-1-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev \
               libxdo-dev pkg-config; do

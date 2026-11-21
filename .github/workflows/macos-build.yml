@@ -27,17 +27,15 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     strategy:
       fail-fast: false
-      # Every lane runs on the Apple Silicon pool. x86_64 is cross-compiled
-      # there and its test binaries and broker self-check run under Rosetta 2:
-      # the Intel macOS pool compiled the same crates about five times
-      # slower (release broker 1085 s against 196 s) and queued pull request
-      # jobs for 15 to 75 minutes. Pull requests run one lane per
+      # Every lane runs on GitHub-hosted Apple Silicon. x86_64 is
+      # cross-compiled there and its test binaries and broker self-check run
+      # under Rosetta 2. Pull requests run one lane per
       # architecture: native ARM64 tests and the cross-built x86_64 package,
       # which exercises the cross build, Rosetta and the architecture check.
       # Master and manual builds run both lanes for both architectures.
       matrix:
         include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"lane":"tests","target":"aarch64-apple-darwin"},{"lane":"package","target":"x86_64-apple-darwin"}]' || '[{"lane":"tests","target":"aarch64-apple-darwin"},{"lane":"tests","target":"x86_64-apple-darwin"},{"lane":"package","target":"aarch64-apple-darwin"},{"lane":"package","target":"x86_64-apple-darwin"}]') }}
-    runs-on: qc-remote-macmini
+    runs-on: macos-15
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,18 +47,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
-      # This runner is persistent: keep each lane's Cargo output warm between
-      # runs instead of depending on a GitHub cache that only master saves.
+      # Configures the persistent Cargo target directory on self-hosted Macs;
+      # this action is a no-op on GitHub-hosted runners.
       - uses: ./.github/actions/cargo-target-dir
         with:
           name: macos-${{ matrix.target }}-${{ matrix.lane }}
-      - name: Require Rosetta 2 for x86_64 binaries
+      - name: Install Rosetta 2 for x86_64 binaries
         if: matrix.target == 'x86_64-apple-darwin'
         run: |
-          if ! arch -x86_64 /usr/bin/true; then
-            echo "::error::Rosetta 2 is not installed on this runner; x86_64 tests and the broker self-check cannot run."
-            exit 1
-          fi
+          if arch -x86_64 /usr/bin/true; then exit 0; fi
+          sudo softwareupdate --install-rosetta --agree-to-license
+          arch -x86_64 /usr/bin/true
       # Pull requests restore the cache master saved for the same lane and
       # target (a pull request may read its base branch's caches) and never save
       # their own: a pull request's cache is readable only by that pull request,

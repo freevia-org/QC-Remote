@@ -174,9 +174,9 @@ test('iOS and macOS build workflows are manual-only without stale path filters',
   }
 });
 
-test('manual macOS builds run every lane on the local Apple Silicon runner', () => {
+test('manual macOS builds run every lane on the GitHub-hosted Apple Silicon runner', () => {
   const text = workflow('macos-build.yml');
-  assert.match(text, /^ {4}runs-on: qc-remote-macmini$/m);
+  assert.match(text, /^ {4}runs-on: macos-15$/m);
   assert.doesNotMatch(text, /macos-\d+-intel/);
   const matrix = text.match(/^ {8}include: \$\{\{ fromJSON\(github\.event_name == 'pull_request' && '(.*?)' \|\| '(.*?)'\) \}\}$/m);
   assert.ok(matrix, 'the workflow must keep the complete non-PR matrix for manual dispatch');
@@ -213,7 +213,7 @@ test('macOS, iOS and Linux broker build caches are saved from master only', () =
   }
 });
 
-test('Linux checks use the local runner and release requires the hosted AppArmor probe', () => {
+test('Linux checks use GitHub-hosted runners and release requires the hosted AppArmor probe', () => {
   const text = workflow('linux-broker.yml');
   const release = text.slice(text.indexOf('\n  linux-preview-release:'));
   assert.doesNotMatch(release, /^    needs:/m, 'the release job must not re-run the two check jobs');
@@ -235,10 +235,10 @@ test('Linux checks use the local runner and release requires the hosted AppArmor
     const body = end === -1 ? rest : rest.slice(0, end + 1);
     assert.ok(body.startsWith(`  ${job}:\n    name: ${name}\n`), job);
     assert.match(body, /^    if: \$\{\{ !cancelled\(\) && !inputs\.build_linux_draft \}\}$/m, job);
-    assert.match(body, /^    runs-on: qc-remote-i5-linux$/m, job);
-    assert.match(body, /^      - name: Verify preinstalled /m, job);
+    assert.match(body, /^    runs-on: ubuntu-24\.04$/m, job);
+    assert.match(body, /^      - name: Install /m, job);
     assert.match(body, /dpkg-query -W/);
-    assert.doesNotMatch(body, /apt-get/);
+    assert.match(body, /apt-get -o Acquire::Retries=3 install/);
   }
   assert.doesNotMatch(text, /^  changes:\s*$/m, 'manual-only workflow does not need the PR path classifier');
   const probe = text.slice(text.indexOf('\n  linux-tray-startup-probe:\n'), text.indexOf('\n  linux-desktop-host:\n'));
