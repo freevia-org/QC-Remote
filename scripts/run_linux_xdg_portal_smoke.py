@@ -21,6 +21,15 @@ CANCEL_TITLE = "QC Remote Portal Cancel Smoke"
 TEST_NAME = "xdg_portal_open_save_cancel_smoke"
 MAX_TEST_SECONDS = 90
 MAX_DIALOG_SECONDS = 20
+DBUS_ACTIVATION_ENVIRONMENT = (
+    "XDG_CONFIG_HOME",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE",
+    "GDK_BACKEND",
+    "DISPLAY",
+    "XAUTHORITY",
+)
 
 
 def select_executable(cargo_json: Path) -> Path:
@@ -219,15 +228,7 @@ def run_smoke(executable: Path) -> None:
             }
         )
         subprocess.run(
-            [
-                "dbus-update-activation-environment",
-                "XDG_CONFIG_HOME",
-                "XDG_CURRENT_DESKTOP",
-                "XDG_RUNTIME_DIR",
-                "XDG_SESSION_TYPE",
-                "GDK_BACKEND",
-                "DISPLAY",
-            ],
+            ["dbus-update-activation-environment", *DBUS_ACTIVATION_ENVIRONMENT],
             check=True,
             capture_output=True,
             text=True,
