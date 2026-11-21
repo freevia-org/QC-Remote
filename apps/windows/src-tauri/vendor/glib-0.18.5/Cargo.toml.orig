@@ -1,5 +1,6 @@
 [package]
 name = "glib"
+publish = false
 documentation = "https://gtk-rs.org/gtk-rs-core/stable/latest/docs/glib/"
 homepage = "https://gtk-rs.org/"
 authors = ["The gtk-rs Project Developers"]

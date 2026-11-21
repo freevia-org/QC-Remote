@@ -44,7 +44,7 @@ fork's public identity. See [`TRADEMARKS.md`](TRADEMARKS.md). They are:
 
 Third-party software and assets retain their own licenses and notices. The
 repository's dependency notices and complete applicable license texts are in
-[`THIRD_PARTY-NOTICES.md`](THIRD_PARTY-NOTICES.md) and `legal/`. In-tree
+[`THIRD_PARTY-NOTICES.md`](THIRD_PARTY-NOTICES.md), the [`license-text catalogue`](legal/THIRD_PARTY-LICENSE-TEXTS.txt), the [`license inventory`](legal/THIRD_PARTY-LICENSE-INVENTORY.json), the [`source offer`](legal/THIRD_PARTY-SOURCE-OFFER.md), and other files under `legal/`. In-tree
 third-party material includes:
 
 - `packages/typescript/qc-theme/assets/fonts/*.ttf` — IBM Plex Sans, SIL Open
