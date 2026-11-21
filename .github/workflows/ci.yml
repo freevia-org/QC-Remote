@@ -149,6 +149,48 @@ jobs:
       # Default-feature tests do not verify that graph against the Rust minimum.
       - run: cargo +1.87 test -p quadcortex --features cloud-forward --locked
 
+  # rfd 0.18.0 declares Rust 1.92, so the desktop app's effective floor is
+  # newer than the standalone Quad Cortex library's 1.87 floor above. Keep the
+  # app check separate and run the same shipped broker targets as stable CI.
+  rust-windows-app-msrv:
+    name: Windows desktop app on its Rust minimum (1.92)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
+    runs-on: ${{ inputs.use_github_hosted && 'windows-latest' || 'qc-remote-i5-windows' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up MSVC build environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: '1.92.0'
+          components: clippy
+          targets: x86_64-pc-windows-msvc
+      - uses: ./.github/actions/cargo-target-dir
+        with:
+          name: windows-app-msrv-1.92
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: ${{ runner.environment == 'github-hosted' }}
+        with:
+          workspaces: apps/windows/src-tauri
+          key: windows-app-msrv-1.92
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Stage check-only sidecar placeholder
+        working-directory: apps/windows/src-tauri
+        shell: pwsh
+        run: |
+          New-Item -ItemType File -Force binaries/qc-device-broker-x86_64-pc-windows-msvc.exe | Out-Null
+      - run: cargo +1.92.0 check --locked
+        working-directory: apps/windows/src-tauri
+      - name: Build the shipped broker executable
+        run: cargo +1.92.0 build --locked --features tray-sidecar --bin qc-device-broker
+        working-directory: apps/windows/src-tauri
+      - run: cargo +1.92.0 clippy --locked --all-targets --features tray-sidecar -- -D warnings
+        working-directory: apps/windows/src-tauri
+
   # The Windows app used to be one 13 to 15 minute job. Its static checks and its
   # native tests share nothing at run time, so they are two jobs that run side by
   # side (the critical path is the tests job, about 9 minutes), and the job named
@@ -546,6 +588,7 @@ jobs:
     needs:
       - rust
       - rust-msrv
+      - rust-windows-app-msrv
       - rust-windows-app-static
       - rust-windows-app-tests
       - rust-windows-app

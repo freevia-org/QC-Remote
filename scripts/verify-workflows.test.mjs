@@ -80,6 +80,23 @@ test('every job in every workflow declares timeout-minutes', () => {
   }
 });
 
+test('Windows desktop app checks its declared Rust 1.92 minimum separately from Quad Cortex 1.87', () => {
+  const ci = readFileSync(path.join(workflows, 'ci.yml'), 'utf8');
+  const appMsrv = ci.slice(
+    ci.indexOf('\n  rust-windows-app-msrv:'),
+    ci.indexOf('\n  rust-windows-app-static:'),
+  );
+  assert.ok(appMsrv.length > 0, 'the dedicated desktop app minimum job exists');
+  assert.match(appMsrv, /name: Windows desktop app on its Rust minimum \(1\.92\)/);
+  assert.match(appMsrv, /toolchain: '1\.92\.0'/);
+  assert.match(appMsrv, /cargo \+1\.92\.0 check --locked/);
+  assert.match(appMsrv, /cargo \+1\.92\.0 build --locked --features tray-sidecar --bin qc-device-broker/);
+  assert.match(appMsrv, /cargo \+1\.92\.0 clippy --locked --all-targets --features tray-sidecar -- -D warnings/);
+  assert.match(appMsrv, /binaries\/qc-device-broker-x86_64-pc-windows-msvc\.exe/);
+  assert.match(ci, /rust-msrv:[\s\S]*?name: quadcortex on its declared Rust minimum \(1\.87\)[\s\S]*?cargo \+1\.87 test -p quadcortex --locked/);
+  assert.match(ci, /ci-result:[\s\S]*?needs:[\s\S]*?- rust-windows-app-msrv/);
+});
+
 // A Python test module or generator check that no workflow runs is a gate that
 // silently does not exist.
 test('every Python test module and the header-glyph generator check is run by a workflow', () => {
