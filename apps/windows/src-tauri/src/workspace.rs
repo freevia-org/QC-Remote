@@ -442,8 +442,13 @@ mod atomic_document_tests {
         let replacement =
             qc_native_platform::app_store::DocumentReplacementDirectory::new(&target).unwrap();
         let directory = replacement.path().to_owned();
-        assert_eq!(fs::metadata(&directory).unwrap().dev(), fs::metadata(&scratch.0).unwrap().dev());
-        assert!(replacement.commit(&scratch.0.join("unowned"), &target).is_err());
+        assert_eq!(
+            fs::metadata(&directory).unwrap().dev(),
+            fs::metadata(&scratch.0).unwrap().dev()
+        );
+        assert!(replacement
+            .commit(&scratch.0.join("unowned"), &target)
+            .is_err());
         drop(replacement);
         assert!(!directory.exists());
         assert!(!target.exists());

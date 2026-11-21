@@ -97,6 +97,20 @@ test('Windows desktop app checks its declared Rust 1.92 minimum separately from 
   assert.match(ci, /ci-result:[\s\S]*?needs:[\s\S]*?- rust-windows-app-msrv/);
 });
 
+test('macOS hosted tests run the Mac App Store workspace document writer regressions', () => {
+  const macos = readFileSync(path.join(workflows, 'macos-build.yml'), 'utf8');
+  const storeWriter = macos.slice(
+    macos.indexOf('\n      - name: Test Mac App Store workspace document writer'),
+    macos.indexOf('\n      - name: Test Mac App Store native services'),
+  );
+  assert.ok(storeWriter.length > 0, 'the Store workspace writer test step exists');
+  assert.match(storeWriter, /if: matrix\.lane == 'tests'/);
+  assert.match(storeWriter, /cargo test --locked --manifest-path src-tauri\/Cargo\.toml/);
+  assert.match(storeWriter, /--features desktop-broker,custom-protocol,macos-app-store/);
+  assert.match(storeWriter, /--lib workspace::atomic_document_tests --target \$\{\{ matrix\.target \}\}/);
+  assert.match(storeWriter, /working-directory: apps\/windows/);
+});
+
 // A Python test module or generator check that no workflow runs is a gate that
 // silently does not exist.
 test('every Python test module and the header-glyph generator check is run by a workflow', () => {
