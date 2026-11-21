@@ -2386,34 +2386,34 @@ fn package_directory_contains(directory: &Path, package_prefixes: &[&str]) -> bo
 
 fn chatgpt_package_registered() -> bool {
     let package_prefixes = ["OpenAI.Codex_", "OpenAI.ChatGPT_"];
-    if std::env::var_os("LOCALAPPDATA").is_some_and(|local_app_data| {
+    let package_is_registered = std::env::var_os("LOCALAPPDATA").is_some_and(|local_app_data| {
         package_directory_contains(
             &PathBuf::from(local_app_data).join("Packages"),
             &package_prefixes,
         )
-    }) {
-        return true;
-    }
+    });
     #[cfg(target_os = "windows")]
     {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        package_prefixes.iter().any(|prefix| {
-            run_with_timeout(Command::new(crate::system_tools::reg_exe())
-                .args([
-                    "query",
-                    r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages",
-                    "/f",
-                    prefix.trim_end_matches('_'),
-                    "/k",
-                ])
-                .stderr(Stdio::null())
-                .creation_flags(CREATE_NO_WINDOW)
-                , EXTERNAL_TOOL_TIMEOUT)
-                .is_ok_and(|output| output.status.success())
+        package_is_registered || package_prefixes.iter().any(|prefix| {
+            run_with_timeout(
+                Command::new(crate::system_tools::reg_exe())
+                    .args([
+                        "query",
+                        r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages",
+                        "/f",
+                        prefix.trim_end_matches('_'),
+                        "/k",
+                    ])
+                    .stderr(Stdio::null())
+                    .creation_flags(CREATE_NO_WINDOW),
+                EXTERNAL_TOOL_TIMEOUT,
+            )
+            .is_ok_and(|output| output.status.success())
         })
     }
     #[cfg(not(target_os = "windows"))]
-    false
+    package_is_registered
 }
 
 fn chatgpt_desktop_installed() -> bool {
