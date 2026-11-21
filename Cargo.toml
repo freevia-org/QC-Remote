@@ -42,7 +42,7 @@ exclude = ["apps/windows/src-tauri"]
 [workspace.dependencies]
 async-trait = "0.1"
 base64 = "0.22"
-bytes = "=1.12.1"
+bytes = "=1.12.2"
 http = "=1.5.0"
 http-body-util = "=0.1.5"
 hyper = "=1.12.0"
