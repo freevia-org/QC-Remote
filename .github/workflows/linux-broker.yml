@@ -578,8 +578,6 @@ jobs:
           cargo_messages="$(mktemp "$RUNNER_TEMP/qc-xdg-portal-cargo.XXXXXX")"
           trap 'rm -f -- "$cargo_messages"' EXIT
           cargo +stable test --locked --features tray-sidecar,custom-protocol --test linux_xdg_portal_smoke --no-run --message-format=json > "$cargo_messages"
-          dbus-run-session -- xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
-            env XDG_CURRENT_DESKTOP=GNOME XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 \
             python3 ../../../scripts/run_linux_xdg_portal_smoke.py --cargo-json "$cargo_messages"
         if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_013.outputs.ready == 'true') }}
         timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_013.outputs.minutes || '1') || 360 }}
