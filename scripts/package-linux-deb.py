@@ -67,27 +67,37 @@ def run_owned(
     pump = threading.Thread(target=_forward_output, args=(process, tail), daemon=True)
     pump.start()
     group_stopped = False
+    timeout_error: subprocess.TimeoutExpired | None = None
     try:
         process.wait(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         _stop_process_group(process)
         group_stopped = True
         process.wait()
-        pump.join(timeout=5)
-        raise PackageError(
-            f"command timed out after {timeout:g}s: {' '.join(command)}\n{_tail_text(tail)}"
-        ) from exc
+        timeout_error = exc
     finally:
         # Commands in this entrypoint are not allowed to leave persistent helpers.
         # Their process group is unique to this invocation.
-        if not group_stopped:
-            _stop_process_group(process)
-        if process.poll() is None:
-            process.wait()
-
-    # A descendant that outlived the command can hold the pipe open; the group
-    # was stopped above, so the pump ends promptly.
-    pump.join(timeout=5)
+        try:
+            if not group_stopped:
+                _stop_process_group(process)
+            if process.poll() is None:
+                process.wait()
+        finally:
+            # A descendant that outlived the command can hold the pipe open;
+            # stop the group, join the reader and close the pipe on every exit.
+            pump.join(timeout=5)
+            if pump.is_alive() and process.stdout is not None and not process.stdout.closed:
+                process.stdout.close()
+                pump.join(timeout=1)
+            if process.stdout is not None and not process.stdout.closed:
+                process.stdout.close()
+            if pump.is_alive():
+                raise PackageError("command output reader did not stop after process cleanup")
+    if timeout_error is not None:
+        raise PackageError(
+            f"command timed out after {timeout:g}s: {' '.join(command)}\n{_tail_text(tail)}"
+        ) from timeout_error
     output = _tail_text(tail)
     if process.returncode:
         raise PackageError(
