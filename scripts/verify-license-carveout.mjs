@@ -43,6 +43,16 @@ export const REFERENCE_LICENSE_REF = "LicenseRef-QC-Remote-Reference";
 export const REFERENCE_LICENSE_EXPRESSION = `(${BASE_LICENSE_EXPRESSION}) AND ${REFERENCE_LICENSE_REF}`;
 export const REFERENCE_TERMS_PATH = `LICENSES/${REFERENCE_LICENSE_REF}.txt`;
 
+// Exact third-party source vendored with its own upstream license. Its
+// provenance test verifies every archived file, including this MIT license;
+// it is not a copy of the repository's first-party LICENSE.
+const THIRD_PARTY_PACKAGE_LICENSES = new Map([
+  ["apps/windows/src-tauri/vendor/glib-0.18.5/Cargo.toml", "MIT"]
+]);
+const THIRD_PARTY_LICENSE_FILES = new Set([
+  "apps/windows/src-tauri/vendor/glib-0.18.5/LICENSE"
+]);
+
 const MANIFEST = /(?:^|\/)(?:package\.json|Cargo\.toml)$/;
 
 /** Schedule A and B table rows of LICENSE, as `{ schedule, pattern }`. */
@@ -291,7 +301,8 @@ export function expectedManifestLicenses({ licenseText, trackedFiles, readFile }
   const expected = new Map();
   for (const [manifest, { contained, embedded, dependencies }] of own) {
     expected.set(manifest, {
-      expression: reaches.get(manifest) ? REFERENCE_LICENSE_EXPRESSION : BASE_LICENSE_EXPRESSION,
+      expression: THIRD_PARTY_PACKAGE_LICENSES.get(manifest)
+        ?? (reaches.get(manifest) ? REFERENCE_LICENSE_EXPRESSION : BASE_LICENSE_EXPRESSION),
       contained,
       embedded,
       linked: dependencies.filter((dependency) => reaches.get(dependency))
@@ -319,6 +330,10 @@ export function licenseCarveOutErrors({ licenseText, termsText, trackedFiles, re
   for (const [manifest, { expression, contained, embedded, linked }] of expected) {
     const actual = declaredManifestLicense(manifest, readFile(manifest));
     if (actual === expression) continue;
+    if (THIRD_PARTY_PACKAGE_LICENSES.has(manifest)) {
+      errors.push(`${manifest} declares ${actual || "no license"}, expected its pinned third-party license ${expression}`);
+      continue;
+    }
     const reason = contained.length ? `it contains ${contained[0]}${contained.length > 1 ? ` and ${contained.length - 1} other listed file(s)` : ""}`
       : embedded.length ? `it embeds ${embedded.join(", ")}`
         : linked.length ? `it links or bundles ${linked.join(", ")}, ${linked.length > 1 ? "which ship" : "which ships"} material listed in LICENSE Schedule A or B`
@@ -451,6 +466,7 @@ export function licenseCopyErrors({ trackedFiles, readFile }) {
   const normalize = (file) => readFile(file).replace(/\r\n/g, "\n");
   const tracked = new Set(trackedFiles);
   for (const file of trackedFiles) {
+    if (THIRD_PARTY_LICENSE_FILES.has(file)) continue;
     const canonical = LICENSE_TEXT_COPIES.get(posix.basename(file));
     if (canonical === undefined || file === canonical || !tracked.has(canonical)) continue;
     if (normalize(file) !== normalize(canonical)) errors.push(`${file} differs from ${canonical}; a copy of a license text must equal the repository's`);
