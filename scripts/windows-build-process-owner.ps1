@@ -233,6 +233,10 @@ namespace QcOwnedProcess {
         public static BuildJob Find(string key) {
             lock (RegistryGate) { BuildJob owner; return Retained.TryGetValue(key, out owner) ? owner : null; }
         }
+        // A reserved admission can intentionally have no BuildJob object yet.
+        // Cleanup callers need to distinguish that state from no admission so
+        // they do not mistake a failed startup for completed retirement.
+        public static bool HasAdmission(string key) { lock (RegistryGate) { return Retained.ContainsKey(key); } }
         public static object OriginalScriptJob(string key) {
             lock (RegistryGate) { object original; return ScriptJobs.TryGetValue(key, out original) ? original : null; }
         }
