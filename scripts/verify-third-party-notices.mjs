@@ -73,6 +73,18 @@ export const SHIPPED_CARGO_ROOTS = [
 export const SHIPPED_NPM_ROOTS = ['apps/windows', 'apps/android'];
 const ALL_CARGO_MANIFESTS = ['Cargo.toml', 'apps/windows/src-tauri/Cargo.toml'];
 
+// This one path package is still a third-party component: it is the published
+// glib 0.18.5 source with a documented, minimal upstream safety backport.
+const VENDORED_CARGO_PACKAGES = new Map([
+  ['glib@0.18.5', 'apps/windows/src-tauri/vendor/glib-0.18.5/Cargo.toml'],
+]);
+
+function isThirdPartyCargoPackage(item) {
+  if (item.source !== null && item.source !== undefined) return true;
+  const expectedManifest = VENDORED_CARGO_PACKAGES.get(`${item.name}@${item.version}`);
+  return expectedManifest !== undefined && path.resolve(item.manifest_path) === path.resolve(repoRoot, expectedManifest);
+}
+
 /** Licenses that raise a source-availability obligation for a distributed binary. */
 // MPL, the GPL family (LGPL and AGPL contain "GPL"), and the other licences that
 // oblige a distributor of binaries to offer the component's source.
@@ -151,7 +163,7 @@ export function shippedCargoPackages(metadata, rootManifest) {
   const shipped = new Map();
   for (const id of reachable) {
     const item = packages.get(id);
-    if (!item || item.source === null || item.source === undefined) continue; // this repository's own crates
+    if (!item || !isThirdPartyCargoPackage(item)) continue; // this repository's own crates
     shipped.set(`${item.name}@${item.version}`, { name: item.name, version: item.version, license: item.license ?? null });
   }
   return shipped;
@@ -228,7 +240,7 @@ function allCargoPackages(metadataSets) {
   const noLicense = [];
   for (const { metadata, manifest } of metadataSets) {
     for (const item of metadata.packages) {
-      if (item.source === null) continue;
+      if (!isThirdPartyCargoPackage(item)) continue;
       if (!item.license) { noLicense.push(`${item.name} ${item.version} (${manifest})`); continue; }
       addLicense(deps, item.name, item.license);
     }

@@ -113,6 +113,25 @@ test('the shipped Cargo set follows normal and build edges from the root, never 
   assert.deepEqual([...shippedCargoPackages(metadata, root).keys()].sort(), ['cc@1.4.7', 'serde@1.0.0']);
 });
 
+test('the explicitly pinned glib vendor path remains a third-party shipped crate', () => {
+  const root = path.resolve('apps/windows/src-tauri/Cargo.toml');
+  const vendorManifest = path.resolve('apps/windows/src-tauri/vendor/glib-0.18.5/Cargo.toml');
+  const metadata = {
+    packages: [
+      { id: 'qc-remote', name: 'qc-remote', version: '1.0.10', source: null, manifest_path: root },
+      { id: 'glib', name: 'glib', version: '0.18.5', source: null, license: 'MIT', manifest_path: vendorManifest },
+      { id: 'local', name: 'local', version: '1.0.0', source: null, license: 'MIT', manifest_path: path.resolve('packages/local/Cargo.toml') },
+      { id: 'wrong-glib', name: 'glib', version: '0.18.5', source: null, license: 'MIT', manifest_path: path.resolve('packages/glib/Cargo.toml') },
+    ],
+    resolve: { nodes: [{ id: 'qc-remote', deps: [
+      { pkg: 'glib', dep_kinds: [{ kind: null }] },
+      { pkg: 'local', dep_kinds: [{ kind: null }] },
+      { pkg: 'wrong-glib', dep_kinds: [{ kind: null }] },
+    ] }] },
+  };
+  assert.deepEqual([...shippedCargoPackages(metadata, root).keys()], ['glib@0.18.5']);
+});
+
 const shippedFixture = () => ({
   cargo: new Map([['syn@3.0.6', { name: 'syn', version: '3.0.6', license: 'MIT OR Apache-2.0' }]]),
   npm: new Map([['react@19.3.0', { name: 'react', version: '19.3.0', license: 'MIT' }]]),
