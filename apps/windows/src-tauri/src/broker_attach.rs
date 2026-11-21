@@ -571,8 +571,11 @@ mod tests {
             failure.message()
         );
         #[cfg(target_os = "linux")]
+        // pid + 1 may be free, reused, or still owned by another process on
+        // the runner; each branch must refuse the socket before auth bytes.
         assert!(
             failure.message().contains("no longer running")
+                || failure.message().contains("not the published")
                 || failure.message().contains("owner could not be verified"),
             "{}",
             failure.message()
