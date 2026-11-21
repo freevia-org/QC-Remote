@@ -9,7 +9,8 @@ pub(super) const MAX_NATIVE_BACKUP_BYTES: usize = 32 * 1024 * 1024;
 static NEXT_DOCUMENT_STAGE: AtomicU64 = AtomicU64::new(0);
 
 /// Keep the previous document intact until its replacement is fully written.
-/// The stage shares the destination's directory so rename stays on one volume.
+/// The stage stays on the destination's volume. Store builds use Foundation's
+/// replacement directory to respect a save panel's single-file sandbox grant.
 struct StagedDocument {
     path: PathBuf,
     file: Option<File>,
@@ -30,17 +31,33 @@ pub(super) fn write_document_with(
     path: &Path,
     write: impl FnOnce(&mut File) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    let replacement = qc_native_platform::app_store::DocumentReplacementDirectory::new(path)?;
     write_document_with_effects(
         path,
         write,
         |directory| {
+            #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+            let directory = {
+                let _ = directory;
+                replacement.path()
+            };
             let sequence = NEXT_DOCUMENT_STAGE.fetch_add(1, Ordering::Relaxed);
             directory.join(format!(
                 ".qc-document-{}-{sequence}.tmp",
                 std::process::id()
             ))
         },
-        |stage, target| fs::rename(stage, target),
+        |stage, target| {
+            #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+            {
+                replacement.commit(stage, target)
+            }
+            #[cfg(not(all(target_os = "macos", feature = "macos-app-store")))]
+            {
+                fs::rename(stage, target)
+            }
+        },
     )
 }
 
@@ -414,6 +431,33 @@ mod atomic_document_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    fn store_document_stage_stays_on_the_target_volume_and_is_cleaned_up() {
+        use std::os::unix::fs::MetadataExt;
+        let scratch = Scratch::new();
+        let target = scratch.0.join("new.qcw");
+        let replacement =
+            qc_native_platform::app_store::DocumentReplacementDirectory::new(&target).unwrap();
+        let directory = replacement.path().to_owned();
+        assert_eq!(fs::metadata(&directory).unwrap().dev(), fs::metadata(&scratch.0).unwrap().dev());
+        assert!(replacement.commit(&scratch.0.join("unowned"), &target).is_err());
+        drop(replacement);
+        assert!(!directory.exists());
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn new_document_can_be_saved_and_replaced_without_stages() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("new.qcw");
+        write_document_atomically(&path, b"first complete document").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"first complete document");
+        write_document_atomically(&path, b"second complete document").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"second complete document");
+        scratch.assert_no_stages();
     }
 
     #[test]

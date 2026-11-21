@@ -6,6 +6,95 @@ extern "C" {
     fn qc_store_authorize_folder(path: *const libc::c_char) -> *mut libc::c_char;
     fn qc_store_set_login_enabled(enabled: bool) -> *mut libc::c_char;
     fn qc_store_shared_directory() -> *mut libc::c_char;
+    fn qc_store_document_directory(
+        target: *const libc::c_char,
+        failure: *mut *mut libc::c_char,
+    ) -> *mut libc::c_char;
+    fn qc_store_commit_document(
+        stage: *const libc::c_char,
+        target: *const libc::c_char,
+    ) -> *mut libc::c_char;
+}
+
+/// An OS-provided same-volume stage for a user-selected document. A save-panel
+/// sandbox extension covers the document alone, so sibling staging is invalid.
+pub struct DocumentReplacementDirectory(PathBuf);
+
+impl DocumentReplacementDirectory {
+    pub fn new(target: &std::path::Path) -> std::io::Result<Self> {
+        if !target.is_absolute() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Document path must be absolute",
+            ));
+        }
+        let target = document_path(target)?;
+        let mut failure = std::ptr::null_mut();
+        // SAFETY: both pointers remain valid for this synchronous shim. Each
+        // returned allocation is copied and freed exactly once below.
+        unsafe {
+            let directory = qc_store_document_directory(target.as_ptr(), &mut failure);
+            if directory.is_null() {
+                return Err(document_error(failure, "Could not allocate document stage"));
+            }
+            let path = PathBuf::from(std::ffi::OsStr::from_bytes(
+                CStr::from_ptr(directory).to_bytes(),
+            ));
+            libc::free(directory.cast());
+            Ok(Self(path))
+        }
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    pub fn commit(&self, stage: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+        if stage.parent() != Some(self.path()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Document stage is outside its replacement directory",
+            ));
+        }
+        let stage = document_path(stage)?;
+        let target = document_path(target)?;
+        // SAFETY: both C strings live through the synchronous call. The shim
+        // returns null or an owned malloc error, released by document_error.
+        unsafe {
+            let failure = qc_store_commit_document(stage.as_ptr(), target.as_ptr());
+            if failure.is_null() {
+                Ok(())
+            } else {
+                Err(document_error(failure, "Could not replace document"))
+            }
+        }
+    }
+}
+
+impl Drop for DocumentReplacementDirectory {
+    fn drop(&mut self) {
+        // The writer removes its owned stage first. Never recursively delete
+        // unexpected contents if something else appeared in the directory.
+        let _ = std::fs::remove_dir(&self.0);
+    }
+}
+
+fn document_path(path: &std::path::Path) -> std::io::Result<std::ffi::CString> {
+    std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Document path contains a nul byte",
+        )
+    })
+}
+
+unsafe fn document_error(failure: *mut libc::c_char, fallback: &str) -> std::io::Error {
+    if failure.is_null() {
+        return std::io::Error::other(fallback.to_string());
+    }
+    let message = CStr::from_ptr(failure).to_string_lossy().into_owned();
+    libc::free(failure.cast());
+    std::io::Error::other(message)
 }
 
 /// Fail closed if the signed app lacks its shared-container entitlement. Falling

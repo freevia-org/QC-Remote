@@ -107,6 +107,16 @@ USB/network/file acceptance and review metadata remain gates to submission.
 The installed direct-download app and its credentials are not migrated by this
 work. Unit tests and these focused probes alone are not full E2E acceptance.
 
+Store document exports use Foundation's `NSItemReplacementDirectory` on the
+destination volume, followed by `NSFileManager` replacement (or a move for a
+new document). A save-panel grant covers the selected file; creating arbitrary
+temporary siblings beside it fails in the sandbox. The shared document writer
+still reserves its stage exclusively, syncs completed writes before committing,
+and removes owned stages on failure. Direct builds retain their existing writer.
+Signed sandbox GUI acceptance covers new workspace save, overwrite, and opening
+the saved reference snapshot; these checks do not replace the remaining LOCAL,
+remote, and login-item acceptance gates above.
+
 ### Store candidate build and signing
 
 Run `scripts/build-macos-appstore.sh` on the target Mac after installing the
