@@ -9,5 +9,9 @@
   "patchScope": [
     "src/variant_iter.rs: make the GVariant string output pointer mutable, as in upstream commit 40b7211"
   ],
+  "packagingMetadataScope": [
+    "Cargo.toml: add package.publish = false",
+    "Cargo.toml.orig: add package.publish = false"
+  ],
   "patchedVariantIterSha256": "a0f5ee8acb8faa089bcdfbc9a57372609fce7654026ccef7d9a224d05a654ccc"
 }
