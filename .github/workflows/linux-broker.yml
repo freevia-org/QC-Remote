@@ -623,10 +623,14 @@ jobs:
       - name: Build and verify Debian package from this source commit
         env:
           RUSTUP_TOOLCHAIN: stable
+          CARGO_TARGET_DIR: ${{ runner.temp }}/qc-remote-linux-package-${{ github.run_id }}-${{ github.run_attempt }}
         run: python3 scripts/package-linux-deb.py --timeout-seconds 2400
       - name: Name package and write checksum manifest
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/qc-remote-linux-package-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          mapfile -t packages < <(find apps/windows/src-tauri/target -type f -path '*/bundle/deb/*.deb' -print)
+          test -d "$CARGO_TARGET_DIR"
+          mapfile -t packages < <(find "$CARGO_TARGET_DIR" -type f -path '*/bundle/deb/*.deb' -print)
           test "${#packages[@]}" -eq 1
           deb="qc-remote_${LINUX_RELEASE_VERSION}_amd64.deb"
           install -m 0644 "${packages[0]}" "$deb"

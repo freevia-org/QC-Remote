@@ -99,3 +99,12 @@ test('apt-get calls retry transient mirror failures', () => {
   assert.ok(calls.length > 0);
   for (const call of calls) assert.match(call, /-o Acquire::Retries=3/, call);
 });
+
+test('Linux release package uses a clean per-attempt target directory', () => {
+  const text = readFileSync(path.join(workflows, 'linux-broker.yml'), 'utf8');
+  const release = text.slice(text.indexOf('\n  linux-preview-release:'));
+  const target = '${{ runner.temp }}/qc-remote-linux-package-${{ github.run_id }}-${{ github.run_attempt }}';
+  assert.equal(release.split(target).length - 1, 2);
+  assert.match(release, /name: Build and verify Debian package from this source commit[\s\S]*?CARGO_TARGET_DIR:/);
+  assert.match(release, /name: Name package and write checksum manifest[\s\S]*?test -d "\$CARGO_TARGET_DIR"[\s\S]*?find "\$CARGO_TARGET_DIR"/);
+});
