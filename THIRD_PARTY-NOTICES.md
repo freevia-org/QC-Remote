@@ -1,60 +1,18 @@
-# Third-party notices
+# QC Remote third-party notices
 
-QC Remote is built from third-party open-source components. This file lists
-every third-party package locked by the repository's four lockfiles, grouped by
-license family, in two parts:
+QC Remote contains or is distributed with third-party software and assets. Copyright remains with the respective authors. The license expression below is derived mechanically from the locked runtime dependency graph and declared bundled-asset inventory; the corresponding license terms continue to apply.
 
-- **Shipped components** are compiled into, or bundled with, a distributed
-  build: the Windows app, the device broker, or the Android app. They are the
-  crates reachable over normal and build dependencies from
-  `apps/windows/src-tauri` and `services/device-broker` (for
-  `x86_64-pc-windows-msvc`) and `packages/rust/quadcortex-android` (for
-  `aarch64-linux-android`), the npm packages reachable over runtime
-  dependencies from the `apps/windows` and `apps/android` workspaces, and the
-  Android app's locked Maven runtime classpath.
-- **Development tooling (not distributed)** is everything else the lockfiles
-  lock: compilers, bundlers, test runners, image tooling, and the packages only
-  the hosted Cloudflare relay uses. It builds, tests or deploys QC Remote but is
-  not distributed with it.
+The native protocol schema incorporates interoperability information derived from the MIT-licensed `pyquadcortex` community project. Its complete retained notice is distributed as `legal/COMMUNITY-PROTOCOL-LICENSE.txt`.
 
-The four lockfiles are the root Rust workspace's `Cargo.lock`,
-`apps/windows/src-tauri/Cargo.lock` (the Windows Tauri app is deliberately
-excluded from the root workspace, see `exclude` in `Cargo.toml`, and resolves
-its own lockfile), the npm workspace's `package-lock.json`, and
-`apps/android/android/app/gradle.lockfile`. Regenerate this file with
-`node scripts/verify-third-party-notices.mjs --write`, which reads all four;
-without `--write` the same script fails when this file, the inventory, the
-license texts or the source offer drift from the lockfiles.
+Neural DSP and Quad Cortex are trademarks of Neural DSP Technologies Oy. Their use identifies compatibility only and does not indicate affiliation, authorization, sponsorship, endorsement, or support.
 
-Each dependency retains its own license and, where applicable, its own
-copyright notices; nothing here modifies those terms. The complete license
-and notice texts shipped with each build are collected in
-[`legal/THIRD_PARTY-LICENSE-TEXTS.txt`](legal/THIRD_PARTY-LICENSE-TEXTS.txt),
-and [`legal/THIRD_PARTY-LICENSE-INVENTORY.json`](legal/THIRD_PARTY-LICENSE-INVENTORY.json)
-records every shipped component's exact version, license, upstream source, and
-the SHA-256 of each of its texts. Exact-version source archives for the shipped
-copyleft components are listed in
-[`legal/THIRD_PARTY-SOURCE-OFFER.md`](legal/THIRD_PARTY-SOURCE-OFFER.md); it
-covers every shipped component under MPL-2.0 or a GPL-family license, and
-development tooling, which is not distributed, carries no source offer.
+Inventory: 658 locked runtime components; 0 unresolved license/version records.
 
-Two bundled, non-package-manager components have their own notice files
-alongside their content in this repository:
+Restricted SDK terms requiring publisher review: 0. These are listed in the machine-readable inventory and are not characterized as open-source licenses.
 
-- IBM Plex Sans (SIL Open Font License 1.1) —
-  `packages/typescript/qc-theme/assets/fonts/LICENSE.txt`
-  also covers the derived glyph outlines and design metrics in
-  `packages/typescript/qc-ui/src/coros-header-glyphs.ts`.
-- The `pyquadcortex` community protocol notice (MIT), covering the vendored
-  protobuf schema in `packages/rust/quadcortex/proto/` —
-  `packages/rust/quadcortex/licenses/pyquadcortex-MIT.txt` (the same text
-  every build ships as `legal/COMMUNITY-PROTOCOL-LICENSE.txt`)
+For copyleft components, exact-version source archive locations are provided in `legal/THIRD_PARTY-SOURCE-OFFER.md`. Where a dependency offers multiple licenses, the machine-readable inventory records QC Remote's selected license.
 
-This file is regenerated from the lockfiles; it is not exhaustive legal
-advice. License headings are normalized SPDX expressions: `/` is written `OR`,
-the operands of a plain choice are sorted, and the license names Android
-libraries' Maven POMs use are mapped to their SPDX identifiers. The inventory
-keeps each component's license exactly as its own manifest or POM declares it.
+Bundled license/NOTICE texts: 326; runtime components without any bundled license text: 0. License labels and source evidence remain recorded for every component.
 
 ## Shipped components
 
@@ -93,10 +51,6 @@ dpi
 
 linux-raw-sys, rustix
 
-#### Apache-2.0 OR BSD-2-Clause OR MIT (1)
-
-zerocopy
-
 #### Apache-2.0 OR BSD-3-Clause (2)
 
 moxcms, pxfm
@@ -113,13 +67,13 @@ constant_time_eq, dunce
 
 hyper-rustls, rustls, rustls-native-certs
 
-#### Apache-2.0 OR MIT (277)
+#### Apache-2.0 OR MIT (273)
 
-aes, anyhow, arc-swap, async-broadcast, async-channel, async-executor, async-fs, async-io, async-lock, async-net, async-process, async-recursion, async-signal, async-task, async-trait, atomic-waker, autocfg, base64, basic-udev, bit-set, bit-vec, bitflags, block-buffer, blocking, bs58, camino, cargo_toml, cargo-platform, cc, cesu8, cfg-expr, cfg-if, chacha20, chrono, cipher, cmake, concurrent-queue, const-oid, cookie, core_detect, core-foundation, core-foundation-sys, core-graphics, core-graphics-types, cpubits, cpufeatures, crc32fast, crossbeam-channel, crossbeam-queue, crossbeam-utils, crypto-common, ctor, ctr, dbus, dbus-secret-service, defmt, defmt-macros, defmt-parser, deranged, digest, dirs, dirs-sys, displaydoc, downcast-rs, dtoa, dyn-clone, either, embed_plist, enumflags2, enumflags2_derive, equivalent, erased-serde, errno, event-listener, event-listener-strategy, fastrand, fdeflate, field-offset, find-msvc-tools, fixedbitset, flate2, fnv, foreign-types, foreign-types-macros, foreign-types-shared, form_urlencoded, futures, futures-channel, futures-core, futures-executor, futures-io, futures-lite, futures-macro, futures-sink, futures-task, futures-util, getrandom, glob, hashbrown, heck, hex, html5ever, http, httparse, httpdate, hybrid-array, iana-time-zone, ident_case, idna, idna_adapter, image, indexmap, inout, ipnet, itertools, itoa, jni, jni-macros, jni-sys, jni-sys-macros, jobserver, json-patch, jsonptr, keyboard-types, keyring, libappindicator, libappindicator-sys, libc, libdbus-sys, lock_api, log, markup5ever, mime, muda, multimap, multiversion, multiversion_no_op, multiversion-macros, num-conv, num-traits, once_cell, openssl-probe, ordered-stream, parking, parking_lot, parking_lot_core, pastey, percent-encoding, petgraph, pin-project-lite, piper, pkg-config, png, polling, pollster, powerfmt, ppv-lite86, prettyplease, proc-macro-crate, proc-macro-error, proc-macro-error-attr, proc-macro2, quinn, quinn-proto, quinn-udp, quote, rand, rand_chacha, rand_core, rand_pcg, ref-cast, ref-cast-impl, regex, regex-automata, regex-syntax, reqwest, rustc_version, rustc-hash, rustls-pki-types, rustls-platform-verifier, rustls-platform-verifier-android, rustversion, scoped-tls, scopeguard, security-framework, security-framework-sys, semver, serde, serde_core, serde_derive, serde_derive_internals, serde_json, serde_path_to_error, serde_repr, serde_spanned, serde_urlencoded, serde_with, serde_with_macros, serde-untagged, serialize-to-javascript, serialize-to-javascript-impl, servo_arc, sha1, sha2, shlex, signal-hook, signal-hook-registry, simd_cesu8, simdutf8, siphasher, smallvec, socket2, softbuffer, sse-stream, stable_deref_trait, string_cache, string_cache_codegen, swift-rs, syn, system-configuration, system-configuration-sys, system-deps, task-local, tauri, tauri-build, tauri-codegen, tauri-macros, tauri-plugin-single-instance, tauri-runtime, tauri-runtime-wry, tauri-utils, tempfile, tendril, thiserror, thiserror-impl, time, time-core, time-macros, tokio-rustls, toml, toml_datetime, toml_edit, toml_parser, toml_writer, tray-icon, tungstenite, typed-path, typeid, typenum, unicode-segmentation, url, utf8_iter, uuid, version_check, web_atoms, web-time, webbrowser, window-vibrancy, windows, windows_x86_64_msvc, windows-collections, windows-core, windows-future, windows-implement, windows-interface, windows-link, windows-numerics, windows-registry, windows-result, windows-strings, windows-sys, windows-targets, windows-threading, windows-version, wry, zeroize, zeroize_derive
+aes, anyhow, arc-swap, async-broadcast, async-channel, async-executor, async-io, async-lock, async-process, async-recursion, async-signal, async-task, async-trait, atomic-waker, autocfg, base64, basic-udev, bit-set, bit-vec, bitflags, block-buffer, blocking, bs58, camino, cargo_toml, cargo-platform, cc, cesu8, cfg-expr, cfg-if, chacha20, chrono, cipher, cmake, concurrent-queue, const-oid, cookie, core_detect, core-foundation, core-foundation-sys, core-graphics, core-graphics-types, cpubits, cpufeatures, crc32fast, crossbeam-channel, crossbeam-queue, crossbeam-utils, crypto-common, ctor, ctr, dbus, dbus-secret-service, defmt, defmt-macros, defmt-parser, deranged, digest, dirs, dirs-sys, displaydoc, downcast-rs, dtoa, dyn-clone, either, embed_plist, enumflags2, enumflags2_derive, equivalent, erased-serde, errno, event-listener, event-listener-strategy, fastrand, fdeflate, field-offset, find-msvc-tools, fixedbitset, flate2, fnv, foreign-types, foreign-types-macros, foreign-types-shared, form_urlencoded, futures, futures-channel, futures-core, futures-executor, futures-io, futures-lite, futures-macro, futures-sink, futures-task, futures-util, getrandom, glob, hashbrown, heck, hex, html5ever, http, httparse, httpdate, hybrid-array, iana-time-zone, ident_case, idna, idna_adapter, image, indexmap, inout, ipnet, itertools, itoa, jni, jni-macros, jni-sys, jni-sys-macros, jobserver, json-patch, jsonptr, keyboard-types, keyring, libappindicator, libappindicator-sys, libc, libdbus-sys, lock_api, log, markup5ever, mime, muda, multimap, multiversion, multiversion_no_op, multiversion-macros, num-conv, num-traits, once_cell, openssl-probe, ordered-stream, parking, parking_lot, parking_lot_core, pastey, percent-encoding, petgraph, pin-project-lite, piper, pkg-config, png, polling, pollster, powerfmt, prettyplease, proc-macro-crate, proc-macro-error, proc-macro-error-attr, proc-macro2, quinn, quinn-proto, quinn-udp, quote, rand, rand_core, rand_pcg, ref-cast, ref-cast-impl, regex, regex-automata, regex-syntax, reqwest, rustc_version, rustc-hash, rustls-pki-types, rustls-platform-verifier, rustls-platform-verifier-android, rustversion, scoped-tls, scopeguard, security-framework, security-framework-sys, semver, serde, serde_core, serde_derive, serde_derive_internals, serde_json, serde_path_to_error, serde_repr, serde_spanned, serde_urlencoded, serde_with, serde_with_macros, serde-untagged, serialize-to-javascript, serialize-to-javascript-impl, servo_arc, sha1, sha2, shlex, signal-hook, signal-hook-registry, simd_cesu8, simdutf8, siphasher, smallvec, socket2, softbuffer, sse-stream, stable_deref_trait, string_cache, string_cache_codegen, swift-rs, syn, system-configuration, system-configuration-sys, system-deps, task-local, tauri, tauri-build, tauri-codegen, tauri-macros, tauri-plugin-single-instance, tauri-runtime, tauri-runtime-wry, tauri-utils, tempfile, tendril, thiserror, thiserror-impl, time, time-core, time-macros, tokio-rustls, toml, toml_datetime, toml_edit, toml_parser, toml_writer, tray-icon, tungstenite, typed-path, typeid, typenum, unicode-segmentation, url, utf8_iter, uuid, version_check, web_atoms, web-time, webbrowser, window-vibrancy, windows, windows_x86_64_msvc, windows-collections, windows-core, windows-future, windows-implement, windows-interface, windows-link, windows-numerics, windows-registry, windows-result, windows-strings, windows-sys, windows-targets, windows-threading, windows-version, wry, zeroize, zeroize_derive
 
-#### Apache-2.0 OR MIT OR Zlib (15)
+#### Apache-2.0 OR MIT OR Zlib (16)
 
-bytemuck, dispatch2, lru-slab, miniz_oxide, objc2-app-kit, objc2-core-foundation, objc2-core-graphics, objc2-exception-helper, objc2-io-surface, objc2-quartz-core, objc2-web-kit, raw-window-handle, static_vcruntime, tinyvec, tinyvec_macros
+bytemuck, dispatch2, lru-slab, miniz_oxide, objc2-app-kit, objc2-core-foundation, objc2-core-graphics, objc2-exception-helper, objc2-io-surface, objc2-quartz-core, objc2-uniform-type-identifiers, objc2-web-kit, raw-window-handle, static_vcruntime, tinyvec, tinyvec_macros
 
 #### Apache-2.0 WITH LLVM-exception (1)
 
@@ -145,9 +99,9 @@ aws-lc-rs
 
 aws-lc-sys
 
-#### MIT (128)
+#### MIT (126)
 
-ashpd, atk, atk-sys, axum, axum-core, block2, bytes, cairo-rs, cairo-sys-rs, cargo_metadata, cfb, cfg_aliases, combine, darling, darling_core, darling_macro, data-encoding, derive_more, derive_more-impl, dlib, dlopen2, dlopen2_derive, dom_query, embed-resource, endi, fs_extra, gdk, gdk-pixbuf, gdk-pixbuf-sys, gdk-sys, gdkwayland-sys, generic-array, gio, gio-sys, glib, glib-macros, glib-sys, gobject-sys, gtk, gtk-sys, gtk3-macros, h2, hidapi, http-body, http-body-util, hyper, hyper-util, ico, infer, javascriptcore-rs, javascriptcore-rs-sys, memoffset, mio, new_debug_unreachable, nix, objc2, objc2-encode, objc2-foundation, pango, pango-sys, phf, phf_codegen, phf_generator, phf_macros, phf_shared, plist, precomputed-hash, protoc-bin-vendored, protoc-bin-vendored-linux-aarch_64, protoc-bin-vendored-linux-ppcle_64, protoc-bin-vendored-linux-s390_64, protoc-bin-vendored-linux-x86_32, protoc-bin-vendored-linux-x86_64, protoc-bin-vendored-macos-aarch_64, protoc-bin-vendored-macos-x86_64, protoc-bin-vendored-win32, quick-xml, rfd, schannel, schemars, schemars_derive, simd-adler32, slab, soup3, soup3-sys, strsim, synstructure, tauri-winres, tokio, tokio-macros, tokio-stream, tokio-tungstenite, tokio-util, tower, tower-http, tower-layer, tower-service, tracing, tracing-attributes, tracing-core, try-lock, urlencoding, urlpattern, version-compare, vswhom, vswhom-sys, want, wayland-backend, wayland-client, wayland-protocols, wayland-scanner, wayland-sys, webkit2gtk, webkit2gtk-sys, webview2-com, webview2-com-macros, webview2-com-sys, winnow, winreg, zbus, zbus_macros, zbus_names, zcheapstr, zip, zmij, zvariant, zvariant_derive, zvariant_utils
+atk, atk-sys, axum, axum-core, block2, bytes, cairo-rs, cairo-sys-rs, cargo_metadata, cfb, cfg_aliases, combine, darling, darling_core, darling_macro, data-encoding, derive_more, derive_more-impl, dlib, dlopen2, dlopen2_derive, dom_query, embed-resource, endi, fs_extra, gdk, gdk-pixbuf, gdk-pixbuf-sys, gdk-sys, gdkwayland-sys, generic-array, gio, gio-sys, glib, glib-macros, glib-sys, gobject-sys, gtk, gtk-sys, gtk3-macros, h2, hidapi, http-body, http-body-util, hyper, hyper-util, ico, infer, javascriptcore-rs, javascriptcore-rs-sys, memoffset, mio, new_debug_unreachable, nix, objc2, objc2-encode, objc2-foundation, pango, pango-sys, phf, phf_codegen, phf_generator, phf_macros, phf_shared, plist, precomputed-hash, protoc-bin-vendored, protoc-bin-vendored-linux-aarch_64, protoc-bin-vendored-linux-ppcle_64, protoc-bin-vendored-linux-s390_64, protoc-bin-vendored-linux-x86_32, protoc-bin-vendored-linux-x86_64, protoc-bin-vendored-macos-aarch_64, protoc-bin-vendored-macos-x86_64, protoc-bin-vendored-win32, quick-xml, rfd, schannel, schemars, schemars_derive, simd-adler32, slab, soup3, soup3-sys, strsim, synstructure, tauri-winres, tokio, tokio-macros, tokio-stream, tokio-tungstenite, tokio-util, tower, tower-http, tower-layer, tower-service, tracing, tracing-attributes, tracing-core, try-lock, urlpattern, version-compare, vswhom, vswhom-sys, want, wayland-backend, wayland-client, wayland-protocols, wayland-scanner, wayland-sys, webkit2gtk, webkit2gtk-sys, webview2-com, webview2-com-macros, webview2-com-sys, winnow, winreg, zbus, zbus_macros, zbus_names, zcheapstr, zip, zmij, zvariant, zvariant_derive, zvariant_utils
 
 #### MIT AND BSD-3-Clause (1)
 
@@ -212,9 +166,9 @@ configurations are outside this distributed-component inventory.
 
 wasi, wasip2, wit-bindgen
 
-#### Apache-2.0 OR BSD-2-Clause OR MIT (1)
+#### Apache-2.0 OR BSD-2-Clause OR MIT (2)
 
-zerocopy-derive
+zerocopy, zerocopy-derive
 
 #### Apache-2.0 OR BSD-3-Clause OR MIT (2)
 
@@ -224,9 +178,9 @@ num_enum, num_enum_derive
 
 r-efi
 
-#### Apache-2.0 OR MIT (34)
+#### Apache-2.0 OR MIT (36)
 
-android_system_properties, bumpalo, hermit-abi, iana-time-zone-haiku, js-sys, ndk, ndk-context, ndk-sys, portable-atomic, portable-atomic-util, proptest, quick-error, rand_xorshift, rusty-fork, tao-macros, unarray, wait-timeout, wasm-bindgen, wasm-bindgen-futures, wasm-bindgen-macro, wasm-bindgen-macro-support, wasm-bindgen-shared, wasm-streams, web-sys, winapi, winapi-i686-pc-windows-gnu, winapi-x86_64-pc-windows-gnu, windows_aarch64_gnullvm, windows_aarch64_msvc, windows_i686_gnu, windows_i686_gnullvm, windows_i686_msvc, windows_x86_64_gnu, windows_x86_64_gnullvm
+android_system_properties, bumpalo, hermit-abi, iana-time-zone-haiku, js-sys, ndk, ndk-context, ndk-sys, portable-atomic, portable-atomic-util, ppv-lite86, proptest, quick-error, rand_chacha, rand_xorshift, rusty-fork, tao-macros, unarray, wait-timeout, wasm-bindgen, wasm-bindgen-futures, wasm-bindgen-macro, wasm-bindgen-macro-support, wasm-bindgen-shared, wasm-streams, web-sys, winapi, winapi-i686-pc-windows-gnu, winapi-x86_64-pc-windows-gnu, windows_aarch64_gnullvm, windows_aarch64_msvc, windows_i686_gnu, windows_i686_gnullvm, windows_i686_msvc, windows_x86_64_gnu, windows_x86_64_gnullvm
 
 #### Apache-2.0 OR MIT OR Zlib (7)
 

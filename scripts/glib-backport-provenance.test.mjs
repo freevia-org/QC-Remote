@@ -62,6 +62,10 @@ test('vendored glib backport records the published source and exact upstream fix
   assert.match(manifest, /^version = "0\.18\.5"$/m);
   assert.match(manifest, /^license = "MIT"$/m);
   assert.match(manifest, /^repository = "https:\/\/github\.com\/gtk-rs\/gtk-rs-core"$/m);
+  assert.deepEqual(provenance.packagingMetadataScope, [
+    'Cargo.toml: add package.publish = false',
+    'Cargo.toml.orig: add package.publish = false',
+  ], 'the only allowed Cargo-manifest change is the explicit no-publish packaging field');
 
   const variantIter = readFileSync(path.join(crate, 'src/variant_iter.rs'));
   const digest = sha256(variantIter);
@@ -108,6 +112,15 @@ test('vendored glib backport records the published source and exact upstream fix
         .replace(immutableBinding, 'let mut p: *mut libc::c_char = std::ptr::null_mut();')
         .replace(immutableOutput, '                &mut p,');
       assert.deepEqual(vendored, Buffer.from(expected), 'vendored iterator source must equal the published file plus only upstream 40b7211');
+      continue;
+    }
+    if (relative === 'Cargo.toml' || relative === 'Cargo.toml.orig') {
+      const upstreamManifest = bytes.toString('utf8');
+      const insertionPoint = relative === 'Cargo.toml' ? '[package]\n' : '[package]\nname = "glib"\n';
+      assert.equal(upstreamManifest.split(insertionPoint).length - 1, 1, `${relative} must have one package metadata insertion point`);
+      assert.doesNotMatch(upstreamManifest, /^publish\s*=/m, `${relative} upstream preimage must not already set publish`);
+      const expected = Buffer.from(upstreamManifest.replace(insertionPoint, `${insertionPoint}publish = false\n`));
+      assert.deepEqual(vendored, expected, `vendored manifest may add only package.publish = false: ${relative}`);
       continue;
     }
     assert.deepEqual(vendored, bytes, `published crate file changed unexpectedly: ${relative}`);

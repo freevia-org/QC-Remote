@@ -82,16 +82,6 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "ashpd",
-      "version": "0.11.1",
-      "license": "MIT",
-      "sourceUrl": "https://github.com/bilelmoussaoui/ashpd",
-      "licenseTextHashes": [
-        "28f22dc50ebc112e7ca38753ed797b71a90747230fcebebd339a5cc6c695961e"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
       "name": "async-broadcast",
       "version": "0.7.2",
       "license": "MIT OR Apache-2.0",
@@ -125,17 +115,6 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "async-fs",
-      "version": "2.2.0",
-      "license": "Apache-2.0 OR MIT",
-      "sourceUrl": "https://github.com/smol-rs/async-fs",
-      "licenseTextHashes": [
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
-        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
       "name": "async-io",
       "version": "2.6.0",
       "license": "Apache-2.0 OR MIT",
@@ -151,17 +130,6 @@
       "version": "3.4.2",
       "license": "Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/smol-rs/async-lock",
-      "licenseTextHashes": [
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
-        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "async-net",
-      "version": "2.0.0",
-      "license": "Apache-2.0 OR MIT",
-      "sourceUrl": "https://github.com/smol-rs/async-net",
       "licenseTextHashes": [
         "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
@@ -3046,6 +3014,18 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "objc2-uniform-type-identifiers",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "objc2-web-kit",
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
@@ -3318,8 +3298,8 @@
     {
       "ecosystem": "cargo",
       "name": "pollster",
-      "version": "0.4.0",
-      "license": "Apache-2.0/MIT",
+      "version": "1.0.3",
+      "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/zesterer/pollster",
       "licenseTextHashes": [
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
@@ -3345,17 +3325,6 @@
       "licenseTextHashes": [
         "4b05c4b43039d82b9ef8f3fb6cbf97f8312485eb9e6546a8171b37b73e048b08",
         "6e972f314e81b300c51ebacaddfea1799bbf661b6c65decc4db677ce49483c9e"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "ppv-lite86",
-      "version": "0.2.21",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/cryptocorrosion/cryptocorrosion",
-      "licenseTextHashes": [
-        "b2a541f10560a218c2a8b9506c3b5c7ac40d2c99e2d2845eae3c4cf16c70000f",
-        "f0a559a114200228b3a06d7d22961a7e0fc21a9c2b139a970be5830cebac8e10"
       ]
     },
     {
@@ -3663,18 +3632,6 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "rand_chacha",
-      "version": "0.9.0",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/rust-random/rand",
-      "licenseTextHashes": [
-        "2411d70acb18e15ac32f7aace439a5c2725b8d0074510caf651d4c270d7c05aa",
-        "cc367a7134c2b07d995a2f8dea591094a1d100e49c68513f729fdf3eaf580a21",
-        "fee4d7ce394c9161daabd2797e22d8d5ed80ea3c0f4524b242ab22582d2cc412"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
       "name": "rand_core",
       "version": "0.10.1",
       "license": "MIT OR Apache-2.0",
@@ -3683,18 +3640,6 @@
         "179c83ef07a51414e7fb13941958470bbd43c072efbe9635951ebcd7583ae5d5",
         "704f0e5f1c8486094f9b08e23ff0955c895dcee8d7de7390beafcad46b5dc4d5",
         "c9027c55c9307b0cc5252b75c7bb74bb8fbf7270c881fa3a0a745ef742568156"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "rand_core",
-      "version": "0.9.5",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/rust-random/rand",
-      "licenseTextHashes": [
-        "179c83ef07a51414e7fb13941958470bbd43c072efbe9635951ebcd7583ae5d5",
-        "2411d70acb18e15ac32f7aace439a5c2725b8d0074510caf651d4c270d7c05aa",
-        "cc367a7134c2b07d995a2f8dea591094a1d100e49c68513f729fdf3eaf580a21"
       ]
     },
     {
@@ -3725,18 +3670,6 @@
       "ecosystem": "cargo",
       "name": "rand",
       "version": "0.10.4",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/rust-random/rand",
-      "licenseTextHashes": [
-        "2411d70acb18e15ac32f7aace439a5c2725b8d0074510caf651d4c270d7c05aa",
-        "cc367a7134c2b07d995a2f8dea591094a1d100e49c68513f729fdf3eaf580a21",
-        "fee4d7ce394c9161daabd2797e22d8d5ed80ea3c0f4524b242ab22582d2cc412"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "rand",
-      "version": "0.9.5",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/rust-random/rand",
       "licenseTextHashes": [
@@ -3826,7 +3759,7 @@
     {
       "ecosystem": "cargo",
       "name": "rfd",
-      "version": "0.15.4",
+      "version": "0.18.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/PolyMeilex/rfd",
       "licenseTextHashes": [
@@ -5429,16 +5362,6 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "urlencoding",
-      "version": "2.1.3",
-      "license": "MIT",
-      "sourceUrl": "https://github.com/kornelski/rust_urlencoding",
-      "licenseTextHashes": [
-        "5df9b8726f15e8bc9bace81e0ed3e8d9945f0582f0de6c9833d97c67086d2a3b"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
       "name": "urlpattern",
       "version": "0.6.0",
       "license": "MIT",
@@ -6059,18 +5982,6 @@
       "sourceUrl": "https://github.com/z-galaxy/zcheapstr/",
       "licenseTextHashes": [
         "36c68b249eb6de0491d8162d9c886af98800bbfb5bc767b1e373390402c9888d"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "zerocopy",
-      "version": "0.8.56",
-      "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
-      "sourceUrl": "https://github.com/google/zerocopy",
-      "licenseTextHashes": [
-        "47248d1ec833e0771ddacb65f2cf9978785f4a9976b5b0b69d1e33c60a50be55",
-        "98ed0ad9db8a72957b9c45941fe2ed31933a3beacbd193e662df483d0643a13d",
-        "a03d4daa4f46496a592dbf6734f5ee16ed52f1eb7a56ae4648d609ebf0efd0b7"
       ]
     },
     {
@@ -8548,6 +8459,7 @@
         "cargo:objc2-foundation@0.3.2",
         "cargo:objc2-io-surface@0.3.2",
         "cargo:objc2-quartz-core@0.3.2",
+        "cargo:objc2-uniform-type-identifiers@0.3.2",
         "cargo:objc2-web-kit@0.3.2",
         "cargo:objc2@0.6.4"
       ]
@@ -8715,7 +8627,6 @@
       ],
       "components": [
         "cargo:rand_core@0.10.1",
-        "cargo:rand_core@0.9.5",
         "cargo:rand_pcg@0.10.2"
       ]
     },
@@ -8764,7 +8675,7 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:rfd@0.15.4"
+        "cargo:rfd@0.18.0"
       ]
     },
     {
@@ -8796,6 +8707,7 @@
         "cargo:objc2-foundation@0.3.2",
         "cargo:objc2-io-surface@0.3.2",
         "cargo:objc2-quartz-core@0.3.2",
+        "cargo:objc2-uniform-type-identifiers@0.3.2",
         "cargo:objc2-web-kit@0.3.2",
         "cargo:objc2@0.6.4"
       ]
@@ -8955,9 +8867,6 @@
       "components": [
         "cargo:rand@0.10.3",
         "cargo:rand@0.10.4",
-        "cargo:rand@0.9.5",
-        "cargo:rand_chacha@0.9.0",
-        "cargo:rand_core@0.9.5",
         "cargo:rand_pcg@0.10.2"
       ]
     },
@@ -9191,15 +9100,6 @@
       ]
     },
     {
-      "sha256": "28f22dc50ebc112e7ca38753ed797b71a90747230fcebebd339a5cc6c695961e",
-      "names": [
-        "LICENSE"
-      ],
-      "components": [
-        "cargo:ashpd@0.11.1"
-      ]
-    },
-    {
       "sha256": "2970d8b03b77f5a8ea04410e6335e4d039f2ae72df01ccb97da3cea70b500419",
       "names": [
         "LICENSE"
@@ -9325,10 +9225,8 @@
         "cargo:anyhow@1.0.104",
         "cargo:async-channel@2.5.0",
         "cargo:async-executor@1.14.0",
-        "cargo:async-fs@2.2.0",
         "cargo:async-io@2.6.0",
         "cargo:async-lock@3.4.2",
-        "cargo:async-net@2.0.0",
         "cargo:async-process@2.5.0",
         "cargo:async-recursion@1.1.1",
         "cargo:async-signal@0.2.14",
@@ -9673,15 +9571,6 @@
       ]
     },
     {
-      "sha256": "47248d1ec833e0771ddacb65f2cf9978785f4a9976b5b0b69d1e33c60a50be55",
-      "names": [
-        "LICENSE-BSD"
-      ],
-      "components": [
-        "cargo:zerocopy@0.8.56"
-      ]
-    },
-    {
       "sha256": "473867fcf89f75954018ee72124015779a1b9ca0d1a33328f2ddcf538690c067",
       "names": [
         "LICENSE-BoringSSL"
@@ -9957,15 +9846,6 @@
       ],
       "components": [
         "cargo:fixedbitset@0.5.7"
-      ]
-    },
-    {
-      "sha256": "5df9b8726f15e8bc9bace81e0ed3e8d9945f0582f0de6c9833d97c67086d2a3b",
-      "names": [
-        "LICENSE"
-      ],
-      "components": [
-        "cargo:urlencoding@2.1.3"
       ]
     },
     {
@@ -10786,10 +10666,8 @@
         "cargo:arc-swap@1.9.3",
         "cargo:async-channel@2.5.0",
         "cargo:async-executor@1.14.0",
-        "cargo:async-fs@2.2.0",
         "cargo:async-io@2.6.0",
         "cargo:async-lock@3.4.2",
-        "cargo:async-net@2.0.0",
         "cargo:async-process@2.5.0",
         "cargo:async-recursion@1.1.1",
         "cargo:async-signal@0.2.14",
@@ -10874,7 +10752,7 @@
         "cargo:pkg-config@0.3.34",
         "cargo:png@0.18.1",
         "cargo:polling@3.11.0",
-        "cargo:pollster@0.4.0",
+        "cargo:pollster@1.0.3",
         "cargo:prost-build@0.14.6",
         "cargo:prost-derive@0.14.6",
         "cargo:prost-types@0.14.6",
@@ -10969,15 +10847,6 @@
       ]
     },
     {
-      "sha256": "98ed0ad9db8a72957b9c45941fe2ed31933a3beacbd193e662df483d0643a13d",
-      "names": [
-        "LICENSE-APACHE"
-      ],
-      "components": [
-        "cargo:zerocopy@0.8.56"
-      ]
-    },
-    {
       "sha256": "99afaa30c17801207692138b8a7d9f7522b52711dabb4cde25855dadc950e4c8",
       "names": [
         "LICENSE-MIT"
@@ -11021,15 +10890,6 @@
       ],
       "components": [
         "cargo:hex@0.4.3"
-      ]
-    },
-    {
-      "sha256": "a03d4daa4f46496a592dbf6734f5ee16ed52f1eb7a56ae4648d609ebf0efd0b7",
-      "names": [
-        "LICENSE-MIT"
-      ],
-      "components": [
-        "cargo:zerocopy@0.8.56"
       ]
     },
     {
@@ -11252,15 +11112,6 @@
       "components": [
         "cargo:encoding_rs@0.8.35",
         "cargo:encoding_rs@0.8.41"
-      ]
-    },
-    {
-      "sha256": "b2a541f10560a218c2a8b9506c3b5c7ac40d2c99e2d2845eae3c4cf16c70000f",
-      "names": [
-        "LICENSE-MIT"
-      ],
-      "components": [
-        "cargo:ppv-lite86@0.2.21"
       ]
     },
     {
@@ -11662,10 +11513,7 @@
       ],
       "components": [
         "cargo:rand@0.10.3",
-        "cargo:rand@0.10.4",
-        "cargo:rand@0.9.5",
-        "cargo:rand_chacha@0.9.0",
-        "cargo:rand_core@0.9.5"
+        "cargo:rand@0.10.4"
       ]
     },
     {
@@ -11794,7 +11642,7 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:pollster@0.4.0"
+        "cargo:pollster@1.0.3"
       ]
     },
     {
@@ -12100,15 +11948,6 @@
       ]
     },
     {
-      "sha256": "f0a559a114200228b3a06d7d22961a7e0fc21a9c2b139a970be5830cebac8e10",
-      "names": [
-        "LICENSE-APACHE"
-      ],
-      "components": [
-        "cargo:ppv-lite86@0.2.21"
-      ]
-    },
-    {
       "sha256": "f2459c4b106b4bee2204dde164c673160c9292d4177a5f92e0b116213c72a3b7",
       "names": [
         "LICENSE"
@@ -12285,9 +12124,7 @@
       ],
       "components": [
         "cargo:rand@0.10.3",
-        "cargo:rand@0.10.4",
-        "cargo:rand@0.9.5",
-        "cargo:rand_chacha@0.9.0"
+        "cargo:rand@0.10.4"
       ]
     },
     {
