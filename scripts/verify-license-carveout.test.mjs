@@ -9,6 +9,7 @@ import {
   bundledSkillFiles,
   DEVICE_KNOWLEDGE_SKILL_BUNDLE,
   DEVICE_KNOWLEDGE_SKILL_DIRECTORY,
+  licenseCarveOutErrors,
   licenseCopyErrors,
   NOTICE_TEXT_COPIES,
   REFERENCE_TERMS_PATH,
@@ -27,6 +28,22 @@ test("the community protocol license and the crate's pyquadcortex notice are one
   assert.deepEqual(check({ [copy]: "MIT notice\n", [canonical]: "MIT notice\r\n" }), [], "line endings aside, identical copies pass");
   assert.ok(check({ [copy]: "MIT notice, edited\n", [canonical]: "MIT notice\n" }).some((error) => error.includes(`${copy} differs from ${canonical}`)));
   assert.ok(check({ [canonical]: "MIT notice\n" }).some((error) => error.includes(`${copy} is missing`)));
+});
+
+test("vendored glib keeps its exact upstream MIT license instead of QC Remote's license copy", () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const files = trackedRepositoryFiles(root);
+  const read = (file) => readFileSync(resolve(root, file), "utf8");
+  const licenseText = read("LICENSE");
+  const termsText = read(REFERENCE_TERMS_PATH);
+  const checkCarveOut = (readFile) => licenseCarveOutErrors({ licenseText, termsText, trackedFiles: files, readFile });
+  assert.deepEqual(checkCarveOut(read), []);
+
+  const manifest = "apps/windows/src-tauri/vendor/glib-0.18.5/Cargo.toml";
+  const wrongLicense = (file) => file === manifest
+    ? read(file).replace('license = "MIT"', 'license = "MIT OR Apache-2.0"')
+    : read(file);
+  assert.ok(checkCarveOut(wrongLicense).some((error) => error.includes("expected its pinned third-party license MIT")));
 });
 
 const skill = (files) => skillDocumentErrors({ trackedFiles: Object.keys(files), readFile: (file) => files[file] });
