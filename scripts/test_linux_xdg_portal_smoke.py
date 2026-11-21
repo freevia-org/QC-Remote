@@ -73,6 +73,27 @@ class CargoTestExecutableSelectionTests(unittest.TestCase):
 
 
 class PortalRouteAssertionTests(unittest.TestCase):
+    def test_monitor_readiness_accepts_the_initial_dbus_name_acquired_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "dbus-monitor.log"
+            log.write_text(
+                "signal time=1 sender=org.freedesktop.DBus "
+                "interface=org.freedesktop.DBus; member=NameAcquired\n",
+                encoding="utf-8",
+            )
+            monitor = mock.Mock()
+            monitor.poll.return_value = None
+            runner.wait_for_monitor_ready(monitor, log, timeout_seconds=0.1)
+
+    def test_monitor_readiness_times_out_without_a_connected_monitor_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "dbus-monitor.log"
+            log.write_text("", encoding="utf-8")
+            monitor = mock.Mock()
+            monitor.poll.return_value = None
+            with self.assertRaisesRegex(TimeoutError, "did not become ready"):
+                runner.wait_for_monitor_ready(monitor, log, timeout_seconds=0)
+
     def test_failure_diagnostics_emit_bounded_log_tails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

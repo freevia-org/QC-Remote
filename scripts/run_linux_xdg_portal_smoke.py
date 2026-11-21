@@ -114,7 +114,11 @@ def wait_for_monitor_ready(monitor: subprocess.Popen[str], output: Path, timeout
     while time.monotonic() < deadline:
         if monitor.poll() is not None:
             raise RuntimeError(f"D-Bus monitor exited early with status {monitor.returncode}")
-        if "Monitoring the message bus" in output.read_text(encoding="utf-8", errors="replace"):
+        monitor_output = output.read_text(encoding="utf-8", errors="replace")
+        if (
+            "Monitoring the message bus" in monitor_output
+            or "member=NameAcquired" in monitor_output
+        ):
             return
         time.sleep(0.05)
     raise TimeoutError("D-Bus monitor did not become ready")
