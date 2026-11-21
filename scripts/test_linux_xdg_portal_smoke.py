@@ -162,50 +162,96 @@ class OwnedProcessCleanupTests(unittest.TestCase):
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait(timeout=3)
 
-    def test_failure_stops_monitor_and_probe_and_removes_staging_directory(self) -> None:
+    def test_failure_stops_and_reaps_owned_monitor_and_probe(self) -> None:
         if not sys.platform.startswith("linux"):
             self.skipTest("the supervised portal process group is Linux-specific")
 
-        real_popen = subprocess.Popen
-        processes: list[subprocess.Popen[str]] = []
-        tempdirs: list[Path] = []
-        real_temp_directory = tempfile.TemporaryDirectory
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.pid = 12345
+                self.returncode: int | None = None
 
-        def make_sleeping_process(*_args: object, **kwargs: object) -> subprocess.Popen[str]:
-            process = real_popen(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
-                start_new_session=kwargs.get("start_new_session", False),
-                stdout=kwargs.get("stdout"),
-                stderr=kwargs.get("stderr"),
-                text=kwargs.get("text", False),
-            )
+            def poll(self) -> int | None:
+                return self.returncode
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.returncode = -signal.SIGTERM
+                return self.returncode
+
+            def send_signal(self, _signal: int) -> None:
+                self.returncode = -signal.SIGINT
+
+            def kill(self) -> None:
+                self.returncode = -signal.SIGKILL
+
+        processes: list[FakeProcess] = []
+
+        def make_process(*_args: object, **_kwargs: object) -> FakeProcess:
+            process = FakeProcess()
             processes.append(process)
             return process
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runner.prepare_staging(root)
+            with (
+                mock.patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)),
+                mock.patch.object(runner.subprocess, "Popen", side_effect=make_process),
+                mock.patch.object(runner, "wait_for_monitor_ready"),
+                mock.patch.object(runner, "wait_for_stage", side_effect=TimeoutError("injected stage timeout")),
+                mock.patch.object(runner.os, "killpg"),
+                mock.patch.dict(os.environ, {"DISPLAY": ":99", "XAUTHORITY": "/tmp/xauth"}),
+            ):
+                with self.assertRaisesRegex(TimeoutError, "injected stage timeout"):
+                    runner.run_session_worker(Path("/tmp/fake-portal-test"), root)
+
+        self.assertEqual(len(processes), 2, "both the bus monitor and Rust probe should be owned")
+        self.assertTrue(all(process.poll() is not None for process in processes), "all owned processes must be reaped")
+
+    def test_parent_keeps_staging_until_dbus_session_exits(self) -> None:
+        tempdirs: list[Path] = []
+        real_temp_directory = tempfile.TemporaryDirectory
 
         def record_temp_directory(*args: object, **kwargs: object) -> tempfile.TemporaryDirectory[str]:
             directory = real_temp_directory(*args, **kwargs)
             tempdirs.append(Path(directory.name))
             return directory
 
-        with tempfile.TemporaryDirectory() as parent:
-            cargo_json = Path(parent) / "cargo.jsonl"
-            cargo_json.write_text("{}\n", encoding="utf-8")
-            with (
-                mock.patch.object(runner.shutil, "which", return_value="/usr/bin/fake"),
-                mock.patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)),
-                mock.patch.object(runner.subprocess, "Popen", side_effect=make_sleeping_process),
-                mock.patch.object(runner, "wait_for_monitor_ready"),
-                mock.patch.object(runner, "wait_for_stage", side_effect=TimeoutError("injected stage timeout")),
-                mock.patch.object(runner.tempfile, "TemporaryDirectory", side_effect=record_temp_directory),
-                mock.patch.object(sys, "platform", "linux"),
-            ):
-                with self.assertRaisesRegex(TimeoutError, "injected stage timeout"):
-                    runner.run_smoke(Path("/tmp/fake-portal-test"))
+        class FakeSession:
+            pid = 23456
+            returncode = 0
 
-        self.assertEqual(len(processes), 2, "both the bus monitor and Rust probe should be owned")
-        self.assertTrue(all(process.poll() is not None for process in processes), "all owned processes must be reaped")
+            def poll(self) -> int:
+                return 0
+
+            def wait(self, timeout: float | None = None) -> int:
+                root = tempdirs[0]
+                self_outer.assertTrue(root.exists())
+                doc_mount = root / "runtime" / "doc"
+                doc_mount.mkdir()
+                (root / "saved-by-portal.txt").write_text("qc-remote-portal-save-result\n", encoding="utf-8")
+                return 0
+
+        self_outer = self
+        with (
+            mock.patch.object(runner.shutil, "which", return_value="/usr/bin/fake"),
+            mock.patch.object(runner.subprocess, "Popen", return_value=FakeSession()),
+            mock.patch.object(
+                runner.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(["fusermount3", "-u"], 0, "", ""),
+            ) as run,
+            mock.patch.object(runner.tempfile, "TemporaryDirectory", side_effect=record_temp_directory),
+            mock.patch.object(Path, "is_mount", side_effect=[True, False]),
+            mock.patch.object(sys, "platform", "linux"),
+        ):
+            runner.run_smoke(Path("/tmp/fake-portal-test"))
+
         self.assertEqual(len(tempdirs), 1)
-        self.assertFalse(tempdirs[0].exists(), "staging files must be removed on failure")
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0][1], "-u")
+        self.assertTrue(str(tempdirs[0] / "runtime" / "doc") in run.call_args.args[0])
+        self.assertFalse(tempdirs[0].exists(), "parent staging is removed only after D-Bus session exit")
 
     def test_main_removes_cargo_json_when_selection_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

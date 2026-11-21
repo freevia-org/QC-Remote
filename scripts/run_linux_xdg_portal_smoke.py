@@ -21,6 +21,7 @@ CANCEL_TITLE = "QC Remote Portal Cancel Smoke"
 TEST_NAME = "xdg_portal_open_save_cancel_smoke"
 MAX_TEST_SECONDS = 90
 MAX_DIALOG_SECONDS = 20
+MAX_SESSION_SECONDS = 150
 DBUS_ACTIVATION_ENVIRONMENT = (
     "XDG_CONFIG_HOME",
     "XDG_CURRENT_DESKTOP",
@@ -183,7 +184,7 @@ def require_portal_calls(log: str) -> None:
 
 
 def emit_failure_diagnostics(root: Path) -> None:
-    for name in ("portal-test.log", "dbus-monitor.log"):
+    for name in ("portal-session.log", "portal-test.log", "dbus-monitor.log"):
         try:
             lines = (root / name).read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -195,136 +196,216 @@ def emit_failure_diagnostics(root: Path) -> None:
             print(f"--- {name} tail (max 80 lines / 12000 chars) ---\n{excerpt}", file=sys.stderr)
 
 
+def prepare_staging(root: Path) -> dict[str, str]:
+    config = root / "xdg-config"
+    portal_config = config / "xdg-desktop-portal"
+    portal_config.mkdir(parents=True)
+    runtime_dir = root / "runtime"
+    runtime_dir.mkdir(mode=0o700)
+    runtime_dir.chmod(0o700)
+    portal_preferences = "[preferred]\ndefault=gtk\norg.freedesktop.impl.portal.FileChooser=gtk\n"
+    (portal_config / "portals.conf").write_text(portal_preferences, encoding="utf-8")
+    (portal_config / "gnome-portals.conf").write_text(portal_preferences, encoding="utf-8")
+    (root / "open-fixture.txt").write_text("qc-remote-portal-open-fixture\n", encoding="utf-8")
+    return {
+        "QC_XDG_PORTAL_SMOKE_DIR": str(root),
+        "XDG_CONFIG_HOME": str(config),
+        "XDG_CURRENT_DESKTOP": "GNOME",
+        "XDG_RUNTIME_DIR": str(runtime_dir),
+        "XDG_SESSION_TYPE": "x11",
+        "GDK_BACKEND": "x11",
+    }
+
+
+def unmount_document_portal(root: Path) -> None:
+    mountpoint = root / "runtime" / "doc"
+    if not mountpoint.is_mount():
+        return
+    fusermount = shutil.which("fusermount3") or shutil.which("fusermount")
+    if fusermount is None:
+        raise RuntimeError("document portal left a mount but fusermount is unavailable")
+    result = subprocess.run(
+        [fusermount, "-u", str(mountpoint)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0 or mountpoint.is_mount():
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"could not unmount the owned document portal mount: {detail}")
+
+
+def run_session_worker(executable: Path, root: Path) -> None:
+    env = os.environ.copy()
+    if not (root / "xdg-config").is_dir() or not (root / "runtime").is_dir():
+        raise RuntimeError("portal session staging was not prepared by the parent")
+    env["QC_XDG_PORTAL_SMOKE_DIR"] = str(root)
+    env["XDG_CONFIG_HOME"] = str(root / "xdg-config")
+    env["XDG_CURRENT_DESKTOP"] = "GNOME"
+    env["XDG_RUNTIME_DIR"] = str(root / "runtime")
+    env["XDG_SESSION_TYPE"] = "x11"
+    env["GDK_BACKEND"] = "x11"
+    subprocess.run(
+        ["dbus-update-activation-environment", *DBUS_ACTIVATION_ENVIRONMENT],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+    )
+    monitor_log = root / "dbus-monitor.log"
+    test_log = root / "portal-test.log"
+    stage_file = root / "stage"
+    open_fixture = root / "open-fixture.txt"
+    with monitor_log.open("w", encoding="utf-8") as monitor_output, test_log.open(
+        "w", encoding="utf-8"
+    ) as test_output:
+        monitor: subprocess.Popen[str] | None = None
+        child: subprocess.Popen[str] | None = None
+        try:
+            monitor = subprocess.Popen(
+                ["dbus-monitor", "--session"],
+                stdout=monitor_output,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+            wait_for_monitor_ready(monitor, monitor_log)
+            child = subprocess.Popen(
+                [str(executable), "--exact", TEST_NAME, "--ignored", "--nocapture"],
+                env=env,
+                stdout=test_output,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+            deadline = time.monotonic() + MAX_TEST_SECONDS
+            wait_for_stage(stage_file, "open-dialog", deadline)
+            open_window = wait_for_dialog(OPEN_TITLE, min(deadline, time.monotonic() + MAX_DIALOG_SECONDS))
+            run_xdotool("windowfocus", "--sync", open_window)
+            run_xdotool("key", "--clearmodifiers", "ctrl+l")
+            run_xdotool("type", "--clearmodifiers", "--delay", "1", str(open_fixture))
+            run_xdotool("key", "Return")
+
+            wait_for_stage(stage_file, "save-dialog", deadline)
+            save_window = wait_for_dialog(SAVE_TITLE, min(deadline, time.monotonic() + MAX_DIALOG_SECONDS))
+            run_xdotool("windowfocus", "--sync", save_window)
+            run_xdotool("key", "Return")
+
+            wait_for_stage(stage_file, "cancel-dialog", deadline)
+            cancel_window = wait_for_dialog(CANCEL_TITLE, min(deadline, time.monotonic() + MAX_DIALOG_SECONDS))
+            run_xdotool("windowfocus", "--sync", cancel_window)
+            run_xdotool("key", "Escape")
+            wait_for_stage(stage_file, "complete", deadline)
+            try:
+                exit_code = child.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired as error:
+                raise TimeoutError("ignored Rust portal smoke test did not exit") from error
+            test_output.flush()
+            if exit_code != 0:
+                raise RuntimeError(f"Rust portal smoke exited {exit_code}")
+            portal_log = capture_portal_methods(monitor, monitor_log)
+            require_portal_calls(portal_log)
+        finally:
+            stop_owned_process(child)
+            if monitor is not None:
+                if monitor.poll() is None:
+                    try:
+                        monitor.send_signal(signal.SIGINT)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    monitor.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        monitor.kill()
+                    except ProcessLookupError:
+                        pass
+                    monitor.wait(timeout=3)
+
+
 def run_smoke(executable: Path) -> None:
     if not sys.platform.startswith("linux"):
         raise RuntimeError("the XDG portal smoke must run on Linux")
-    for command in ("dbus-monitor", "dbus-update-activation-environment", "xdotool"):
+    for command in ("dbus-run-session", "xvfb-run"):
         if shutil.which(command) is None:
             raise RuntimeError(f"required portal smoke command is missing: {command}")
 
     with tempfile.TemporaryDirectory(prefix="qc-rfd-portal-") as temporary:
         root = Path(temporary)
-        config = root / "xdg-config"
-        portal_config = config / "xdg-desktop-portal"
-        portal_config.mkdir(parents=True)
-        runtime_dir = root / "runtime"
-        runtime_dir.mkdir(mode=0o700)
-        runtime_dir.chmod(0o700)
-        portal_preferences = "[preferred]\ndefault=gtk\norg.freedesktop.impl.portal.FileChooser=gtk\n"
-        (portal_config / "portals.conf").write_text(portal_preferences, encoding="utf-8")
-        (portal_config / "gnome-portals.conf").write_text(portal_preferences, encoding="utf-8")
-        open_fixture = root / "open-fixture.txt"
-        open_fixture.write_text("qc-remote-portal-open-fixture\n", encoding="utf-8")
-        stage_file = root / "stage"
-        env = os.environ.copy()
-        env.update(
-            {
-                "QC_XDG_PORTAL_SMOKE_DIR": str(root),
-                "XDG_CONFIG_HOME": str(config),
-                "XDG_CURRENT_DESKTOP": "GNOME",
-                "XDG_RUNTIME_DIR": str(runtime_dir),
-                "XDG_SESSION_TYPE": "x11",
-                "GDK_BACKEND": "x11",
-            }
-        )
-        subprocess.run(
-            ["dbus-update-activation-environment", *DBUS_ACTIVATION_ENVIRONMENT],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=env,
-        )
-        monitor_log = root / "dbus-monitor.log"
-        test_log = root / "portal-test.log"
-        with monitor_log.open("w", encoding="utf-8") as monitor_output, test_log.open(
-            "w", encoding="utf-8"
-        ) as test_output:
-            monitor: subprocess.Popen[str] | None = None
-            child: subprocess.Popen[str] | None = None
+        activation_env = os.environ.copy()
+        activation_env.update(prepare_staging(root))
+        session_log = root / "portal-session.log"
+        command = [
+            "dbus-run-session",
+            "--",
+            "xvfb-run",
+            "--auto-servernum",
+            "--server-args=-screen 0 1280x800x24",
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--session-worker",
+            "--staging-dir",
+            str(root),
+            "--test-executable",
+            str(executable),
+        ]
+        with session_log.open("w", encoding="utf-8") as session_output:
+            session: subprocess.Popen[str] | None = None
             try:
-                monitor = subprocess.Popen(
-                    ["dbus-monitor", "--session"],
-                    stdout=monitor_output,
+                session = subprocess.Popen(
+                    command,
+                    env=activation_env,
+                    stdout=session_output,
                     stderr=subprocess.STDOUT,
                     text=True,
                     start_new_session=True,
                 )
-                wait_for_monitor_ready(monitor, monitor_log)
-                child = subprocess.Popen(
-                    [str(executable), "--exact", TEST_NAME, "--ignored", "--nocapture"],
-                    env=env,
-                    stdout=test_output,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    start_new_session=True,
-                )
-                deadline = time.monotonic() + MAX_TEST_SECONDS
-                wait_for_stage(stage_file, "open-dialog", deadline)
-                open_window = wait_for_dialog(OPEN_TITLE, min(deadline, time.monotonic() + MAX_DIALOG_SECONDS))
-                run_xdotool("windowfocus", "--sync", open_window)
-                run_xdotool("key", "--clearmodifiers", "ctrl+l")
-                run_xdotool("type", "--clearmodifiers", "--delay", "1", str(open_fixture))
-                run_xdotool("key", "Return")
-
-                wait_for_stage(stage_file, "save-dialog", deadline)
-                save_window = wait_for_dialog(SAVE_TITLE, min(deadline, time.monotonic() + MAX_DIALOG_SECONDS))
-                run_xdotool("windowfocus", "--sync", save_window)
-                run_xdotool("key", "Return")
-
-                wait_for_stage(stage_file, "cancel-dialog", deadline)
-                cancel_window = wait_for_dialog(CANCEL_TITLE, min(deadline, time.monotonic() + MAX_DIALOG_SECONDS))
-                run_xdotool("windowfocus", "--sync", cancel_window)
-                run_xdotool("key", "Escape")
-                wait_for_stage(stage_file, "complete", deadline)
                 try:
-                    exit_code = child.wait(timeout=max(0.1, deadline - time.monotonic()))
+                    exit_code = session.wait(timeout=MAX_SESSION_SECONDS)
                 except subprocess.TimeoutExpired as error:
-                    raise TimeoutError("ignored Rust portal smoke test did not exit") from error
-                test_output.flush()
+                    stop_owned_process(session)
+                    session_output.flush()
+                    emit_failure_diagnostics(root)
+                    raise TimeoutError("D-Bus/Xvfb portal session exceeded its deadline") from error
+                session_output.flush()
                 if exit_code != 0:
-                    raise RuntimeError(f"Rust portal smoke exited {exit_code}; output: {test_log.read_text(encoding='utf-8', errors='replace')}")
+                    emit_failure_diagnostics(root)
+                    raise RuntimeError(f"D-Bus/Xvfb portal session exited {exit_code}")
                 saved = root / "saved-by-portal.txt"
                 if saved.read_text(encoding="utf-8") != "qc-remote-portal-save-result\n":
+                    emit_failure_diagnostics(root)
                     raise AssertionError("the selected save destination did not contain the expected payload")
-                portal_log = capture_portal_methods(monitor, monitor_log)
-                require_portal_calls(portal_log)
                 print("XDG portal GTK smoke passed: OpenFile selection, SaveFile destination, and cancellation.")
-            except BaseException:
-                monitor_output.flush()
-                test_output.flush()
-                emit_failure_diagnostics(root)
-                raise
             finally:
-                stop_owned_process(child)
-                if monitor is not None:
-                    if monitor.poll() is None:
-                        try:
-                            monitor.send_signal(signal.SIGINT)
-                        except ProcessLookupError:
-                            pass
-                    try:
-                        monitor.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            monitor.kill()
-                        except ProcessLookupError:
-                            pass
-                        monitor.wait(timeout=3)
+                stop_owned_process(session)
+                unmount_document_portal(root)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cargo-json", type=Path, required=True)
+    parser.add_argument("--cargo-json", type=Path)
+    parser.add_argument("--session-worker", action="store_true")
+    parser.add_argument("--staging-dir", type=Path)
+    parser.add_argument("--test-executable", type=Path)
     arguments = parser.parse_args()
     try:
-        executable = select_executable(arguments.cargo_json)
-        run_smoke(executable)
+        if arguments.session_worker:
+            if arguments.staging_dir is None or arguments.test_executable is None:
+                raise ValueError("session worker requires --staging-dir and --test-executable")
+            run_session_worker(arguments.test_executable, arguments.staging_dir)
+        else:
+            if arguments.cargo_json is None:
+                raise ValueError("--cargo-json is required outside session-worker mode")
+            executable = select_executable(arguments.cargo_json)
+            run_smoke(executable)
     except (OSError, RuntimeError, TimeoutError, ValueError, AssertionError, subprocess.SubprocessError) as error:
         print(f"Linux XDG portal smoke failed: {error}", file=sys.stderr)
         return 1
     finally:
-        arguments.cargo_json.unlink(missing_ok=True)
+        if arguments.cargo_json is not None:
+            arguments.cargo_json.unlink(missing_ok=True)
     return 0
 
 
