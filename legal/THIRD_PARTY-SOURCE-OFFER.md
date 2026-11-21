@@ -1,6 +1,6 @@
 # QC Remote third-party source availability
 
-QC Remote distributes unmodified executable forms of the components below under the indicated copyleft license. The exact corresponding source version can be downloaded from the versioned archive link shown. The complete applicable license text is included in `THIRD_PARTY-LICENSE-TEXTS.txt`.
+QC Remote distributes each copyleft component below under the indicated license. The exact source archive for each component is linked. The complete applicable license text is included in `THIRD_PARTY-LICENSE-TEXTS.txt`.
 
 If an archive link becomes unavailable, request the exact corresponding source for that distributed version by opening an issue at https://github.com/freevia-org/QC-Remote/issues or by email to security@freevia.org.
 
@@ -14,4 +14,4 @@ Selection rule: this list covers every component of `THIRD_PARTY-LICENSE-INVENTO
 | cargo:option-ext@0.2.0 | https://crates.io/api/v1/crates/option-ext/0.2.0/download | https://github.com/soc/option-ext.git |
 | cargo:selectors@0.38.0 | https://crates.io/api/v1/crates/selectors/0.38.0/download | https://github.com/servo/stylo |
 
-QC Remote does not modify these third-party components.
+The source archive links identify the corresponding upstream component releases; project-specific source changes are included in the QC Remote repository.

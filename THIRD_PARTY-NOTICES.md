@@ -69,17 +69,17 @@ copyleft license.
 
 encoding_rs
 
-#### (Apache-2.0 OR MIT) AND Unicode-3.0 (1)
+#### (Apache-2.0 OR MIT) AND Unicode-3.0 (2)
 
-unicode-ident
+unicode-ident, unicode-normalization
 
 #### 0BSD OR Apache-2.0 OR MIT (1)
 
 adler2
 
-#### Apache-2.0 (8)
+#### Apache-2.0 (9)
 
-prost, prost-build, prost-derive, prost-types, rmcp, rmcp-macros, sync_wrapper, tao
+prost, prost-build, prost-derive, prost-types, rmcp, rmcp-macros, sync_wrapper, tao, unicode-general-category
 
 #### Apache-2.0 AND ISC (1)
 
@@ -105,9 +105,9 @@ moxcms, pxfm
 
 ryu
 
-#### Apache-2.0 OR CC0-1.0 OR MIT-0 (1)
+#### Apache-2.0 OR CC0-1.0 OR MIT-0 (2)
 
-dunce
+constant_time_eq, dunce
 
 #### Apache-2.0 OR ISC OR MIT (3)
 
@@ -117,9 +117,9 @@ hyper-rustls, rustls, rustls-native-certs
 
 aes, anyhow, arc-swap, async-broadcast, async-channel, async-executor, async-fs, async-io, async-lock, async-net, async-process, async-recursion, async-signal, async-task, async-trait, atomic-waker, autocfg, base64, basic-udev, bit-set, bit-vec, bitflags, block-buffer, blocking, bs58, camino, cargo_toml, cargo-platform, cc, cesu8, cfg-expr, cfg-if, chacha20, chrono, cipher, cmake, concurrent-queue, const-oid, cookie, core_detect, core-foundation, core-foundation-sys, core-graphics, core-graphics-types, cpubits, cpufeatures, crc32fast, crossbeam-channel, crossbeam-queue, crossbeam-utils, crypto-common, ctor, ctr, dbus, dbus-secret-service, defmt, defmt-macros, defmt-parser, deranged, digest, dirs, dirs-sys, displaydoc, downcast-rs, dtoa, dyn-clone, either, embed_plist, enumflags2, enumflags2_derive, equivalent, erased-serde, errno, event-listener, event-listener-strategy, fastrand, fdeflate, field-offset, find-msvc-tools, fixedbitset, flate2, fnv, foreign-types, foreign-types-macros, foreign-types-shared, form_urlencoded, futures, futures-channel, futures-core, futures-executor, futures-io, futures-lite, futures-macro, futures-sink, futures-task, futures-util, getrandom, glob, hashbrown, heck, hex, html5ever, http, httparse, httpdate, hybrid-array, iana-time-zone, ident_case, idna, idna_adapter, image, indexmap, inout, ipnet, itertools, itoa, jni, jni-macros, jni-sys, jni-sys-macros, jobserver, json-patch, jsonptr, keyboard-types, keyring, libappindicator, libappindicator-sys, libc, libdbus-sys, lock_api, log, markup5ever, mime, muda, multimap, multiversion, multiversion_no_op, multiversion-macros, num-conv, num-traits, once_cell, openssl-probe, ordered-stream, parking, parking_lot, parking_lot_core, pastey, percent-encoding, petgraph, pin-project-lite, piper, pkg-config, png, polling, pollster, powerfmt, ppv-lite86, prettyplease, proc-macro-crate, proc-macro-error, proc-macro-error-attr, proc-macro2, quinn, quinn-proto, quinn-udp, quote, rand, rand_chacha, rand_core, rand_pcg, ref-cast, ref-cast-impl, regex, regex-automata, regex-syntax, reqwest, rustc_version, rustc-hash, rustls-pki-types, rustls-platform-verifier, rustls-platform-verifier-android, rustversion, scoped-tls, scopeguard, security-framework, security-framework-sys, semver, serde, serde_core, serde_derive, serde_derive_internals, serde_json, serde_path_to_error, serde_repr, serde_spanned, serde_urlencoded, serde_with, serde_with_macros, serde-untagged, serialize-to-javascript, serialize-to-javascript-impl, servo_arc, sha1, sha2, shlex, signal-hook, signal-hook-registry, simd_cesu8, simdutf8, siphasher, smallvec, socket2, softbuffer, sse-stream, stable_deref_trait, string_cache, string_cache_codegen, swift-rs, syn, system-configuration, system-configuration-sys, system-deps, task-local, tauri, tauri-build, tauri-codegen, tauri-macros, tauri-plugin-single-instance, tauri-runtime, tauri-runtime-wry, tauri-utils, tempfile, tendril, thiserror, thiserror-impl, time, time-core, time-macros, tokio-rustls, toml, toml_datetime, toml_edit, toml_parser, toml_writer, tray-icon, tungstenite, typed-path, typeid, typenum, unicode-segmentation, url, utf8_iter, uuid, version_check, web_atoms, web-time, webbrowser, window-vibrancy, windows, windows_x86_64_msvc, windows-collections, windows-core, windows-future, windows-implement, windows-interface, windows-link, windows-numerics, windows-registry, windows-result, windows-strings, windows-sys, windows-targets, windows-threading, windows-version, wry, zeroize, zeroize_derive
 
-#### Apache-2.0 OR MIT OR Zlib (13)
+#### Apache-2.0 OR MIT OR Zlib (15)
 
-bytemuck, dispatch2, lru-slab, miniz_oxide, objc2-app-kit, objc2-core-foundation, objc2-core-graphics, objc2-exception-helper, objc2-io-surface, objc2-web-kit, raw-window-handle, tinyvec, tinyvec_macros
+bytemuck, dispatch2, lru-slab, miniz_oxide, objc2-app-kit, objc2-core-foundation, objc2-core-graphics, objc2-exception-helper, objc2-io-surface, objc2-quartz-core, objc2-web-kit, raw-window-handle, static_vcruntime, tinyvec, tinyvec_macros
 
 #### Apache-2.0 WITH LLVM-exception (1)
 
@@ -228,9 +228,9 @@ r-efi
 
 android_system_properties, bumpalo, hermit-abi, iana-time-zone-haiku, js-sys, ndk, ndk-context, ndk-sys, portable-atomic, portable-atomic-util, proptest, quick-error, rand_xorshift, rusty-fork, tao-macros, unarray, wait-timeout, wasm-bindgen, wasm-bindgen-futures, wasm-bindgen-macro, wasm-bindgen-macro-support, wasm-bindgen-shared, wasm-streams, web-sys, winapi, winapi-i686-pc-windows-gnu, winapi-x86_64-pc-windows-gnu, windows_aarch64_gnullvm, windows_aarch64_msvc, windows_i686_gnu, windows_i686_gnullvm, windows_i686_msvc, windows_x86_64_gnu, windows_x86_64_gnullvm
 
-#### Apache-2.0 OR MIT OR Zlib (8)
+#### Apache-2.0 OR MIT OR Zlib (7)
 
-objc2-cloud-kit, objc2-core-data, objc2-core-image, objc2-core-location, objc2-core-text, objc2-quartz-core, objc2-ui-kit, objc2-user-notifications
+objc2-cloud-kit, objc2-core-data, objc2-core-image, objc2-core-location, objc2-core-text, objc2-ui-kit, objc2-user-notifications
 
 #### CDLA-Permissive-2.0 (1)
 
