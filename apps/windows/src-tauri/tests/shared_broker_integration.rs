@@ -320,8 +320,8 @@ impl Drop for TestRootOwner {
             let brokers = self.brokers.get_mut().unwrap_or_else(|e| e.into_inner());
             if brokers.iter().any(|(pid, created)| {
                 process_is_alive(*pid)
-                    && !qc_native_platform::process::os_process_created_at(*pid)
-                        .is_some_and(|actual| actual != *created)
+                    && qc_native_platform::process::os_process_created_at(*pid)
+                        .is_none_or(|actual| actual == *created)
             }) {
                 wait_until(BROKER_GRACE_PERIOD_MARGIN, || {
                     brokers.iter().all(|(pid, created)| {
