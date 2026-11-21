@@ -60,9 +60,9 @@ namespace QcOwnedProcess {
         [DllImport("kernel32.dll", SetLastError = true)]
         static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
         [DllImport("kernel32.dll", EntryPoint = "SetEnvironmentVariableW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
-        static extern bool SetEnvironmentVariableExact(string name, string value);
+        static extern bool NativeSetEnvironmentVariable(string name, string value);
         [DllImport("kernel32.dll", EntryPoint = "GetEnvironmentVariableW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
-        static extern uint GetEnvironmentVariableExact(string name, StringBuilder value, uint capacity);
+        static extern uint NativeGetEnvironmentVariable(string name, StringBuilder value, uint capacity);
         [DllImport("kernel32.dll", EntryPoint = "SetLastError", ExactSpelling = true)]
         static extern void ClearNativeLastError(uint error);
         [DllImport("kernel32.dll", SetLastError = true)]
@@ -74,6 +74,34 @@ namespace QcOwnedProcess {
         static extern uint GetFinalPathNameByHandle(IntPtr file, StringBuilder path, uint size, uint flags);
 
         static long FileTime(FILETIME value) { return ((long)value.High << 32) | value.Low; }
+        static void ValidateEnvironmentName(string name) {
+            if (String.IsNullOrEmpty(name) || name.IndexOf('=') >= 0 || name.IndexOf('\0') >= 0)
+                throw new ArgumentException("Environment variable name must be non-empty and contain neither '=' nor NUL.", "name");
+        }
+        public static string ReadProcessEnvironmentExact(string name) {
+            ValidateEnvironmentName(name);
+            // GetEnvironmentVariableW returns zero for both absent and empty.
+            // Clear native last-error first so those states remain distinct.
+            var value = new StringBuilder(32768);
+            ClearNativeLastError(0);
+            uint length = NativeGetEnvironmentVariable(name, value, (uint)value.Capacity);
+            if (length == 0) {
+                int error = Marshal.GetLastWin32Error();
+                if (error == 0) return String.Empty;
+                if (error == 203) return null; // ERROR_ENVVAR_NOT_FOUND
+                throw new Win32Exception(error, "GetEnvironmentVariableW(" + name + ")");
+            }
+            if (length >= value.Capacity)
+                throw new InvalidOperationException("Environment variable value exceeded the supported 32767-character limit.");
+            return value.ToString();
+        }
+        public static void SetProcessEnvironmentExact(string name, bool present, string value) {
+            ValidateEnvironmentName(name);
+            if (present && value == null) throw new ArgumentNullException("value", "A present environment variable must have a value; use present=false to remove it.");
+            if (value != null && value.IndexOf('\0') >= 0) throw new ArgumentException("Environment variable value cannot contain NUL.", "value");
+            if (!NativeSetEnvironmentVariable(name, present ? value : null))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetEnvironmentVariableW(" + name + ")");
+        }
         static void Check(bool ok, string operation) {
             if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error(), operation);
         }
