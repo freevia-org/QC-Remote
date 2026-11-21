@@ -3594,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "qc-remote"
-version = "1.0.10"
+version = "1.0.11"
 dependencies = [
  "async-trait",
  "axum",
