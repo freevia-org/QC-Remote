@@ -270,22 +270,26 @@ test('the notices file separates shipped components from development tooling and
 });
 
 // The two licence-text bundles carry upstream licence files byte for byte,
-// trailing blanks included, and each record's SHA-256 pins its source, so
-// .gitattributes exempts exactly those two paths from the blank-at-eol check
-// that `git diff --check` applies. Every
-// other file, the neighbouring legal documents and a same-named file elsewhere
-// included, stays checked.
-test('only the two licence-text bundles are exempt from the trailing-blank whitespace check', () => {
+// trailing blanks included, and each record's SHA-256 pins its source. The
+// vendored GLib LICENSE is likewise pinned through its published crate archive
+// checksum. .gitattributes exempts exactly these three paths; other files,
+// neighbouring legal documents and same-named files elsewhere remain checked.
+test('only the pinned upstream licence paths are exempt from trailing-blank checks', () => {
   const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const root = mkdtempSync(path.join(os.tmpdir(), 'qc-licence-whitespace-'));
   const git = (...args) => execFileSync('git', ['-C', root, '-c', 'core.autocrlf=false', '-c', 'core.whitespace=blank-at-eol,space-before-tab,blank-at-eof', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const exempt = ['legal/THIRD_PARTY-LICENSE-TEXTS.txt', 'skills/qc-device-knowledge/legal/THIRD_PARTY-LICENSE-TEXTS.txt'];
+  const exempt = [
+    'legal/THIRD_PARTY-LICENSE-TEXTS.txt',
+    'skills/qc-device-knowledge/legal/THIRD_PARTY-LICENSE-TEXTS.txt',
+    'apps/windows/src-tauri/vendor/glib-0.18.5/LICENSE',
+  ];
   const checked = [
     'src/main.rs',
     'legal/THIRD_PARTY-SOURCE-OFFER.md',
     'THIRD_PARTY-NOTICES.md',
     'other/legal/THIRD_PARTY-LICENSE-TEXTS.txt',
     'skills/other-skill/legal/THIRD_PARTY-LICENSE-TEXTS.txt',
+    'other/apps/windows/src-tauri/vendor/glib-0.18.5/LICENSE',
   ];
   try {
     git('init', '-q');

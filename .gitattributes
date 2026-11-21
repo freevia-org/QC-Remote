@@ -84,9 +84,11 @@ LICENSE-*           text eol=lf
 *.bat               text eol=crlf
 
 # Upstream licence texts kept byte for byte (each record's SHA-256 pins its
-# source); some carry trailing blanks, so `git diff --check` must not flag them.
+# source) and the source-verified vendored GLib licence; some carry trailing
+# blanks, so `git diff --check` must not flag these exact paths.
 legal/THIRD_PARTY-LICENSE-TEXTS.txt text eol=lf whitespace=-blank-at-eol
 skills/qc-device-knowledge/legal/THIRD_PARTY-LICENSE-TEXTS.txt text eol=lf whitespace=-blank-at-eol
+/apps/windows/src-tauri/vendor/glib-0.18.5/LICENSE text eol=lf whitespace=-blank-at-eol
 
 ### Binary files ###############################################################
 # Never touched by line-ending normalization, diffed, or merged as text.
