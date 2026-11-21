@@ -47,6 +47,12 @@ fn checkpoint_writer() -> Option<&'static SyncSender<CheckpointJob>> {
                         if job.sequence <= *published {
                             continue;
                         }
+                        if let Some(parent) = job.path.parent() {
+                            if fs::create_dir_all(parent).is_err() {
+                                job.state.failed.store(true, Ordering::Release);
+                                continue;
+                            }
+                        }
                         match (job.publish)(&job.path, &job.bytes) {
                             Ok(()) => *published = job.sequence,
                             Err(_) => job.state.failed.store(true, Ordering::Release),
@@ -334,21 +340,20 @@ impl FlightRecorder {
     /// Serialize on the caller's thread (cheap, in memory) and hand the bytes
     /// to the writer thread. If the writer is still busy with the previous
     /// checkpoint the hand-off is dropped and the next entry retries, so the
-    /// caller never waits on the disk. Without a writer thread, fall back to
-    /// publishing inline.
+    /// caller never waits on the disk. If the writer cannot be started or has
+    /// stopped, routine checkpoints stay in memory; incident and orderly-drop
+    /// flushes retain their explicit synchronous behavior.
     fn checkpoint(&mut self) {
+        self.checkpoint_with_writer(checkpoint_writer());
+    }
+
+    fn checkpoint_with_writer(&mut self, writer: Option<&SyncSender<CheckpointJob>>) {
         let Some(path) = self.path.clone() else {
             return;
         };
-        let Some(writer) = checkpoint_writer() else {
-            self.persist();
+        let Some(writer) = writer else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            if fs::create_dir_all(parent).is_err() {
-                return;
-            }
-        }
         let Ok(bytes) = serde_json::to_vec(&self.document) else {
             return;
         };
@@ -363,9 +368,10 @@ impl FlightRecorder {
         match writer.try_send(job) {
             Ok(()) => self.last_persisted_at = Instant::now(),
             Err(TrySendError::Full(_)) => {}
-            Err(TrySendError::Disconnected(job)) => {
-                let _ = (job.publish)(&job.path, &job.bytes);
-            }
+            // The writer's failure must not move filesystem work back onto
+            // the device-session thread. The latest record remains in memory
+            // and Drop or an explicit incident still performs the sync flush.
+            Err(TrySendError::Disconnected(_job)) => {}
         }
     }
 
@@ -547,6 +553,68 @@ mod tests {
     fn slow_publisher(path: &Path, bytes: &[u8]) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(300));
         qc_owner_only_file::publish_atomically(path, bytes)
+    }
+
+    #[test]
+    fn unavailable_checkpoint_writer_does_not_publish_inline() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("not-created").join("flight.json");
+        let mut recorder = FlightRecorder::open(Some(path.clone()));
+        recorder.publisher = slow_publisher;
+        let (disconnected_writer, receiver) = sync_channel::<CheckpointJob>(1);
+        drop(receiver);
+
+        let started = Instant::now();
+        recorder.checkpoint_with_writer(None);
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "checkpointing without a writer blocked the caller for {:?}",
+            started.elapsed()
+        );
+        let started = Instant::now();
+        recorder.checkpoint_with_writer(Some(&disconnected_writer));
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "checkpointing with a stopped writer blocked the caller for {:?}",
+            started.elapsed()
+        );
+        assert!(
+            !path.parent().unwrap().exists(),
+            "an unavailable or stopped writer must not touch the filesystem from the caller thread"
+        );
+    }
+
+    #[test]
+    fn checkpoint_writer_creates_missing_parent_off_the_caller_thread() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("created-by-writer").join("flight.json");
+        let mut recorder = FlightRecorder::open(Some(path.clone()));
+        recorder.last_persisted_at = Instant::now() - Duration::from_secs(2);
+
+        let started = Instant::now();
+        recorder.event("queued-checkpoint");
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "routine checkpoint blocked the caller for {:?}",
+            started.elapsed()
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let bytes = loop {
+            if let Ok(bytes) = fs::read(&path) {
+                break bytes;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "writer did not publish checkpoint"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let document: FlightDocument = serde_json::from_slice(&bytes).unwrap();
+        assert!(document
+            .entries
+            .iter()
+            .any(|entry| entry.event == "queued-checkpoint"));
     }
 
     #[test]
