@@ -242,7 +242,10 @@ final class BrokerMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let payload = String(data: data, encoding: .utf8) else { return }
         busy = true
         queue.async {
-            let (code, result) = self.execute(["--tray-action", payload] + self.directoryArguments)
+            let (code, result) = self.execute(
+                ["--tray-action", payload] + self.directoryArguments,
+                timeout: 30
+            )
             DispatchQueue.main.async {
                 self.busy = false
                 if code != 0 {
