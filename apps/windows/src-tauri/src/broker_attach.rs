@@ -538,15 +538,18 @@ mod tests {
     fn squatter_setup_unwind_stops_and_joins_its_actual_accept_original() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let mut retired = None;
+        let retired = std::cell::RefCell::new(None);
         let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let accepting = Squatter::start(listener);
-            retired = Some(accepting.retired.clone());
+            retired.replace(Some(accepting.retired.clone()));
             panic!("injected assertion before attach");
         }));
         assert!(failed.is_err());
         assert!(
-            retired.unwrap().load(std::sync::atomic::Ordering::Acquire),
+            retired
+                .into_inner()
+                .unwrap()
+                .load(std::sync::atomic::Ordering::Acquire),
             "stop flag alone is not original retirement"
         );
         // Only after exact original join, prove its listener was closed.

@@ -239,10 +239,10 @@ pub(super) fn validate_workspace(document: &Value) -> Result<(), String> {
     {
         return Err(invalid("snapshot.mode"));
     }
-    if !snapshot
+    if snapshot
         .get("activeScene")
         .and_then(Value::as_u64)
-        .is_some_and(|scene| scene < quadcortex::domain::SCENE_COUNT as u64)
+        .is_none_or(|scene| scene >= quadcortex::domain::SCENE_COUNT as u64)
     {
         return Err(invalid("snapshot.activeScene"));
     }
