@@ -733,17 +733,17 @@ mod tests {
             let descriptor =
                 crate::device_broker_descriptor::device_broker_descriptor_path(&directory);
             let armed: ChildSlot = Default::default();
-            let mut domain = None;
+            let domain = std::cell::RefCell::new(None);
             let (outcome, report) = crate::tests::run_with_cleanup(|cleanup: &mut CleanupStack| {
                 // Reserve the existing fixture owner BEFORE production child
                 // dispatch, then arm transfer before any observation/assertion.
-                domain = Some(crate::tests::arm_owned_child(
+                domain.replace(Some(crate::tests::arm_owned_child(
                     cleanup,
                     "tray startup original",
                     &armed,
                     None,
                     Duration::ZERO,
-                ));
+                )));
                 let (path, armed, root) = (descriptor.clone(), armed.clone(), root.clone());
                 cleanup.arm("take retained resident original", move |_| {
                     if let Some(child) = crate::take_start_slot_child(&path) {
@@ -809,7 +809,8 @@ mod tests {
                 assert!(error.contains("earlier one is still held"), "{error}");
                 panic!("injected tray fixture observation failure");
             });
-            let retired = crate::tests::fixture_child_retired(domain.as_deref().unwrap());
+            let domain = domain.into_inner().expect("fixture domain was reserved");
+            let retired = crate::tests::fixture_child_retired(&domain);
             // Only actual original retirement can release the attached root.
             drop(root);
             assert!(retired, "exact fixture Child remains owned: {report}");

@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use super::*;
 // Only the tests name the three liveness values directly: production code
 // asks the evidence what it means rather than matching on it.

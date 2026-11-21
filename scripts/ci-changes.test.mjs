@@ -610,14 +610,14 @@ test('self-hosted Cargo jobs keep a persistent target directory and hosted jobs 
   assert.match(action, /\^\[A-Za-z0-9\._-\]\+\$/);
 
   const used = (text) => (text.match(/uses: \.\/\.github\/actions\/cargo-target-dir/g) ?? []).length;
-  assert.equal(used(workflow('ci.yml')), 2);
+  assert.equal(used(workflow('ci.yml')), 3);
   assert.equal(used(workflow('linux-broker.yml')), 2);
   assert.equal(used(workflow('macos-build.yml')), 1);
 
   // In ci.yml the rust-cache step right after the action is hosted-only.
   const afterAction =
     /cargo-target-dir\n {8}with:\n {10}name: [^\n]+\n {6}- uses: Swatinem[^\n]*\n {8}if: \$\{\{ runner\.environment == 'github-hosted' \}\}/g;
-  assert.equal((workflow('ci.yml').match(afterAction) ?? []).length, 2);
+  assert.equal((workflow('ci.yml').match(afterAction) ?? []).length, 3);
   for (const name of ['macos-build.yml', 'linux-broker.yml']) {
     for (const step of workflow(name).split('\n      - ')) {
       if (!step.includes('Swatinem/rust-cache') || step.includes('key: linux-deb-release')) continue;

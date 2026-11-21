@@ -2158,9 +2158,10 @@ fn validate_broker_control_result(
                 let Some(device) = device.as_object() else {
                     return Err(malformed("each device must be an object"));
                 };
-                if !device
+                if device
                     .get("id")
-                    .is_some_and(|value| value.as_str().is_some_and(|id| !id.is_empty()))
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
                     || !device.get("name").is_some_and(Value::is_string)
                     || !device.get("connected").is_some_and(Value::is_boolean)
                     || !device.get("phase").is_some_and(Value::is_string)

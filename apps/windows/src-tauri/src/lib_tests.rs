@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 fn owner_recovery_host_fixture() -> (PathBuf, RemoveDirOnDrop) {
     let root =
         std::env::temp_dir().join(format!("qc-owner-recovery-{:032x}", rand::random::<u128>()));
@@ -1785,8 +1783,8 @@ fn owned_recovered_listener_unwind_wakes_accept_and_socket_read_before_root_reti
             .unwrap()
             .port();
         let (event, events) = mpsc::channel();
-        let mut held_client = None;
-        let mut unwind_at = None;
+        let held_client = std::cell::RefCell::new(None);
+        let unwind_at = std::cell::Cell::new(None);
         let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _original =
                 spawn_recovered_fake_broker(port, "owned-unwind", root.clone(), Some(event))
@@ -1797,15 +1795,16 @@ fn owned_recovered_listener_unwind_wakes_accept_and_socket_read_before_root_reti
                 "listening"
             );
             if phase == "reading" {
-                held_client =
-                    Some(TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port))).unwrap());
+                held_client.replace(Some(
+                    TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port))).unwrap(),
+                ));
                 assert_eq!(
                     events.recv_timeout(Duration::from_secs(2)).unwrap(),
                     "reading"
                 );
             }
             assert!(directory.exists());
-            unwind_at = Some(Instant::now());
+            unwind_at.set(Some(Instant::now()));
             panic!("controlled recovered-listener assertion unwind");
         }));
         assert!(failed.is_err());
@@ -1814,12 +1813,12 @@ fn owned_recovered_listener_unwind_wakes_accept_and_socket_read_before_root_reti
             "{phase}: the exact original retained its fixture root"
         );
         assert!(
-            unwind_at.unwrap().elapsed() < Duration::from_millis(1500),
+            unwind_at.get().unwrap().elapsed() < Duration::from_millis(1500),
             "{phase}: teardown relied on the listener's ordinary read/accept timeout rather than its wake"
         );
         // The peer remains open until AFTER the original/root assertions, so
         // peer EOF cannot masquerade as our owned socket cancellation.
-        drop(held_client);
+        drop(held_client.into_inner());
     }
 }
 
@@ -3151,10 +3150,10 @@ fn owned_linux_broker_fixture_directories_match_production_permissions() {
 
 #[test]
 fn isolation_fixture_cleanup_preserves_primary_panic_and_removes_owned_bytes() {
-    let mut owned = None;
+    let owned = std::cell::RefCell::new(None);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         with_isolation_fixture("unwind-control", |directory| {
-            owned = Some(directory.to_path_buf());
+            owned.replace(Some(directory.to_path_buf()));
             fs::write(directory.join("owned"), b"temporary").unwrap();
             panic!("primary fixture assertion");
         });
@@ -3164,7 +3163,7 @@ fn isolation_fixture_cleanup_preserves_primary_panic_and_removes_owned_bytes() {
         error.downcast_ref::<&str>(),
         Some(&"primary fixture assertion")
     );
-    assert!(!owned.expect("body executed").exists());
+    assert!(!owned.into_inner().expect("body executed").exists());
 }
 
 #[cfg(windows)]
@@ -3475,12 +3474,12 @@ fn a_descriptor_left_by_a_dead_broker_is_replaced_by_a_new_host() {
 #[test]
 fn attached_broker_fixture_panic_before_readiness_reaps_child_before_removing_root() {
     let _serialize = serialize_real_broker_test();
-    let mut root = None;
-    let mut pid = None;
+    let root = std::cell::RefCell::new(None);
+    let pid = std::cell::Cell::new(None);
     let slot: ChildSlot = Default::default();
     let (outcome, report) = run_with_cleanup(|cleanup| {
         let directory = armed_scratch_directory(cleanup, "attached-drop-startup-panic");
-        root = Some(directory.clone());
+        root.replace(Some(directory.clone()));
         let descriptor = device_broker_descriptor::device_broker_descriptor_path(&directory);
         arm_owned_child(
             cleanup,
@@ -3499,7 +3498,7 @@ fn attached_broker_fixture_panic_before_readiness_reaps_child_before_removing_ro
             .stderr(Stdio::null())
             .spawn()
             .expect("owned fixture broker starts");
-        pid = Some(child.id());
+        pid.set(Some(child.id()));
         fill_slot(&slot, OwnedChild::new(child));
         panic!("injected before broker readiness");
     });
@@ -3507,7 +3506,7 @@ fn attached_broker_fixture_panic_before_readiness_reaps_child_before_removing_ro
     assert_eq!(panic_text(&*primary), "injected before broker readiness");
     assert!(!report.blocked, "owned termination acknowledged: {report}");
     assert!(
-        !process_is_alive(pid.expect("child acquired")),
+        !process_is_alive(pid.get().expect("child acquired")),
         "fixture child stopped"
     );
     assert!(
@@ -3515,7 +3514,7 @@ fn attached_broker_fixture_panic_before_readiness_reaps_child_before_removing_ro
         "original child moved to cleanup owner"
     );
     assert!(
-        !root.expect("directory acquired").exists(),
+        !root.into_inner().expect("directory acquired").exists(),
         "root removed after child stop"
     );
 }
