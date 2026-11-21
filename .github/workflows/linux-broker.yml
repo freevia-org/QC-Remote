@@ -525,6 +525,11 @@ jobs:
         run: cargo +stable test --locked --features tray-sidecar,custom-protocol
         if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_010.outputs.ready == 'true') }}
         timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_010.outputs.minutes || '1') || 360 }}
+      - name: Test the GLib string iterator backport in optimized mode
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable test --release --locked --features tray-sidecar,custom-protocol --test glib_variant_iter_backport
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_010.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_010.outputs.minutes || '1') || 360 }}
       - name: Check remaining execution budget (11)
         id: runner_budget_011
         if: ${{ contains(runner.name, '-i5-') && (success()) }}
