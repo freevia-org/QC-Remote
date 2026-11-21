@@ -192,7 +192,7 @@ checks only the `quadcortex` library on its declared minimum.
 
 | Graph | Declared lower bound | Where it comes from |
 | --- | --- | --- |
-| `apps/windows/src-tauri` (Windows app) | Rust 1.90 | `tauri-utils` 2.10.1 (locked in `apps/windows/src-tauri/Cargo.lock`) declares `edition = "2024"` and `rust-version = "1.90"`. The app manifest declares no `rust-version` of its own. |
+| `apps/windows/src-tauri` (desktop app) | Rust 1.92 | `rfd` 0.18.0 (locked in `apps/windows/src-tauri/Cargo.lock`) declares `rust-version = "1.92"`. The app manifest declares no `rust-version` of its own. |
 | Root workspace (`cargo build --workspace`) | At least Rust 1.88 | `services/rust-mcp/Cargo.toml` declares `rust-version = "1.88"`. This component declaration does not establish the entire workspace's effective minimum on every target. |
 | `quadcortex` library alone | Rust 1.87 | `packages/rust/quadcortex/Cargo.toml` declares `rust-version = "1.87"`; `.github/workflows/ci.yml` (`rust-msrv`) checks it. |
 
