@@ -88,7 +88,7 @@ LICENSE-*           text eol=lf
 # blanks, so `git diff --check` must not flag these exact paths.
 legal/THIRD_PARTY-LICENSE-TEXTS.txt text eol=lf whitespace=-blank-at-eol
 skills/qc-device-knowledge/legal/THIRD_PARTY-LICENSE-TEXTS.txt text eol=lf whitespace=-blank-at-eol
-/apps/windows/src-tauri/vendor/glib-0.18.5/LICENSE text eol=lf whitespace=-blank-at-eol
+/apps/windows/src-tauri/vendor/glib-0.18.5/LICENSE text eol=lf whitespace=-blank-at-eol,-blank-at-eof
 
 ### Binary files ###############################################################
 # Never touched by line-ending normalization, diffed, or merged as text.
