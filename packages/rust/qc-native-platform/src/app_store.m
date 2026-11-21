@@ -17,6 +17,44 @@ char *qc_store_shared_directory(void) {
     }
 }
 
+// NSSavePanel grants the selected file, not arbitrary sibling filenames. Ask
+// Foundation for a private, same-volume replacement directory instead of
+// creating a .tmp next to the document. This also supports streamed ZIP exports.
+char *qc_store_document_directory(const char *targetPath, char **failure) {
+    @autoreleasepool {
+        NSFileManager *manager = [NSFileManager defaultManager];
+        NSString *path = [manager stringWithFileSystemRepresentation:targetPath length:strlen(targetPath)];
+        NSError *error = nil;
+        NSURL *directory = [manager URLForDirectory:NSItemReplacementDirectory
+            inDomain:NSUserDomainMask appropriateForURL:[NSURL fileURLWithPath:path]
+            create:YES error:&error];
+        if (!directory) {
+            *failure = strdup((error.localizedDescription ?: @"Could not create document replacement directory").UTF8String);
+            return NULL;
+        }
+        return strdup(directory.fileSystemRepresentation);
+    }
+}
+
+char *qc_store_commit_document(const char *stagePath, const char *targetPath) {
+    @autoreleasepool {
+        NSFileManager *manager = [NSFileManager defaultManager];
+        NSString *stage = [manager stringWithFileSystemRepresentation:stagePath length:strlen(stagePath)];
+        NSString *target = [manager stringWithFileSystemRepresentation:targetPath length:strlen(targetPath)];
+        NSURL *sourceURL = [NSURL fileURLWithPath:stage];
+        NSURL *targetURL = [NSURL fileURLWithPath:target];
+        NSError *error = nil;
+        BOOL directory = NO;
+        BOOL exists = [manager fileExistsAtPath:target isDirectory:&directory];
+        if (directory) return strdup("The document destination is a directory.");
+        BOOL success = exists
+            ? [manager replaceItemAtURL:targetURL withItemAtURL:sourceURL backupItemName:nil
+                options:0 resultingItemURL:nil error:&error]
+            : [manager moveItemAtURL:sourceURL toURL:targetURL error:&error];
+        return success ? NULL : strdup((error.localizedDescription ?: @"Could not replace the selected document").UTF8String);
+    }
+}
+
 // A short-lived login launcher opens the independent menu app and exits zero.
 // Unregistering this service therefore cannot terminate the resident broker.
 char *qc_store_set_login_enabled(bool enabled) {
