@@ -73,6 +73,10 @@ class CargoTestExecutableSelectionTests(unittest.TestCase):
 
 
 class PortalRouteAssertionTests(unittest.TestCase):
+    def test_dbus_activation_receives_xvfb_display_authority(self) -> None:
+        self.assertIn("DISPLAY", runner.DBUS_ACTIVATION_ENVIRONMENT)
+        self.assertIn("XAUTHORITY", runner.DBUS_ACTIVATION_ENVIRONMENT)
+
     def test_monitor_readiness_accepts_the_initial_dbus_name_acquired_signal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "dbus-monitor.log"
