@@ -8366,7 +8366,7 @@
     {
       "ecosystem": "npm",
       "name": "@capacitor/android",
-      "version": "8.5.3",
+      "version": "8.6.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/ionic-team/capacitor",
       "licenseTextHashes": [
@@ -8386,7 +8386,7 @@
     {
       "ecosystem": "npm",
       "name": "@capacitor/core",
-      "version": "8.5.3",
+      "version": "8.6.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/ionic-team/capacitor",
       "licenseTextHashes": [
@@ -10727,8 +10727,8 @@
         "LICENSE"
       ],
       "components": [
-        "npm:@capacitor/android@8.5.3",
-        "npm:@capacitor/core@8.5.3"
+        "npm:@capacitor/android@8.6.0",
+        "npm:@capacitor/core@8.6.0"
       ]
     },
     {

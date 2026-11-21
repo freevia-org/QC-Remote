@@ -9177,7 +9177,7 @@ limitations under the License.
 ================================================================================
 SHA-256: 7edf453d1584f19ee63f4507d4bbe05e6cce2fa9d334ad72dc40dcaf03cdc6bb
 Source file names: LICENSE
-Applies to: npm:@capacitor/android@8.5.3, npm:@capacitor/core@8.5.3
+Applies to: npm:@capacitor/android@8.6.0, npm:@capacitor/core@8.6.0
 --------------------------------------------------------------------------------
 MIT License
 
