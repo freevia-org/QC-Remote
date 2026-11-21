@@ -47,6 +47,28 @@ test("native process environment helpers preserve absent, empty and exact values
   assert.match(result.stdout, /Exact process environment read\/write tests passed\./);
 });
 
+test("build owner admission query observes a reservation until it is released", { skip: process.platform !== "win32" }, () => {
+  const script = String.raw`
+    $ErrorActionPreference = 'Stop'
+    & (Join-Path (Get-Location) 'scripts/windows-build-process-owner.ps1') -Action Inspect -ProcessId $PID -LoadOnly
+    $key = Join-Path ([IO.Path]::GetTempPath()) ('qc-admission-query-' + [guid]::NewGuid().ToString('N'))
+    if ([QcOwnedProcess.BuildJob]::HasAdmission($key)) { throw 'A new key unexpectedly has an admission.' }
+    [QcOwnedProcess.BuildJob]::Reserve($key)
+    try {
+      if (-not [QcOwnedProcess.BuildJob]::HasAdmission($key)) { throw 'A reserved key was not observable.' }
+      [QcOwnedProcess.BuildJob]::ReleaseUndispatched($key)
+      if ([QcOwnedProcess.BuildJob]::HasAdmission($key)) { throw 'A released key still has an admission.' }
+    } finally {
+      [QcOwnedProcess.BuildJob]::ReleaseUndispatched($key)
+    }
+  `;
+  const result = spawnSync(pwsh, ["-NoProfile", "-NonInteractive", "-Command", script], {
+    cwd: join(here, ".."), encoding: "utf8", timeout: 30_000, windowsHide: true,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+});
+
 test("Node original admission proves exact native membership and rejects the unrelated observer", { skip: process.platform !== "win32" }, async () => {
   const root = await mkdtemp(join(tmpdir(), "qc-node-original-admission-"));
   const checker = join(here, "windows-owned-admission.ps1");
