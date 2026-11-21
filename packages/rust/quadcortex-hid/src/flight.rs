@@ -591,14 +591,6 @@ mod tests {
         let mut recorder = FlightRecorder::open(Some(path.clone()));
         recorder.last_persisted_at = Instant::now() - Duration::from_secs(2);
 
-        let started = Instant::now();
-        recorder.event("queued-checkpoint");
-        assert!(
-            started.elapsed() < Duration::from_millis(150),
-            "routine checkpoint blocked the caller for {:?}",
-            started.elapsed()
-        );
-
         let deadline = Instant::now() + Duration::from_secs(5);
         let bytes = loop {
             if let Ok(bytes) = fs::read(&path) {
@@ -607,6 +599,18 @@ mod tests {
             assert!(
                 Instant::now() < deadline,
                 "writer did not publish checkpoint"
+            );
+            // The shared process-wide writer has a capacity-one queue. Other
+            // parallel tests can occupy it briefly, in which case this
+            // routine checkpoint is intentionally dropped without blocking.
+            // Retry until one enqueue is accepted and published.
+            recorder.last_persisted_at = Instant::now() - Duration::from_secs(2);
+            let started = Instant::now();
+            recorder.event("queued-checkpoint");
+            assert!(
+                started.elapsed() < Duration::from_millis(150),
+                "routine checkpoint blocked the caller for {:?}",
+                started.elapsed()
             );
             std::thread::sleep(Duration::from_millis(10));
         };
