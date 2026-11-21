@@ -303,7 +303,7 @@ test('only the pinned upstream licence paths are exempt from trailing-blank chec
     git('add', '-A');
     git('commit', '-q', '-m', 'base');
     git('branch', 'base');
-    for (const file of [...exempt, ...checked]) writeFileSync(path.join(root, file), 'first line\n(C) 2024 Upstream Authors \n');
+    for (const file of [...exempt, ...checked]) writeFileSync(path.join(root, file), 'first line\n(C) 2024 Upstream Authors \n\n');
     git('commit', '-q', '-a', '-m', 'trailing blanks');
     let report = '';
     try {
