@@ -23,7 +23,7 @@ glib = { path = "vendor/glib-0.18.5" }
 [package]
 name = "qc-remote"
 default-run = "qc-remote"
-version = "1.0.11"
+version = "1.0.12"
 publish = false
 description = "Unofficial modular desktop controller for Quad Cortex"
 edition = "2021"
