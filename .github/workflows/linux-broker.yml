@@ -518,12 +518,13 @@ jobs:
           CI_EXECUTION_DEADLINE: ${{ steps.runner_work_budget.outputs.deadline }}
           CI_STEP_LIMIT: 360
         run: *runner_budget_guard_linux_desktop_host
-      - name: Test the GUI host with its in-process broker
+      - name: Test the GUI host, KSNI menu layout and D-Bus recovery
         working-directory: apps/windows/src-tauri
         env:
           QC_GATEWAY_EXECUTABLE: ${{ env.CARGO_TARGET_DIR || format('{0}/apps/windows/src-tauri/target', github.workspace) }}/debug/qc-device-broker
         run: |
           cargo +stable test --locked --features tray-sidecar,custom-protocol
+          dbus-run-session -- cargo +stable test --locked --manifest-path ../../../services/device-broker/Cargo.toml --features linux-tray --test linux_ksni_menu_layout
           dbus-run-session -- cargo +stable test --locked --features tray-sidecar,custom-protocol \
             --test instance_lock --test dbus_errors -- --include-ignored
         if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_010.outputs.ready == 'true') }}

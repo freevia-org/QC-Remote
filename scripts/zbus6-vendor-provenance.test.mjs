@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -67,12 +67,20 @@ for (const item of crates) {
     const archiveNames = [...published.keys()].map((name) => name.slice(prefix.length)).sort();
     const patches = new Map(provenance.patches.map((patch) => [patch.path, patch]));
     assert.equal(patches.size, provenance.patches.length, 'patch file list has no duplicate paths');
-    const expectedNames = [...archiveNames, 'PATCH-PROVENANCE.json', 'PATCH-PROVENANCE.md', `${item.package}-${item.version}.crate`].sort();
+    // A nested crate Cargo.lock does not control this path dependency; the Tauri/workspace locks do.
+    const optionalArchiveFiles = new Set(['Cargo.lock']);
+    const expectedNames = [
+      ...archiveNames.filter((name) => !optionalArchiveFiles.has(name) || existsSync(path.join(crate, ...name.split('/')))),
+      'PATCH-PROVENANCE.json',
+      'PATCH-PROVENANCE.md',
+      `${item.package}-${item.version}.crate`,
+    ].sort();
     assert.deepEqual(treeFiles(crate).sort(), expectedNames, 'vendor tree contains only published files and pinned provenance');
 
     const changed = [];
     for (const [archiveName, upstreamBytes] of published) {
       const relative = archiveName.slice(prefix.length);
+      if (optionalArchiveFiles.has(relative) && !existsSync(path.join(crate, ...relative.split('/')))) continue;
       const vendoredBytes = readFileSync(path.join(crate, ...relative.split('/')));
       if (Buffer.compare(upstreamBytes, vendoredBytes) === 0) continue;
       changed.push(relative);
@@ -137,7 +145,13 @@ test('zbus 6 runtime and Linux session-bus regressions stay in the shipped locke
     assert.ok(instanceTest.includes(behavior), `missing single-instance behavior case: ${behavior}`);
   }
 
+  const menuLayoutTest = readFileSync(path.join(root, 'services/device-broker/tests/linux_ksni_menu_layout.rs'), 'utf8');
+  assert.match(menuLayoutTest, /GetLayout/);
+  assert.match(menuLayoutTest, /property_string/);
+  assert.match(menuLayoutTest, /property_bool/);
+  assert.match(menuLayoutTest, /tray.shutdown\(\)\.await/);
   const workflow = readFileSync(path.join(root, '.github/workflows/linux-broker.yml'), 'utf8');
+  assert.match(workflow, /dbus-run-session -- cargo \+stable test --locked --manifest-path \.\.\/\.\.\/\.\.\/services\/device-broker\/Cargo\.toml --features linux-tray --test linux_ksni_menu_layout/);
   assert.match(workflow, /dbus-run-session -- cargo \+stable test --locked --features tray-sidecar,custom-protocol \\\s+--test instance_lock --test dbus_errors -- --include-ignored/);
   assert.match(workflow, /dbus-run-session -- python3 -m unittest scripts\.test_linux_tray_startup -v/);
 });
