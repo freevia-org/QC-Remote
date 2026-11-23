@@ -10,14 +10,14 @@
     {
       "path": "Cargo.toml",
       "upstreamSha256": "e751fdcc60ca85281a254002e7bad8489d9e3baad4f69547e505acbc520a612f",
-      "patchedSha256": "967c9c0dc8e8e2b50526eef6e1dccb19503fdec00df3df101ec1ed307fa17e2d",
-      "reason": "Move zbus runtime feature to default-rt, consume the zbus 6 unified API, use ashpd 0.14 for zbus 6 test dependencies, and prohibit accidental publication of the downstream vendor copy."
+      "patchedSha256": "837fe7227227e70c50b7850c07a0ac335213afd5211313c3d96bc1a9e5807fd1",
+      "reason": "Move zbus runtime feature to default-rt, enable the service API required by KSNI object interfaces, consume the zbus 6 unified API, use ashpd 0.14 for zbus 6 test dependencies, and prohibit accidental publication of the downstream vendor copy."
     },
     {
       "path": "Cargo.toml.orig",
       "upstreamSha256": "6795a04aa02efd513612a4b6af3d7e5c4f23596d6861a51f1ce4ef58a0ec3453",
-      "patchedSha256": "f9e2df71ffef81f692ef0676dcdc1554c089ea8d7baaae3bdbdab21c062ee0f7",
-      "reason": "Keep the source manifest aligned with the normalized feature/dependency migration and prohibit accidental publication."
+      "patchedSha256": "e1742e54be0d43b7d43826a911070001d8c725128f3bb9bf96832508ed4d3e3f",
+      "reason": "Keep the source manifest aligned with the normalized zbus 6 service/runtime feature migration and prohibit accidental publication."
     },
     {
       "path": "src/service.rs",
