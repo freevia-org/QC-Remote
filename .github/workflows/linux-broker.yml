@@ -522,7 +522,10 @@ jobs:
         working-directory: apps/windows/src-tauri
         env:
           QC_GATEWAY_EXECUTABLE: ${{ env.CARGO_TARGET_DIR || format('{0}/apps/windows/src-tauri/target', github.workspace) }}/debug/qc-device-broker
-        run: cargo +stable test --locked --features tray-sidecar,custom-protocol
+        run: |
+          cargo +stable test --locked --features tray-sidecar,custom-protocol
+          dbus-run-session -- cargo +stable test --locked --features tray-sidecar,custom-protocol \
+            --test instance_lock --test dbus_errors -- --include-ignored
         if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_010.outputs.ready == 'true') }}
         timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_010.outputs.minutes || '1') || 360 }}
       - name: Test the GLib string iterator backport in optimized mode

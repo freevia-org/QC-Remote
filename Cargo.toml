@@ -78,6 +78,12 @@ zeroize = "1"
 [workspace.package]
 license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
 
+# Keep the Linux tray's KSNI implementation on the reviewed zbus 6 port used
+# by the desktop app's isolated Tauri workspace as well. This path package is
+# pinned and provenance-checked by scripts/zbus6-vendor-provenance.test.mjs.
+[patch.crates-io]
+ksni = { path = "apps/windows/src-tauri/vendor/ksni-0.3.7" }
+
 # No debuginfo for dependencies in debug builds. Dependency debuginfo is what
 # makes target/ directories enormous, and almost none of that is our code.
 # `package."*"` matches non-workspace packages only, so every crate in this

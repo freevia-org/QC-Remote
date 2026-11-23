@@ -44,11 +44,13 @@ pub fn start(shared: Arc<Shared>, actions: Sender<MenuAction>) -> Result<Notify,
         sync_frame: 0,
     };
     let watcher_connection = Arc::new(
-        zbus::blocking::connection::Builder::session()
-            .map_err(|error| format!("Cannot connect to session D-Bus: {error}"))?
-            .method_timeout(Duration::from_millis(500))
-            .build()
-            .map_err(|error| format!("Cannot connect to session D-Bus: {error}"))?,
+        zbus::block_on(async {
+            zbus::connection::Builder::session()?
+                .method_timeout(Duration::from_millis(500))
+                .build()
+                .await
+        })
+        .map_err(|error| format!("Cannot connect to session D-Bus: {error}"))?,
     );
     // With this option, ksni treats a temporarily missing watcher as offline
     // and listens for its later appearance. Its service retries registration
@@ -335,14 +337,18 @@ fn dispatch(action: MenuAction, actions: Sender<MenuAction>) {
         });
 }
 
-fn host_is_registered(connection: &zbus::blocking::Connection) -> bool {
-    zbus::blocking::Proxy::new(
-        connection,
-        "org.kde.StatusNotifierWatcher",
-        "/StatusNotifierWatcher",
-        "org.kde.StatusNotifierWatcher",
-    )
-    .and_then(|proxy| proxy.get_property::<bool>("IsStatusNotifierHostRegistered"))
+fn host_is_registered(connection: &zbus::Connection) -> bool {
+    zbus::block_on(async {
+        zbus::Proxy::new(
+            connection,
+            "org.kde.StatusNotifierWatcher",
+            "/StatusNotifierWatcher",
+            "org.kde.StatusNotifierWatcher",
+        )
+        .await?
+        .get_property::<bool>("IsStatusNotifierHostRegistered")
+        .await
+    })
     .unwrap_or(false)
 }
 

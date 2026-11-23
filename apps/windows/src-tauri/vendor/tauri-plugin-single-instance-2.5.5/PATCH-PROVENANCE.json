@@ -1,0 +1,49 @@
+{
+  "package": "tauri-plugin-single-instance",
+  "version": "2.5.5",
+  "publishedArchive": "https://crates.io/api/v1/crates/tauri-plugin-single-instance/2.5.5/download",
+  "publishedArchiveSha256": "726b6da0dd5bd1344f84f4108a622c07d01923baacb5c803a605189672c5352f",
+  "sourceLockChecksum": "726b6da0dd5bd1344f84f4108a622c07d01923baacb5c803a605189672c5352f",
+  "upstreamPortCommit": "1dba017",
+  "upstreamPortUrl": "https://github.com/tauri-apps/plugins-workspace/pull/3759/commits/1dba017",
+  "patches": [
+    {
+      "path": "Cargo.toml",
+      "upstreamSha256": "6de6ad77122cda3dee8dba7d386f776c88e13bf5d880484250d23239a0332423",
+      "patchedSha256": "257a2a92a217e6e32aa745866111d1dc0e7b34f5d2bc1cf5743ff12422760e87",
+      "reason": "Use the reviewed upstream zbus 6 Linux backend dependency and Tokio runtime feature; prohibit accidental publication of the downstream vendor copy."
+    },
+    {
+      "path": "Cargo.toml.orig",
+      "upstreamSha256": "7aecc6dc958ae16a39bcff6a114a085be73ec07de4c50839d58d01e972292ab2",
+      "patchedSha256": "0635c690aac0c3299b01cc57ba30fdd005b64ea5911ad6e4e3d12a873dd629f1",
+      "reason": "Keep the source manifest aligned with the Linux zbus 6 migration and no-publish boundary."
+    },
+    {
+      "path": "src/platform_impl/linux.rs",
+      "upstreamSha256": "d42465721642f4ed5a7e9dae76a60c0ec534274eee4cfaffc4a5f9d713fb248f",
+      "patchedSha256": "034f9685b2c213fe44d8f2e15c283c87ac25d77590c0fc58d8a1b6c5fbfccd67",
+      "reason": "Use the upstream zbus 6 async backend, retain single-instance argument/cwd forwarding and release semantics, and make setup errors explicit."
+    },
+    {
+      "path": "CHANGELOG.md",
+      "upstreamSha256": "bbdeaf6de40e9b0c14cc19124d0b87ac8d6de8ad12844afaa882f7f3e4243e9d",
+      "patchedSha256": "2132d81fe1749040d3980623e73e0b253503a9183eb33431eb33ce56724c6303",
+      "reason": "Remove upstream whitespace-only trailing content so repository diff checks stay clean; no changelog content changed."
+    }
+  ],
+  "consumerTests": [
+    {
+      "path": "apps/windows/src-tauri/tests/dbus_errors.rs",
+      "upstreamSha256": "e7bf4fe7ae2c4e94766e2fc74e85dd2e436e9220bac6a0d429f8dd228c95e912",
+      "patchedSha256": "d07de252447f5e8b5c785a5c94fd95a53aed220ab9b4d0d7d30233233513d896",
+      "upstreamSource": "https://github.com/tauri-apps/plugins-workspace/pull/3759/commits/1dba017"
+    },
+    {
+      "path": "apps/windows/src-tauri/tests/instance_lock.rs",
+      "upstreamSha256": "f434e175ef4ae6c3ecf569d2cc21f0cd565e2663eb0db1d6e12105b7378e8a64",
+      "patchedSha256": "d7b11f471160c67e4cd94c068771e6126882b0da55f61b152ace39b4ed061247",
+      "upstreamSource": "https://github.com/tauri-apps/plugins-workspace/pull/3759/commits/1dba017"
+    }
+  ]
+}

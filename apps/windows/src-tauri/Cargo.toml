@@ -19,6 +19,8 @@
 # output parameter. Keep the published version and apply the upstream 0.18
 # branch correction; see vendor/glib-0.18.5/PATCH-PROVENANCE.md.
 glib = { path = "vendor/glib-0.18.5" }
+ksni = { path = "vendor/ksni-0.3.7" }
+tauri-plugin-single-instance = { path = "vendor/tauri-plugin-single-instance-2.5.5" }
 
 [package]
 name = "qc-remote"
@@ -129,11 +131,13 @@ plist = "1.10"
 # Exercise the patched public iterator API in the Linux Tauri CI job; this is
 # already a transitive runtime dependency through Tauri/Wry on Linux.
 glib = "=0.18.5"
+zbus = { version = "=6.5.0", default-features = false, features = ["default-rt", "service"] }
 
 [dev-dependencies]
 # Cross-platform TCP backpressure fixtures also run on Linux.
 socket2 = "=0.6.5"
 tower = { version = "0.5", features = ["util"] }
+tauri = { version = "2", default-features = false, features = ["test"] }
 
 # No debuginfo for dependencies in debug builds.
 #

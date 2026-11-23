@@ -139,3 +139,15 @@ test('Linux release package uses a clean per-attempt target directory', () => {
   assert.match(release, /name: Build and verify Debian package from this source commit[\s\S]*?CARGO_TARGET_DIR:/);
   assert.match(release, /name: Name package and write checksum manifest[\s\S]*?test -d "\$CARGO_TARGET_DIR"[\s\S]*?find "\$CARGO_TARGET_DIR"/);
 });
+
+test('Linux D-Bus qualification runs the single-instance forwarding and release tests', () => {
+  const workflow = readFileSync(path.join(workflows, 'linux-broker.yml'), 'utf8');
+  const hostTest = workflow.slice(
+    workflow.indexOf('\n      - name: Test the GUI host with its in-process broker'),
+    workflow.indexOf('\n      - name: Test the GLib string iterator backport in optimized mode'),
+  );
+  assert.ok(hostTest.length > 0, 'the Linux GUI-host test step exists');
+  assert.match(hostTest, /dbus-run-session -- cargo \+stable test --locked --features tray-sidecar,custom-protocol/);
+  assert.match(hostTest, /--test instance_lock --test dbus_errors -- --include-ignored/);
+  assert.match(workflow, /dbus-run-session -- python3 -m unittest scripts\.test_linux_tray_startup -v/);
+});
