@@ -175,6 +175,102 @@ test("fresh disabled parameter readback refuses a linked edit before its first w
     assert.equal(failures.length,1);
   } finally { act(() => renderer.unmount()); }
 });
+
+test("linked parameter read keeps its captured preset identity and retires before writing after a session change", async () => {
+  const read = deferred<BlockDetails>();
+  const readCalls: unknown[][] = [], writes: unknown[][] = [], histories: unknown[] = [], failures: unknown[] = [];
+  const initial = block();
+  let snapshot = { ...IDLE_PLACEHOLDER_SNAPSHOT, presetName: "Original preset", presetIdentity: "original-id", setlistKey: "A", presetPosition: 0, activeScene: 0 } as PresetSnapshot;
+  const lifetime = new PresetLifetime(snapshot);
+  const gateway = {
+    async blockDetails(...args: unknown[]) { readCalls.push(args); return read.promise; },
+    async setParameter(...args: unknown[]) { writes.push(args); return { detail: "written", block: { ...initial, parameters: [{ ...parameter, normalizedValue: .7 }] } }; }
+  } as unknown as GatewayTransport;
+  const controller = { lifetime, updateInteraction() {}, releaseInteraction() {}, cancelInteraction() {} };
+  let workflow!: ReturnType<typeof useParameterWorkflow>, renderer!: ReturnType<typeof create>;
+  function Probe() {
+    workflow = useParameterWorkflow({ gateway, snapshot, connected: true, pending: false, controller,
+      editor: { details: initial, drafts: {}, page: 0, load() {} }, setPending() {}, notice() {}, fail(error: unknown) { failures.push(error); },
+      recordHistory(value: unknown) { histories.push(value); }, reconcile() {}
+    } as unknown as ParameterWorkflowOptions);
+    return null;
+  }
+  act(() => { renderer = create(React.createElement(Probe)); });
+  try {
+    let operation!: Promise<void>;
+    await act(async () => { operation = workflow.commitBatch([{ parameter, value: .7 }]); });
+    assert.equal(readCalls.length, 1);
+    assert.equal(readCalls[0][2], "Original preset");
+    assert.equal(readCalls[0][3], "original-id");
+    act(() => {
+      lifetime.invalidate();
+      snapshot = { ...snapshot, presetIdentity: "replacement-id" };
+      renderer.update(React.createElement(Probe));
+    });
+    await act(async () => { read.resolve(initial); await operation; });
+    assert.deepEqual(writes, [], "a delayed read from the prior owner cannot write into the replacement session");
+    assert.deepEqual(histories, []);
+    assert.deepEqual(failures, []);
+  } finally { act(() => renderer.unmount()); }
+});
+
+test("linked parameter edit rejects a replacement model returned by its fresh read", async () => {
+  const writes: unknown[][] = [], failures: unknown[] = [];
+  const initial = block();
+  const replacement = { ...initial, modelId: 99, name: "Replacement", parameters: [{ ...parameter, normalizedValue: .5 }] } as unknown as BlockDetails;
+  const snapshot = { ...IDLE_PLACEHOLDER_SNAPSHOT, presetName: "Preset", presetIdentity: "model-check", setlistKey: "A", presetPosition: 0, activeScene: 0 } as PresetSnapshot;
+  const gateway = {
+    async blockDetails() { return replacement; },
+    async setParameter(...args: unknown[]) { writes.push(args); return { detail: "unexpected", block: replacement }; }
+  } as unknown as GatewayTransport;
+  const controller = { lifetime: new PresetLifetime(snapshot), updateInteraction() {}, releaseInteraction() {}, cancelInteraction() {} };
+  let workflow!: ReturnType<typeof useParameterWorkflow>, renderer!: ReturnType<typeof create>;
+  function Probe() {
+    workflow = useParameterWorkflow({ gateway, snapshot, connected: true, pending: false, controller,
+      editor: { details: initial, drafts: {}, page: 0, load() {} }, setPending() {}, notice() {}, fail(error: unknown) { failures.push(error); },
+      recordHistory() {}, reconcile() {}
+    } as unknown as ParameterWorkflowOptions);
+    return null;
+  }
+  act(() => { renderer = create(React.createElement(Probe)); });
+  try {
+    await act(async () => { await workflow.commitBatch([{ parameter, value: .7 }]); });
+    assert.deepEqual(writes, [], "fresh model mismatch is rejected before the first parameter write");
+    assert.match(String(failures[0]), /block or scene changed/i);
+  } finally { act(() => renderer.unmount()); }
+});
+
+test("mixer parameter edit pins the selected model and preset identity through read and write", async () => {
+  const mixer = { ...block(9), modelId: 11000, name: "Mixer", parameters: [{ ...parameter, normalizedValue: .5 }] } as unknown as BlockDetails;
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const snapshot = { ...IDLE_PLACEHOLDER_SNAPSHOT, presetName: "Mixer preset", presetIdentity: "mixer-owner", setlistKey: "A", presetPosition: 0, activeScene: 0 } as PresetSnapshot;
+  const gateway = {
+    async blockDetails(...args: unknown[]) { calls.push({ method: "blockDetails", args }); return mixer; },
+    async setParameter(...args: unknown[]) {
+      calls.push({ method: "setParameter", args });
+      return { detail: "written", block: { ...mixer, parameters: [{ ...parameter, normalizedValue: .7 }] } };
+    }
+  } as unknown as GatewayTransport;
+  const controller = { lifetime: new PresetLifetime(snapshot), updateInteraction() {}, releaseInteraction() {}, cancelInteraction() {} };
+  let workflow!: ReturnType<typeof useParameterWorkflow>, renderer!: ReturnType<typeof create>;
+  function Probe() {
+    workflow = useParameterWorkflow({ gateway, snapshot, connected: true, pending: false, controller,
+      editor: { details: mixer, drafts: {}, page: 0, load() {} }, setPending() {}, notice() {}, fail(error: unknown) { throw error; },
+      recordHistory() {}, reconcile() {}
+    } as unknown as ParameterWorkflowOptions);
+    return null;
+  }
+  act(() => { renderer = create(React.createElement(Probe)); });
+  try {
+    await act(async () => { await workflow.commitBatch([{ parameter: mixer.parameters[0], value: .7 }]); });
+    assert.deepEqual(calls.map(({ method }) => method), ["blockDetails", "setParameter"]);
+    assert.deepEqual(calls[0].args.slice(2), ["Mixer preset", "mixer-owner"]);
+    assert.equal(calls[1].args[6], 11000, "mixer catalog model id is the expected-model guard");
+    assert.equal(calls[1].args[7], "Mixer preset");
+    assert.equal(calls[1].args[8], "mixer-owner");
+  } finally { act(() => renderer.unmount()); }
+});
+
 test("a disabled operand retires only its actual interaction lease and a re-enabled gesture can finish", async () => {
   const { QcInteractionAuthority } = await import("../src/interaction-authority.ts");
   const authority = new QcInteractionAuthority();
