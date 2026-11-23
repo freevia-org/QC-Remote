@@ -46,6 +46,24 @@ test("vendored glib keeps its exact upstream MIT license instead of QC Remote's 
   assert.ok(checkCarveOut(wrongLicense).some((error) => error.includes("expected its pinned third-party license MIT")));
 });
 
+test("vendored zbus 6 crates retain their exact upstream licenses", () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const files = trackedRepositoryFiles(root);
+  const read = (file) => readFileSync(resolve(root, file), "utf8");
+  const licenseText = read("LICENSE");
+  const termsText = read(REFERENCE_TERMS_PATH);
+  const checkCarveOut = (readFile) => licenseCarveOutErrors({ licenseText, termsText, trackedFiles: files, readFile });
+  assert.deepEqual(checkCarveOut(read), []);
+
+  const expected = new Map([
+    ["apps/windows/src-tauri/vendor/ksni-0.3.7/Cargo.toml", 'license = "Unlicense"'],
+    ["apps/windows/src-tauri/vendor/tauri-plugin-single-instance-2.5.5/Cargo.toml", 'license = "Apache-2.0 OR MIT"']
+  ]);
+  const tampered = (file) => expected.has(file) ? read(file).replace(expected.get(file), 'license = "MIT"') : read(file);
+  assert.ok(expected.size === 2);
+  assert.equal(checkCarveOut(tampered).length, 2, "both vendored source packages reject a misleading first-party license declaration");
+});
+
 const skill = (files) => skillDocumentErrors({ trackedFiles: Object.keys(files), readFile: (file) => files[file] });
 const bundle = (paths) => paths.map((path) => `    device_knowledge_skill_file!("${path}"),`).join("\n");
 const skillFixture = () => {

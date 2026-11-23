@@ -1,0 +1,41 @@
+{
+  "package": "ksni",
+  "version": "0.3.7",
+  "publishedArchive": "https://crates.io/api/v1/crates/ksni/0.3.7/download",
+  "publishedArchiveSha256": "1bcc1cb43797140f74b711f1c4a49f48a7a7429f211c5fb78264e7bcd1e99caf",
+  "sourceLockChecksum": "1bcc1cb43797140f74b711f1c4a49f48a7a7429f211c5fb78264e7bcd1e99caf",
+  "upstreamIssue": "https://github.com/iovxw/ksni/issues/44",
+  "targetRuntime": "zbus 6.5.0 default-rt; KSNI's own blocking facade still uses its configured async-io executor",
+  "patches": [
+    {
+      "path": "Cargo.toml",
+      "upstreamSha256": "e751fdcc60ca85281a254002e7bad8489d9e3baad4f69547e505acbc520a612f",
+      "patchedSha256": "967c9c0dc8e8e2b50526eef6e1dccb19503fdec00df3df101ec1ed307fa17e2d",
+      "reason": "Move zbus runtime feature to default-rt, consume the zbus 6 unified API, use ashpd 0.14 for zbus 6 test dependencies, and prohibit accidental publication of the downstream vendor copy."
+    },
+    {
+      "path": "Cargo.toml.orig",
+      "upstreamSha256": "6795a04aa02efd513612a4b6af3d7e5c4f23596d6861a51f1ce4ef58a0ec3453",
+      "patchedSha256": "f9e2df71ffef81f692ef0676dcdc1554c089ea8d7baaae3bdbdab21c062ee0f7",
+      "reason": "Keep the source manifest aligned with the normalized feature/dependency migration and prohibit accidental publication."
+    },
+    {
+      "path": "src/service.rs",
+      "upstreamSha256": "3bc78b44b47a96406ca66d498a810d31b75888ed197e182acabd859b0776708e",
+      "patchedSha256": "8b35019debda0e3ffc39041c5d87a284a5d42fc262cda8c99ef944e7df087079",
+      "reason": "Remove zbus 5's internal_executor configuration and manual async-io executor polling; zbus 6 default-rt owns connection driving. Rust formatting and trailing-whitespace cleanup are also applied."
+    },
+    {
+      "path": "src/dbus_interface.rs",
+      "upstreamSha256": "7d0d930ba2126e4b0316b4d2d27daf2b7ff68a4231f2030f2009260610dad729",
+      "patchedSha256": "1385414e0201e3ffc55cfb565d453d922c5435eefe8f869044c6dfa37268f4b8",
+      "reason": "Use zbus 6's unified wire Value::Variant pattern in both map-unwrapping paths."
+    },
+    {
+      "path": "README.md",
+      "upstreamSha256": "084bb21d07a165a3f0a9aecd366f4488b16f4ef356257e8932b5f9e5c2789f71",
+      "patchedSha256": "9747471b81c9d5c3e0ee90c576de6b5450261168f4cdb44c2762a819a945397c",
+      "reason": "Remove upstream trailing whitespace so repository diff checks stay clean; no documentation content changed."
+    }
+  ]
+}

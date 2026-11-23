@@ -82,28 +82,6 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "async-broadcast",
-      "version": "0.7.2",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/smol-rs/async-broadcast",
-      "licenseTextHashes": [
-        "48d36a6709db4f01ec2b5d9130df3981192fd7c232bbb9c216626e550a0876dc",
-        "a7c537a25fc829c9a799b702891df70bea4d5937f3f3432c869390f122cf5415"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "async-channel",
-      "version": "2.5.0",
-      "license": "Apache-2.0 OR MIT",
-      "sourceUrl": "https://github.com/smol-rs/async-channel",
-      "licenseTextHashes": [
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
-        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
       "name": "async-executor",
       "version": "1.14.0",
       "license": "Apache-2.0 OR MIT",
@@ -130,39 +108,6 @@
       "version": "3.4.2",
       "license": "Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/smol-rs/async-lock",
-      "licenseTextHashes": [
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
-        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "async-process",
-      "version": "2.5.0",
-      "license": "Apache-2.0 OR MIT",
-      "sourceUrl": "https://github.com/smol-rs/async-process",
-      "licenseTextHashes": [
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
-        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "async-recursion",
-      "version": "1.1.1",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/dcchut/async-recursion",
-      "licenseTextHashes": [
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
-        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "async-signal",
-      "version": "0.2.14",
-      "license": "Apache-2.0 OR MIT",
-      "sourceUrl": "https://github.com/smol-rs/async-signal",
       "licenseTextHashes": [
         "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
@@ -414,17 +359,6 @@
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
         "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "blocking",
-      "version": "1.7.0",
-      "license": "Apache-2.0 OR MIT",
-      "sourceUrl": "https://github.com/smol-rs/blocking",
-      "licenseTextHashes": [
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
-        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
       ]
     },
     {
@@ -1376,28 +1310,6 @@
       "sourceUrl": "https://github.com/zeenix/endi",
       "licenseTextHashes": [
         "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "enumflags2_derive",
-      "version": "0.7.12",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/meithecatte/enumflags2",
-      "licenseTextHashes": [
-        "12a9724e2927cff890dbc8be671c2f6e7daca1ec2d95d15875e2306be0c19bd5",
-        "4247075817677c99f5de6953fdf6fa29fbfe646b37efe125a29bfada244ce020"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "enumflags2",
-      "version": "0.7.12",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/meithecatte/enumflags2",
-      "licenseTextHashes": [
-        "1f6efa554fb0411e6e32c720076b20e046098431637e70a6b6842e662fed6015",
-        "de561d2b653aaad47bbf13147692d4f9286e545021f27b46affb44cc0df88c65"
       ]
     },
     {
@@ -2565,16 +2477,6 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "ksni",
-      "version": "0.3.7",
-      "license": "Unlicense",
-      "sourceUrl": "https://github.com/iovxw/ksni",
-      "licenseTextHashes": [
-        "ca2abdf695884c77ea4b4a5b64ca7b732d9d9dbade4eebc1c2e76c53e9e3bc83"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
       "name": "libappindicator-sys",
       "version": "0.9.0",
       "license": "Apache-2.0 OR MIT",
@@ -3243,17 +3145,6 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "piper",
-      "version": "0.2.5",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/smol-rs/piper",
-      "licenseTextHashes": [
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
-        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
       "name": "pkg-config",
       "version": "0.3.34",
       "license": "MIT OR Apache-2.0",
@@ -3363,17 +3254,6 @@
       "ecosystem": "cargo",
       "name": "proc-macro-crate",
       "version": "2.0.2",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/bkchr/proc-macro-crate",
-      "licenseTextHashes": [
-        "1bc86297d03201537284dc3f7bc105c8ab7b053b3372d96ab935bc54acc7a430",
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "proc-macro-crate",
-      "version": "3.5.0",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/bkchr/proc-macro-crate",
       "licenseTextHashes": [
@@ -3823,7 +3703,7 @@
     {
       "ecosystem": "cargo",
       "name": "rustix",
-      "version": "1.1.4",
+      "version": "1.1.5",
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/bytecodealliance/rustix",
       "licenseTextHashes": [
@@ -3836,7 +3716,7 @@
     {
       "ecosystem": "cargo",
       "name": "rustix",
-      "version": "1.1.5",
+      "version": "1.1.6",
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/bytecodealliance/rustix",
       "licenseTextHashes": [
@@ -4728,18 +4608,6 @@
       "licenseTextHashes": [
         "4bf96504d6e83ce5c6fc7167f1795d9ceaa68e70ab86bc5d08ab93184262bbbe",
         "89ff9689dcf9dd53968785d05a26f7898bb169dbfcada8d032b3e68cf0d55607"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "tauri-plugin-single-instance",
-      "version": "2.5.5",
-      "license": "Apache-2.0 OR MIT",
-      "sourceUrl": "https://github.com/tauri-apps/plugins-workspace",
-      "licenseTextHashes": [
-        "4bf96504d6e83ce5c6fc7167f1795d9ceaa68e70ab86bc5d08ab93184262bbbe",
-        "b7f455413bfe5f9d7da501a4468d4c5f866a432c325947e98cc9535e8b26cd6d",
-        "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef"
       ]
     },
     {
@@ -5777,6 +5645,17 @@
     {
       "ecosystem": "cargo",
       "name": "windows-sys",
+      "version": "0.52.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/microsoft/windows-rs",
+      "licenseTextHashes": [
+        "783829b43aacb86cb8e6cedcd777210c13f2081aae94419cc7a30e112977d488",
+        "ff82c90f84945c60601e96b43246009b9bc589f3ebe1cd8a0fd39a3520d8c310"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "windows-sys",
       "version": "0.59.0",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/microsoft/windows-rs",
@@ -5947,7 +5826,7 @@
     {
       "ecosystem": "cargo",
       "name": "zbus_macros",
-      "version": "5.19.0",
+      "version": "6.5.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/z-galaxy/zbus/",
       "licenseTextHashes": [
@@ -5956,8 +5835,8 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "zbus_names",
-      "version": "4.3.4",
+      "name": "zbus_utils",
+      "version": "6.1.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/z-galaxy/zbus/",
       "licenseTextHashes": [
@@ -5967,7 +5846,7 @@
     {
       "ecosystem": "cargo",
       "name": "zbus",
-      "version": "5.19.0",
+      "version": "6.5.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/z-galaxy/zbus/",
       "licenseTextHashes": [
@@ -5977,7 +5856,7 @@
     {
       "ecosystem": "cargo",
       "name": "zcheapstr",
-      "version": "1.1.0",
+      "version": "1.4.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/z-galaxy/zcheapstr/",
       "licenseTextHashes": [
@@ -6119,32 +5998,12 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "zvariant_derive",
-      "version": "5.15.0",
+      "name": "zruntime",
+      "version": "0.2.4",
       "license": "MIT",
-      "sourceUrl": "https://github.com/z-galaxy/zbus/",
+      "sourceUrl": "https://github.com/z-galaxy/zruntime",
       "licenseTextHashes": [
-        "a0e7d0739e030804991c24558d6630ab5c4d8782f91073e5b5f8d317b03568cd"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "zvariant_utils",
-      "version": "4.2.0",
-      "license": "MIT",
-      "sourceUrl": "https://github.com/z-galaxy/zbus/",
-      "licenseTextHashes": [
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "zvariant",
-      "version": "5.15.0",
-      "license": "MIT",
-      "sourceUrl": "https://github.com/z-galaxy/zbus/",
-      "licenseTextHashes": [
-        "a0e7d0739e030804991c24558d6630ab5c4d8782f91073e5b5f8d317b03568cd"
+        "23671245a8530ffd043e0d0593f421c93c2eec74de28cb6d4a7fa4ce08d41017"
       ]
     },
     {
@@ -8549,15 +8408,6 @@
       ]
     },
     {
-      "sha256": "12a9724e2927cff890dbc8be671c2f6e7daca1ec2d95d15875e2306be0c19bd5",
-      "names": [
-        "LICENSE-MIT"
-      ],
-      "components": [
-        "cargo:enumflags2_derive@0.7.12"
-      ]
-    },
-    {
       "sha256": "12bfa73c9eacbe1e22c772b2cba1f5e3195ae9fafc7773f50493a3e6e306da01",
       "names": [
         "LICENSE-MIT.md"
@@ -8749,8 +8599,7 @@
         "cargo:adler2@2.0.1",
         "cargo:cargo-platform@0.1.9",
         "cargo:proc-macro-crate@1.3.1",
-        "cargo:proc-macro-crate@2.0.2",
-        "cargo:proc-macro-crate@3.5.0"
+        "cargo:proc-macro-crate@2.0.2"
       ]
     },
     {
@@ -8773,15 +8622,6 @@
       ],
       "components": [
         "cargo:schannel@0.1.29"
-      ]
-    },
-    {
-      "sha256": "1f6efa554fb0411e6e32c720076b20e046098431637e70a6b6842e662fed6015",
-      "names": [
-        "LICENSE-APACHE"
-      ],
-      "components": [
-        "cargo:enumflags2@0.7.12"
       ]
     },
     {
@@ -8857,6 +8697,15 @@
       ],
       "components": [
         "npm:dijkstrajs@1.0.3"
+      ]
+    },
+    {
+      "sha256": "23671245a8530ffd043e0d0593f421c93c2eec74de28cb6d4a7fa4ce08d41017",
+      "names": [
+        "LICENSE"
+      ],
+      "components": [
+        "cargo:zruntime@0.2.4"
       ]
     },
     {
@@ -9172,8 +9021,8 @@
       ],
       "components": [
         "cargo:linux-raw-sys@0.12.1",
-        "cargo:rustix@1.1.4",
         "cargo:rustix@1.1.5",
+        "cargo:rustix@1.1.6",
         "cargo:target-lexicon@0.12.16"
       ]
     },
@@ -9217,23 +9066,17 @@
     {
       "sha256": "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
       "names": [
-        "LICENSE",
         "LICENSE-MIT"
       ],
       "components": [
         "cargo:adler2@2.0.1",
         "cargo:anyhow@1.0.104",
-        "cargo:async-channel@2.5.0",
         "cargo:async-executor@1.14.0",
         "cargo:async-io@2.6.0",
         "cargo:async-lock@3.4.2",
-        "cargo:async-process@2.5.0",
-        "cargo:async-recursion@1.1.1",
-        "cargo:async-signal@0.2.14",
         "cargo:async-task@4.7.1",
         "cargo:async-trait@0.1.92",
         "cargo:atomic-waker@1.1.2",
-        "cargo:blocking@1.7.0",
         "cargo:camino@1.2.5",
         "cargo:cargo-platform@0.1.9",
         "cargo:cargo_metadata@0.19.2",
@@ -9254,19 +9097,17 @@
         "cargo:parking@2.2.1",
         "cargo:pastey@0.2.3",
         "cargo:pin-project-lite@0.2.17",
-        "cargo:piper@0.2.5",
         "cargo:polling@3.11.0",
         "cargo:prettyplease@0.3.0",
         "cargo:proc-macro-crate@1.3.1",
         "cargo:proc-macro-crate@2.0.2",
-        "cargo:proc-macro-crate@3.5.0",
         "cargo:proc-macro2@1.0.107",
         "cargo:quote@1.0.47",
         "cargo:ref-cast-impl@1.0.27",
         "cargo:ref-cast@1.0.27",
         "cargo:rustc-hash@2.1.3",
-        "cargo:rustix@1.1.4",
         "cargo:rustix@1.1.5",
+        "cargo:rustix@1.1.6",
         "cargo:rustversion@1.0.23",
         "cargo:semver@1.0.28",
         "cargo:serde-untagged@0.1.9",
@@ -9295,8 +9136,7 @@
         "cargo:typeid@1.0.3",
         "cargo:unicode-ident@1.0.24",
         "cargo:unicode-ident@1.0.26",
-        "cargo:zmij@1.0.23",
-        "cargo:zvariant_utils@4.2.0"
+        "cargo:zmij@1.0.23"
       ]
     },
     {
@@ -9390,7 +9230,7 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:zcheapstr@1.1.0"
+        "cargo:zcheapstr@1.4.0"
       ]
     },
     {
@@ -9506,15 +9346,6 @@
       ]
     },
     {
-      "sha256": "4247075817677c99f5de6953fdf6fa29fbfe646b37efe125a29bfada244ce020",
-      "names": [
-        "LICENSE-APACHE"
-      ],
-      "components": [
-        "cargo:enumflags2_derive@0.7.12"
-      ]
-    },
-    {
       "sha256": "42d8a095dbffdf17dba2e5ab859b56bf19909eace29d1ece1357e2044a7ab8f6",
       "names": [
         "LICENSE-MIT"
@@ -9607,15 +9438,6 @@
       ]
     },
     {
-      "sha256": "48d36a6709db4f01ec2b5d9130df3981192fd7c232bbb9c216626e550a0876dc",
-      "names": [
-        "LICENSE-MIT"
-      ],
-      "components": [
-        "cargo:async-broadcast@0.7.2"
-      ]
-    },
-    {
       "sha256": "49f5cc2a2e4db6cc86cc1c853cbf00af70abd12c55dae8d6561f26ccd1bfd162",
       "names": [
         "LICENSE"
@@ -9661,7 +9483,6 @@
         "LICENSE-APACHE-2.0",
         "LICENSE-APACHE.md",
         "LICENSE-Apache",
-        "LICENSE_APACHE-2.0",
         "activity-1.11.0.aar!/META-INF/androidx/activity/activity/LICENSE.txt",
         "coordinatorlayout-1.3.0.aar!/META-INF/androidx/coordinatorlayout/coordinatorlayout/LICENSE.txt",
         "core-1.17.0.aar!/META-INF/androidx/core/core/LICENSE.txt",
@@ -9685,7 +9506,6 @@
         "cargo:tauri-build@2.7.6",
         "cargo:tauri-codegen@2.7.6",
         "cargo:tauri-macros@2.7.6",
-        "cargo:tauri-plugin-single-instance@2.5.5",
         "cargo:tauri-runtime-wry@2.12.5",
         "cargo:tauri-runtime@2.12.4",
         "cargo:tauri-utils@2.10.4",
@@ -10224,6 +10044,7 @@
         "cargo:windows-registry@0.6.1",
         "cargo:windows-result@0.4.1",
         "cargo:windows-strings@0.5.1",
+        "cargo:windows-sys@0.52.0",
         "cargo:windows-sys@0.59.0",
         "cargo:windows-sys@0.60.2",
         "cargo:windows-sys@0.61.2",
@@ -10664,13 +10485,9 @@
       ],
       "components": [
         "cargo:arc-swap@1.9.3",
-        "cargo:async-channel@2.5.0",
         "cargo:async-executor@1.14.0",
         "cargo:async-io@2.6.0",
         "cargo:async-lock@3.4.2",
-        "cargo:async-process@2.5.0",
-        "cargo:async-recursion@1.1.1",
-        "cargo:async-signal@0.2.14",
         "cargo:async-task@4.7.1",
         "cargo:atomic-waker@1.1.2",
         "cargo:autocfg@1.5.1",
@@ -10679,7 +10496,6 @@
         "cargo:base64@0.23.1",
         "cargo:bitflags@1.3.2",
         "cargo:bitflags@2.13.2",
-        "cargo:blocking@1.7.0",
         "cargo:bs58@0.5.1",
         "cargo:camino@1.2.5",
         "cargo:cc@1.4.4",
@@ -10748,7 +10564,6 @@
         "cargo:parking_lot_core@0.9.12",
         "cargo:percent-encoding@2.3.2",
         "cargo:petgraph@0.8.3",
-        "cargo:piper@0.2.5",
         "cargo:pkg-config@0.3.34",
         "cargo:png@0.18.1",
         "cargo:polling@3.11.0",
@@ -10761,8 +10576,8 @@
         "cargo:regex-syntax@0.8.11",
         "cargo:regex@1.13.1",
         "cargo:rustc_version@0.4.1",
-        "cargo:rustix@1.1.4",
         "cargo:rustix@1.1.5",
+        "cargo:rustix@1.1.6",
         "cargo:rustls-native-certs@0.8.4",
         "cargo:rustls@0.23.46",
         "cargo:scoped-tls@1.0.1",
@@ -10898,11 +10713,9 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:zbus@5.19.0",
-        "cargo:zbus_macros@5.19.0",
-        "cargo:zbus_names@4.3.4",
-        "cargo:zvariant@5.15.0",
-        "cargo:zvariant_derive@5.15.0"
+        "cargo:zbus@6.5.0",
+        "cargo:zbus_macros@6.5.0",
+        "cargo:zbus_utils@6.1.0"
       ]
     },
     {
@@ -10995,15 +10808,6 @@
       ],
       "components": [
         "cargo:shlex@2.0.1"
-      ]
-    },
-    {
-      "sha256": "a7c537a25fc829c9a799b702891df70bea4d5937f3f3432c869390f122cf5415",
-      "names": [
-        "LICENSE-APACHE"
-      ],
-      "components": [
-        "cargo:async-broadcast@0.7.2"
       ]
     },
     {
@@ -11187,15 +10991,6 @@
       ],
       "components": [
         "cargo:web-time@1.1.0"
-      ]
-    },
-    {
-      "sha256": "b7f455413bfe5f9d7da501a4468d4c5f866a432c325947e98cc9535e8b26cd6d",
-      "names": [
-        "LICENSE_MIT"
-      ],
-      "components": [
-        "cargo:tauri-plugin-single-instance@2.5.5"
       ]
     },
     {
@@ -11498,15 +11293,6 @@
       ]
     },
     {
-      "sha256": "ca2abdf695884c77ea4b4a5b64ca7b732d9d9dbade4eebc1c2e76c53e9e3bc83",
-      "names": [
-        "https://github.com/iovxw/ksni/blob/2397cc2ce535ba4e7ed77fecd94731c5239923e7/UNLICENSE (SHA-256 7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c)"
-      ],
-      "components": [
-        "cargo:ksni@0.3.7"
-      ]
-    },
-    {
       "sha256": "cc367a7134c2b07d995a2f8dea591094a1d100e49c68513f729fdf3eaf580a21",
       "names": [
         "LICENSE-MIT"
@@ -11703,15 +11489,6 @@
       ]
     },
     {
-      "sha256": "de561d2b653aaad47bbf13147692d4f9286e545021f27b46affb44cc0df88c65",
-      "names": [
-        "LICENSE-MIT"
-      ],
-      "components": [
-        "cargo:enumflags2@0.7.12"
-      ]
-    },
-    {
       "sha256": "dec912e37f888cf7a524f9f132c5bbb07dc13e90b026e0eab25697e74a08ddbb",
       "names": [
         "LICENSE-MIT"
@@ -11857,15 +11634,6 @@
       "components": [
         "cargo:miniz_oxide@0.8.9",
         "cargo:miniz_oxide@0.9.1"
-      ]
-    },
-    {
-      "sha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef",
-      "names": [
-        "LICENSE.spdx"
-      ],
-      "components": [
-        "cargo:tauri-plugin-single-instance@2.5.5"
       ]
     },
     {
@@ -12104,8 +11872,8 @@
         "COPYRIGHT"
       ],
       "components": [
-        "cargo:rustix@1.1.4",
-        "cargo:rustix@1.1.5"
+        "cargo:rustix@1.1.5",
+        "cargo:rustix@1.1.6"
       ]
     },
     {
@@ -12143,6 +11911,7 @@
         "cargo:windows-registry@0.6.1",
         "cargo:windows-result@0.4.1",
         "cargo:windows-strings@0.5.1",
+        "cargo:windows-sys@0.52.0",
         "cargo:windows-sys@0.59.0",
         "cargo:windows-sys@0.60.2",
         "cargo:windows-sys@0.61.2",
