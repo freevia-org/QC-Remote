@@ -18,6 +18,7 @@ exclude = ["reference/", "spec/"]
 default = ["tokio"]
 blocking = []
 node = []
+qcr-test-layout = []
 tokio = ["dep:tokio", "zbus/tokio"]
 async-io = [
     "dep:async-io",

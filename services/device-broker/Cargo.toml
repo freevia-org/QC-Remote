@@ -81,3 +81,6 @@ signal-hook = "0.4"
 # Bound both loopback buffers in unread-peer timeout tests. Already in the
 # production lock graph; this direct dependency is test-only.
 socket2 = "=0.6.5"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+ksni = { version = "=0.3.7", default-features = false, features = ["qcr-test-layout"] }

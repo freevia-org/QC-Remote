@@ -4,19 +4,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ksni::menu::{StandardItem, SubMenu};
+use ksni::qcr_test_support::Layout as KsniLayout;
 use ksni::TrayMethods as _;
-use zbus::{connection::Builder, Connection, OwnedVariant, Proxy};
+use zbus::{connection::Builder, zvariant::OwnedValue, Connection, Proxy};
 
 const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const MENU_PATH: &str = "/MenuBar";
 const MENU_INTERFACE: &str = "com.canonical.dbusmenu";
-
-type LayoutTuple = (
-    i32,
-    std::collections::HashMap<String, OwnedVariant>,
-    Vec<OwnedVariant>,
-);
 
 #[derive(Clone, Default)]
 struct TestWatcher {
@@ -106,13 +101,22 @@ async fn wait_for_item(watcher: &TestWatcher) -> Result<String, tokio::time::err
 }
 
 fn property_string(
-    properties: &std::collections::HashMap<String, OwnedVariant>,
+    properties: &std::collections::HashMap<
+        std::borrow::Cow<'static, str>,
+        zbus::zvariant::OwnedValue,
+    >,
     key: &str,
 ) -> String {
     String::try_from(properties[key].clone()).expect("menu string property")
 }
 
-fn property_bool(properties: &std::collections::HashMap<String, OwnedVariant>, key: &str) -> bool {
+fn property_bool(
+    properties: &std::collections::HashMap<
+        std::borrow::Cow<'static, str>,
+        zbus::zvariant::OwnedValue,
+    >,
+    key: &str,
+) -> bool {
     bool::try_from(properties[key].clone()).expect("menu boolean property")
 }
 
@@ -136,35 +140,48 @@ async fn assert_menu_layout() {
         let item_name = wait_for_item(&watcher).await?;
         let client = Connection::session().await?;
         let proxy = Proxy::new(&client, item_name, MENU_PATH, MENU_INTERFACE).await?;
-        let (_revision, root): (u32, LayoutTuple) = proxy
+        let (_revision, root): (u32, OwnedValue) = proxy
             .call("GetLayout", &(0_i32, -1_i32, Vec::<String>::new()))
             .await?;
+        let root = KsniLayout::try_from(root)?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(root)
     }
     .await;
     tray.shutdown().await;
     let root = response.expect("KSNI tray registers and returns its D-Bus menu layout");
 
-    assert_eq!(root.0, 0);
-    assert_eq!(root.2.len(), 2);
-    let first: LayoutTuple = root.2[0]
-        .clone()
-        .try_into()
-        .expect("first layout child decodes");
-    assert_eq!(property_string(&first.1, "label"), "Open QC Remote");
-    assert!(property_bool(&first.1, "enabled"));
-    assert!(property_bool(&first.1, "visible"));
+    assert_eq!(root.id, 0);
+    assert_eq!(root.children.len(), 2);
+    let first = KsniLayout::try_from(
+        root.children[0]
+            .clone()
+            .try_into_owned()
+            .expect("first layout child is owned"),
+    )
+    .expect("first layout child uses KSNI's layout decoder");
+    assert_eq!(
+        property_string(&first.properties, "label"),
+        "Open QC Remote"
+    );
+    assert!(property_bool(&first.properties, "enabled"));
+    assert!(property_bool(&first.properties, "visible"));
 
-    let submenu: LayoutTuple = root.2[1]
-        .clone()
-        .try_into()
-        .expect("submenu layout child decodes");
-    assert_eq!(property_string(&submenu.1, "label"), "Connection");
-    assert_eq!(submenu.2.len(), 1);
-    let nested: LayoutTuple = submenu.2[0]
-        .clone()
-        .try_into()
-        .expect("nested layout child decodes");
-    assert_eq!(property_string(&nested.1, "label"), "Reconnect");
-    assert!(!property_bool(&nested.1, "enabled"));
+    let submenu = KsniLayout::try_from(
+        root.children[1]
+            .clone()
+            .try_into_owned()
+            .expect("submenu layout child is owned"),
+    )
+    .expect("submenu layout child uses KSNI's layout decoder");
+    assert_eq!(property_string(&submenu.properties, "label"), "Connection");
+    assert_eq!(submenu.children.len(), 1);
+    let nested = KsniLayout::try_from(
+        submenu.children[0]
+            .clone()
+            .try_into_owned()
+            .expect("nested layout child is owned"),
+    )
+    .expect("nested layout child uses KSNI's layout decoder");
+    assert_eq!(property_string(&nested.properties, "label"), "Reconnect");
+    assert!(!property_bool(&nested.properties, "enabled"));
 }

@@ -147,6 +147,8 @@ test('zbus 6 runtime and Linux session-bus regressions stay in the shipped locke
 
   const menuLayoutTest = readFileSync(path.join(root, 'services/device-broker/tests/linux_ksni_menu_layout.rs'), 'utf8');
   assert.match(menuLayoutTest, /GetLayout/);
+  assert.match(menuLayoutTest, /KsniLayout::try_from/);
+  assert.match(menuLayoutTest, /qcr_test_support::Layout/);
   assert.match(menuLayoutTest, /property_string/);
   assert.match(menuLayoutTest, /property_bool/);
   assert.match(menuLayoutTest, /tray.shutdown\(\)\.await/);
