@@ -157,6 +157,7 @@ jobs:
         directory:
           - .
           - apps/windows/src-tauri
+          - apps/windows/src-tauri/vendor/tauri-plugin-single-instance-2.5.5
           - apps/ios/native-bridge/rust
     steps:
       - name: Start original execution budget after admission
