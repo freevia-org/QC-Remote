@@ -45,7 +45,7 @@ pub fn start(shared: Arc<Shared>, actions: Sender<MenuAction>) -> Result<Notify,
     };
     let watcher_connection = Arc::new(
         zbus::block_on(async {
-            zbus::connection::Builder::session()?
+            zbus::connection::Builder::session()
                 .method_timeout(Duration::from_millis(500))
                 .build()
                 .await
