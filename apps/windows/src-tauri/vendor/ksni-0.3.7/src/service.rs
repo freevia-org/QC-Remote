@@ -34,7 +34,6 @@ pub(crate) async fn run<T: Tray>(
 
     // for those `expect`, see: https://github.com/dbus2/zbus/issues/403
     let conn = zbus::connection::Builder::session()
-        .map_err(|e| Error::Dbus(e))?
         .serve_at(SNI_PATH, sni_obj)
         .expect("SNI_PATH should be valid")
         .serve_at(MENU_PATH, menu_obj)

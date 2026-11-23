@@ -22,8 +22,8 @@
     {
       "path": "src/service.rs",
       "upstreamSha256": "3bc78b44b47a96406ca66d498a810d31b75888ed197e182acabd859b0776708e",
-      "patchedSha256": "8b35019debda0e3ffc39041c5d87a284a5d42fc262cda8c99ef944e7df087079",
-      "reason": "Remove zbus 5's internal_executor configuration and manual async-io executor polling; zbus 6 default-rt owns connection driving. Rust formatting and trailing-whitespace cleanup are also applied."
+      "patchedSha256": "d52525239a45d79d842183c1d832e4d01c2f996847dc0f55f6416f9a3eb1b2f1",
+      "reason": "Remove zbus 5 internal_executor and manual polling; use zbus 6 default-rt, and adapt Builder::session to zbus 6 where it no longer returns a fallible result. Formatting and trailing-whitespace cleanup are also applied."
     },
     {
       "path": "src/dbus_interface.rs",
