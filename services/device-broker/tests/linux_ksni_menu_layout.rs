@@ -6,7 +6,7 @@ use std::time::Duration;
 use ksni::menu::{StandardItem, SubMenu};
 use ksni::qcr_test_support::Layout as KsniLayout;
 use ksni::TrayMethods as _;
-use zbus::{connection::Builder, zvariant::OwnedValue, Connection, Proxy};
+use zbus::{connection::Builder, Connection, OwnedVariant, Proxy};
 
 const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
@@ -101,20 +101,14 @@ async fn wait_for_item(watcher: &TestWatcher) -> Result<String, tokio::time::err
 }
 
 fn property_string(
-    properties: &std::collections::HashMap<
-        std::borrow::Cow<'static, str>,
-        zbus::zvariant::OwnedValue,
-    >,
+    properties: &std::collections::HashMap<std::borrow::Cow<'static, str>, zbus::OwnedVariant>,
     key: &str,
 ) -> String {
     String::try_from(properties[key].clone()).expect("menu string property")
 }
 
 fn property_bool(
-    properties: &std::collections::HashMap<
-        std::borrow::Cow<'static, str>,
-        zbus::zvariant::OwnedValue,
-    >,
+    properties: &std::collections::HashMap<std::borrow::Cow<'static, str>, zbus::OwnedVariant>,
     key: &str,
 ) -> bool {
     bool::try_from(properties[key].clone()).expect("menu boolean property")
@@ -130,7 +124,6 @@ async fn assert_menu_layout() {
     let _watcher_connection = Builder::session()
         .name(WATCHER_NAME)
         .serve_at(WATCHER_PATH, watcher.clone())
-        .expect("watcher object registers")
         .build()
         .await
         .expect("watcher service starts");
@@ -140,7 +133,7 @@ async fn assert_menu_layout() {
         let item_name = wait_for_item(&watcher).await?;
         let client = Connection::session().await?;
         let proxy = Proxy::new(&client, item_name, MENU_PATH, MENU_INTERFACE).await?;
-        let (_revision, root): (u32, OwnedValue) = proxy
+        let (_revision, root): (u32, OwnedVariant) = proxy
             .call("GetLayout", &(0_i32, -1_i32, Vec::<String>::new()))
             .await?;
         let root = KsniLayout::try_from(root)?;
