@@ -242,7 +242,7 @@ class OwnedProcessCleanupTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(["fusermount3", "-u"], 0, "", ""),
             ) as run,
             mock.patch.object(runner.tempfile, "TemporaryDirectory", side_effect=record_temp_directory),
-            mock.patch.object(Path, "is_mount", side_effect=[True, False]),
+            mock.patch.object(runner, "document_portal_mount_is_present", side_effect=[True, False]),
             mock.patch.object(sys, "platform", "linux"),
         ):
             runner.run_smoke(Path("/tmp/fake-portal-test"))
@@ -264,12 +264,33 @@ class OwnedProcessCleanupTests(unittest.TestCase):
             with (
                 mock.patch.object(runner.shutil, "which", return_value="/usr/bin/fusermount3"),
                 mock.patch.object(runner.subprocess, "run", side_effect=[disconnected, detached]) as run,
-                mock.patch.object(Path, "is_mount", side_effect=[True, False]),
+                mock.patch.object(runner, "document_portal_mount_is_present", side_effect=[True, True, False]),
             ):
                 runner.unmount_document_portal(Path(temporary))
             self.assertEqual(run.call_count, 2)
             self.assertEqual(run.call_args_list[0].args[0][1], "-u")
             self.assertEqual(run.call_args_list[1].args[0][1], "-uz")
+
+    def test_already_detached_document_portal_is_accepted_by_mount_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            mountpoint = Path(temporary) / "runtime" / "doc"
+            mountpoint.mkdir(parents=True)
+            disconnected = subprocess.CompletedProcess(
+                ["fusermount3", "-u"], 1, "", "fusermount3: Transport endpoint is not connected"
+            )
+            with (
+                mock.patch.object(runner.shutil, "which", return_value="/usr/bin/fusermount3"),
+                mock.patch.object(runner.subprocess, "run", return_value=disconnected) as run,
+                mock.patch.object(runner, "document_portal_mount_is_present", side_effect=[True, False]),
+            ):
+                runner.unmount_document_portal(Path(temporary))
+            run.assert_called_once()
+
+    def test_mountinfo_matches_exact_escaped_mountpoint(self) -> None:
+        mountpoint = Path("/tmp/qc portal/runtime/doc")
+        line = "42 23 0:42 / /tmp/qc\\040portal/runtime/doc rw,nosuid - fuse.portal portal rw"
+        self.assertTrue(runner._mountinfo_has_mountpoint(line, mountpoint))
+        self.assertFalse(runner._mountinfo_has_mountpoint(line, Path("/tmp/qc portal/runtime/doc-other")))
 
     def test_main_removes_cargo_json_when_selection_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

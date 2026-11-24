@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -31,6 +32,7 @@ DBUS_ACTIVATION_ENVIRONMENT = (
     "DISPLAY",
     "XAUTHORITY",
 )
+_MOUNTINFO_ESCAPE = re.compile(r"\\([0-7]{3})")
 
 
 def select_executable(cargo_json: Path) -> Path:
@@ -217,9 +219,30 @@ def prepare_staging(root: Path) -> dict[str, str]:
     }
 
 
+def _mountinfo_field(value: str) -> str:
+    return _MOUNTINFO_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), value)
+
+
+def _mountinfo_has_mountpoint(line: str, mountpoint: Path) -> bool:
+    fields = line.split()
+    return len(fields) > 4 and _mountinfo_field(fields[4]) == mountpoint.as_posix()
+
+
+def document_portal_mount_is_present(mountpoint: Path) -> bool:
+    """Check the namespace mount table without statting a possibly dead FUSE mount."""
+    try:
+        mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except OSError as error:
+        raise RuntimeError(f"could not inspect Linux mount table: {error}") from error
+    for line in mountinfo.splitlines():
+        if _mountinfo_has_mountpoint(line, mountpoint):
+            return True
+    return False
+
+
 def unmount_document_portal(root: Path) -> None:
     mountpoint = root / "runtime" / "doc"
-    if not mountpoint.is_mount():
+    if not document_portal_mount_is_present(mountpoint):
         return
     fusermount = shutil.which("fusermount3") or shutil.which("fusermount")
     if fusermount is None:
@@ -237,6 +260,9 @@ def unmount_document_portal(root: Path) -> None:
     # dead mount. Detach only for that precise condition, and still verify the
     # owned mount disappeared from this namespace.
     detail = (result.stderr or result.stdout).strip()
+    still_mounted = document_portal_mount_is_present(mountpoint)
+    if not still_mounted:
+        return
     if result.returncode != 0 and "Transport endpoint is not connected" in detail:
         result = subprocess.run(
             [fusermount, "-uz", str(mountpoint)],
@@ -245,7 +271,7 @@ def unmount_document_portal(root: Path) -> None:
             text=True,
             timeout=10,
         )
-    if result.returncode != 0 or mountpoint.is_mount():
+    if result.returncode != 0 or document_portal_mount_is_present(mountpoint):
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(f"could not unmount the owned document portal mount: {detail}")
 
