@@ -68,3 +68,4 @@ jobs:
           name: qc-remote-ios-unsigned
           path: ${{ runner.temp }}/ios-derived-data/Build/Products/Debug-iphoneos/App.app
           if-no-files-found: error
+          retention-days: 1
