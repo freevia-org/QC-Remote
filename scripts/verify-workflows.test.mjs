@@ -14,10 +14,12 @@ const codeql = readFileSync(path.join(workflows, 'codeql.yml'), 'utf8');
 const helper = readFileSync(path.join(root, 'scripts', 'verify-dco-dispatch.mjs'), 'utf8');
 
 test('CodeQL stays manual-only with local default and hosted fallback', () => {
-  assert.match(codeql, /^on:\r?\n  workflow_dispatch:\r?\n    inputs:\r?\n      runner_pool:/m);
+  const onBlock = codeql.match(/^on:\r?\n((?:[ \t].*\r?\n|[ \t]*\r?\n)*)/m)?.[1] ?? '';
+  assert.match(onBlock, /^  workflow_dispatch:\r?\n/m);
+  assert.doesNotMatch(onBlock, /^  (?!workflow_dispatch:)[A-Za-z0-9_-]+:/m);
+  assert.match(onBlock, /^    inputs:\r?\n      runner_pool:/m);
   assert.match(codeql, /options:\r?\n          - local\r?\n          - hosted\r?\n        default: local/m);
   assert.match(codeql, /^    runs-on: \$\{\{ inputs\.runner_pool == 'hosted' && 'ubuntu-24\.04' \|\| 'qc-remote-i5-linux' \}\}$/m);
-  assert.doesNotMatch(codeql, /^  (?:push|pull_request|schedule):/m);
 });
 
 test('DCO runs only by workflow dispatch from protected master', () => {
