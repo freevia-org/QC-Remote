@@ -36,6 +36,15 @@ pub mod menu;
 mod service;
 mod tray;
 
+/// Test-only access to the D-Bus menu layout decoder used by QC Remote's
+/// Linux integration regression. This feature is enabled only by the broker's
+/// Linux dev-dependency.
+#[cfg(feature = "qcr-test-layout")]
+#[doc(hidden)]
+pub mod qcr_test_support {
+    pub use crate::dbus_interface::Layout;
+}
+
 #[doc(inline)]
 pub use menu::{MenuItem, TextDirection};
 pub use tray::{Category, Icon, Orientation, Status, ToolTip};

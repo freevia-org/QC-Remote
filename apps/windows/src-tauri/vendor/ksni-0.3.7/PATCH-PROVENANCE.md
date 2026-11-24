@@ -14,6 +14,12 @@ polling path, and updates the two `Value::Value` matches to the unified
 its own async-io facade remain in use; the broker's direct zbus calls were
 migrated separately to zbus 6 async APIs.
 
+QC Remote's Linux broker dev-dependency enables the `qcr-test-layout` feature,
+which re-exports KSNI's production `Layout` decoder only for the session-bus
+integration regression. That regression decodes the real `GetLayout` response
+through the same `ItemPropsValueHelper` path that contains the zbus 6 variant
+conversion fix; normal application builds do not enable the feature.
+
 The vendored manifests add only the pinned dependency/feature changes and
 `publish = false`. The application does not publish this fork as a crate. The
 Linux release workflow exercises the tray against a real private D-Bus session

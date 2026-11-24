@@ -10,20 +10,26 @@
     {
       "path": "Cargo.toml",
       "upstreamSha256": "e751fdcc60ca85281a254002e7bad8489d9e3baad4f69547e505acbc520a612f",
-      "patchedSha256": "837fe7227227e70c50b7850c07a0ac335213afd5211313c3d96bc1a9e5807fd1",
-      "reason": "Move zbus runtime feature to default-rt, enable the service API required by KSNI object interfaces, consume the zbus 6 unified API, use ashpd 0.14 for zbus 6 test dependencies, and prohibit accidental publication of the downstream vendor copy."
+      "patchedSha256": "91e373efea8e42e4e45d154bd21ec6972f6946b4bf0c2f8c99bd3af7eba24da1",
+      "reason": "Move zbus runtime feature to default-rt, enable the service API required by KSNI object interfaces, consume the zbus 6 unified API, use ashpd 0.14 for zbus 6 test dependencies, prohibit accidental publication, and expose the decoder only behind the QC Remote test-only feature."
     },
     {
       "path": "Cargo.toml.orig",
       "upstreamSha256": "6795a04aa02efd513612a4b6af3d7e5c4f23596d6861a51f1ce4ef58a0ec3453",
-      "patchedSha256": "e1742e54be0d43b7d43826a911070001d8c725128f3bb9bf96832508ed4d3e3f",
-      "reason": "Keep the source manifest aligned with the normalized zbus 6 service/runtime feature migration and prohibit accidental publication."
+      "patchedSha256": "3f405b59f2fca96bbae6f53746dc90514d99ec4dc0ecc723470d11c0dda97472",
+      "reason": "Keep the source manifest aligned with the normalized zbus 6 service/runtime feature migration, prohibit accidental publication, and declare the decoder test-only feature."
     },
     {
       "path": "src/service.rs",
       "upstreamSha256": "3bc78b44b47a96406ca66d498a810d31b75888ed197e182acabd859b0776708e",
       "patchedSha256": "86e2c166c1c82d05aab7939fa03fed80a8925c7fc49563ffdf9bb0188f69f3bc",
       "reason": "Remove zbus 5 internal_executor and manual polling; use zbus 6 default-rt and adapt Builder::session/serve_at to the zbus 6 fluent builder API, with fallible setup completed by build(). Formatting and trailing-whitespace cleanup are also applied."
+    },
+    {
+      "path": "src/lib.rs",
+      "upstreamSha256": "6a8bd6e485047447db0adc717c765a9c282ae9771612ae9446253b35b126ffcf",
+      "patchedSha256": "1b3045164e536ffb6f0dbc61f2fb06a6a96c838740f9ac1977db82befd421112",
+      "reason": "Re-export the exact production D-Bus layout decoder only under QC Remote's test-only feature so the broker integration regression exercises the patched property-map conversion."
     },
     {
       "path": "src/dbus_interface.rs",

@@ -58,6 +58,7 @@ async-io = [
 blocking = []
 default = ["tokio"]
 node = []
+qcr-test-layout = []
 tokio = [
     "dep:tokio",
     "zbus/tokio",
