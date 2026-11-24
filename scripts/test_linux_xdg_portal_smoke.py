@@ -187,7 +187,9 @@ class OwnedProcessCleanupTests(unittest.TestCase):
             child_pid: int | None = None
             try:
                 deadline = time.monotonic() + 3
-                while time.monotonic() < deadline and not child_ready_file.exists():
+                while time.monotonic() < deadline and not (
+                    child_ready_file.exists() and child_pid_file.exists()
+                ):
                     time.sleep(0.01)
                 self.assertTrue(child_ready_file.exists(), "child did not install its signal handler")
                 self.assertTrue(child_pid_file.exists(), "leader did not record its child")
