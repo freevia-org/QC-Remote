@@ -2,6 +2,15 @@ name: CodeQL
 
 on:
   workflow_dispatch:
+    inputs:
+      runner_pool:
+        description: Run on the local I5 runner, or GitHub-hosted Ubuntu if local capacity is unavailable.
+        type: choice
+        options:
+          - local
+          - hosted
+        default: local
+        required: true
 
 permissions:
   contents: read
@@ -10,7 +19,7 @@ permissions:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: qc-remote-i5-linux
+    runs-on: ${{ inputs.runner_pool == 'hosted' && 'ubuntu-24.04' || 'qc-remote-i5-linux' }}
     # One hung analysis would hold the only self-hosted runner for the default
     # six hours while every other workflow queues behind it.
     timeout-minutes: 30
