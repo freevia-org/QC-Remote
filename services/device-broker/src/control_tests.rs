@@ -460,6 +460,15 @@ fn port(scratch: &Scratch) -> u16 {
     descriptor["port"].as_u64().unwrap() as u16
 }
 
+fn control_response_frame_length(header: [u8; 4]) -> usize {
+    let frame_bytes = u32::from_be_bytes(header) as usize;
+    assert!(
+        frame_bytes > 0 && frame_bytes <= MAX_FRAME_BYTES,
+        "invalid test response frame length"
+    );
+    frame_bytes
+}
+
 fn frame(stream: &mut TcpStream, value: Value) -> Value {
     let body = serde_json::to_vec(&value).unwrap();
     stream
@@ -473,12 +482,26 @@ fn frame(stream: &mut TcpStream, value: Value) -> Value {
     loop {
         let mut header = [0_u8; 4];
         stream.read_exact(&mut header).unwrap();
-        let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+        let frame_bytes = control_response_frame_length(header);
+        let mut body = vec![0_u8; frame_bytes];
         stream.read_exact(&mut body).unwrap();
         let reply: Value = serde_json::from_slice(&body).unwrap();
         if reply.get("id") == Some(&id) {
             return reply;
         }
+    }
+}
+
+#[test]
+fn control_response_frame_length_is_bounded_before_allocation() {
+    assert_eq!(
+        control_response_frame_length((MAX_FRAME_BYTES as u32).to_be_bytes()),
+        MAX_FRAME_BYTES
+    );
+    for declared in [0, (MAX_FRAME_BYTES as u32) + 1, u32::MAX] {
+        let result =
+            std::panic::catch_unwind(|| control_response_frame_length(declared.to_be_bytes()));
+        assert!(result.is_err(), "accepted invalid frame size {declared}");
     }
 }
 
