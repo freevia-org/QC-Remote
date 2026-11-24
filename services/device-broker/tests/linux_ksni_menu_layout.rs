@@ -144,7 +144,10 @@ async fn assert_menu_layout() {
         let item_name = wait_for_item(&watcher).await?;
         let client = Connection::session().await?;
         let proxy = Proxy::new(&client, item_name, MENU_PATH, MENU_INTERFACE).await?;
-        let (_revision, root): (u32, zbus::OwnedStructure) = proxy
+        let zbus::wire::DynamicTuple((_revision, root)): zbus::wire::DynamicTuple<(
+            u32,
+            zbus::OwnedStructure,
+        )> = proxy
             .call("GetLayout", &(0_i32, -1_i32, Vec::<String>::new()))
             .await?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(root)
