@@ -19,6 +19,8 @@
 # output parameter. Keep the published version and apply the upstream 0.18
 # branch correction; see vendor/glib-0.18.5/PATCH-PROVENANCE.md.
 glib = { path = "vendor/glib-0.18.5" }
+glib-macros = { path = "vendor/glib-macros-0.18.5" }
+gtk3-macros = { path = "vendor/gtk3-macros-0.18.2" }
 ksni = { path = "vendor/ksni-0.3.7" }
 tauri-plugin-single-instance = { path = "vendor/tauri-plugin-single-instance-2.5.5" }
 
