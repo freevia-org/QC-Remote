@@ -143,7 +143,38 @@ def capture_portal_methods(monitor: subprocess.Popen[str], output: Path) -> str:
     return output.read_text(encoding="utf-8", errors="replace")
 
 
-def process_group_exists(process_group: int) -> bool:
+def process_group_has_live_members(process_group: int) -> bool:
+    """Return whether the group still contains a process that can hold resources."""
+    try:
+        entries = os.scandir("/proc")
+    except OSError:
+        entries = None
+    if entries is not None:
+        with entries:
+            for entry in entries:
+                if not entry.name.isdecimal():
+                    continue
+                try:
+                    stat = Path(entry.path, "stat").read_text(encoding="ascii")
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    # If a process exists but cannot be inspected, conservatively
+                    # fall back to killpg rather than claiming the group is clear.
+                    return _process_group_exists_via_signal(process_group)
+                try:
+                    fields = stat.rsplit(")", 1)[1].split()
+                    state = fields[0]
+                    group = int(fields[2])
+                except (IndexError, ValueError):
+                    return _process_group_exists_via_signal(process_group)
+                if group == process_group and state not in {"Z", "X"}:
+                    return True
+        return False
+    return _process_group_exists_via_signal(process_group)
+
+
+def _process_group_exists_via_signal(process_group: int) -> bool:
     try:
         os.killpg(process_group, 0)
     except ProcessLookupError:
@@ -155,7 +186,7 @@ def process_group_exists(process_group: int) -> bool:
 
 def wait_for_process_group_exit(process_group: int, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
-    while process_group_exists(process_group):
+    while process_group_has_live_members(process_group):
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.05)
@@ -173,7 +204,7 @@ def stop_owned_process(
     # The process-group leader can exit before its children. The session was
     # started with start_new_session=True, so its PID remains the group ID and
     # can be checked/signalled independently of Popen.poll().
-    if process_group_exists(process.pid):
+    if process_group_has_live_members(process.pid):
         try:
             os.killpg(process.pid, graceful_signal)
         except ProcessLookupError:

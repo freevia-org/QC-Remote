@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -199,18 +200,20 @@ class OwnedProcessCleanupTests(unittest.TestCase):
                 # same process group and ignores the graceful signal.
                 os.kill(leader.pid, signal.SIGTERM)
                 leader.wait(timeout=3)
-                self.assertTrue(runner.process_group_exists(leader.pid))
+                self.assertTrue(runner.process_group_has_live_members(leader.pid))
 
                 stop_owned_process(leader)
 
                 self.assertFalse(
-                    runner.process_group_exists(leader.pid),
-                    "owned process group must be gone before caller unmounts or removes staging",
+                    runner.process_group_has_live_members(leader.pid),
+                    "owned process group must have no live process before unmount or staging removal",
                 )
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(child_pid, 0)
+                child_stat = Path(f"/proc/{child_pid}/stat")
+                if child_stat.exists():
+                    child_fields = child_stat.read_text(encoding="ascii").rsplit(")", 1)[1].split()
+                    self.assertIn(child_fields[0], {"Z", "X"}, "descendant must be exited")
             finally:
-                if runner.process_group_exists(leader.pid):
+                if runner.process_group_has_live_members(leader.pid):
                     os.killpg(leader.pid, signal.SIGKILL)
                     runner.wait_for_process_group_exit(leader.pid, timeout=3)
                 if leader.poll() is None:
@@ -255,7 +258,7 @@ class OwnedProcessCleanupTests(unittest.TestCase):
                 mock.patch.object(runner, "wait_for_monitor_ready"),
                 mock.patch.object(runner, "wait_for_stage", side_effect=TimeoutError("injected stage timeout")),
                 mock.patch.object(runner.os, "killpg"),
-                mock.patch.object(runner, "process_group_exists", return_value=False),
+                mock.patch.object(runner, "process_group_has_live_members", return_value=False),
                 mock.patch.dict(os.environ, {"DISPLAY": ":99", "XAUTHORITY": "/tmp/xauth"}),
             ):
                 with self.assertRaisesRegex(TimeoutError, "injected stage timeout"):
