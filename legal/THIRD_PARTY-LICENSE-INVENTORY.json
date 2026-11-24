@@ -3263,10 +3263,10 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "proc-macro-error-attr",
-      "version": "1.0.4",
+      "name": "proc-macro-error-attr3",
+      "version": "3.1.1",
       "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://gitlab.com/CreepySkeleton/proc-macro-error",
+      "sourceUrl": "https://github.com/gamma0987/proc-macro-error3",
       "licenseTextHashes": [
         "2bbedf556bfd75e8bc04dfcd34722c8d688f3ff4b877aaf9759b9f2b05330520",
         "c7495b7b3a525563d3a3f4003277a9db6ef7fd02ce4a3bd4b8103944c4037a32"
@@ -3274,13 +3274,13 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "proc-macro-error",
-      "version": "1.0.4",
+      "name": "proc-macro-error3",
+      "version": "3.1.1",
       "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://gitlab.com/CreepySkeleton/proc-macro-error",
+      "sourceUrl": "https://github.com/gamma0987/proc-macro-error3",
       "licenseTextHashes": [
-        "2bbedf556bfd75e8bc04dfcd34722c8d688f3ff4b877aaf9759b9f2b05330520",
-        "c7495b7b3a525563d3a3f4003277a9db6ef7fd02ce4a3bd4b8103944c4037a32"
+        "9414fbd5a01d1c74637bf610a151855d58fe374548a2ccff2e53418484f6cc65",
+        "fbd4b828865bddeb14a224f98e55f40925f4e5f73c1d5b626e0bbf66f09b62a0"
       ]
     },
     {
@@ -4435,17 +4435,6 @@
       "licenseTextHashes": [
         "7593ea50d2d4010bd27f36dd240008bd9161a0764fd8ef418e87a225581a3635",
         "e88bc3fa7f782130b10f9459373525dcad8f8c89ccf8ff2350627601f63cdec7"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "syn",
-      "version": "1.0.109",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/dtolnay/syn",
-      "licenseTextHashes": [
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
-        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
       ]
     },
     {
@@ -8991,8 +8980,7 @@
         "LICENSE-APACHE"
       ],
       "components": [
-        "cargo:proc-macro-error-attr@1.0.4",
-        "cargo:proc-macro-error@1.0.4"
+        "cargo:proc-macro-error-attr3@3.1.1"
       ]
     },
     {
@@ -9121,7 +9109,6 @@
         "cargo:serde_repr@0.1.21",
         "cargo:servo_arc@0.4.3",
         "cargo:simd_cesu8@1.2.0",
-        "cargo:syn@1.0.109",
         "cargo:syn@2.0.119",
         "cargo:syn@3.0.4",
         "cargo:syn@3.0.6",
@@ -10456,6 +10443,15 @@
       ]
     },
     {
+      "sha256": "9414fbd5a01d1c74637bf610a151855d58fe374548a2ccff2e53418484f6cc65",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:proc-macro-error3@3.1.1"
+      ]
+    },
+    {
       "sha256": "943f36fd309fb5ea67a82f577433f4ed3bc877e5b00f9b874e2f8b7f72bf0bdc",
       "names": [
         "LICENSE-ZLIB",
@@ -10596,7 +10592,6 @@
         "cargo:stable_deref_trait@1.2.1",
         "cargo:string_cache@0.9.0",
         "cargo:string_cache_codegen@0.6.1",
-        "cargo:syn@1.0.109",
         "cargo:system-configuration-sys@0.6.0",
         "cargo:system-configuration@0.7.0",
         "cargo:system-deps@6.2.2",
@@ -11169,8 +11164,7 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:proc-macro-error-attr@1.0.4",
-        "cargo:proc-macro-error@1.0.4"
+        "cargo:proc-macro-error-attr3@3.1.1"
       ]
     },
     {
@@ -11833,6 +11827,15 @@
       ],
       "components": [
         "cargo:option-ext@0.2.0"
+      ]
+    },
+    {
+      "sha256": "fbd4b828865bddeb14a224f98e55f40925f4e5f73c1d5b626e0bbf66f09b62a0",
+      "names": [
+        "LICENSE-APACHE"
+      ],
+      "components": [
+        "cargo:proc-macro-error3@3.1.1"
       ]
     },
     {

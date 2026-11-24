@@ -57,11 +57,15 @@ test("vendored zbus 6 crates retain their exact upstream licenses", () => {
 
   const expected = new Map([
     ["apps/windows/src-tauri/vendor/ksni-0.3.7/Cargo.toml", 'license = "Unlicense"'],
+    ["apps/windows/src-tauri/vendor/glib-macros-0.18.5/Cargo.toml", 'license = "MIT"'],
+    ["apps/windows/src-tauri/vendor/gtk3-macros-0.18.2/Cargo.toml", 'license = "MIT"'],
     ["apps/windows/src-tauri/vendor/tauri-plugin-single-instance-2.5.5/Cargo.toml", 'license = "Apache-2.0 OR MIT"']
   ]);
-  const tampered = (file) => expected.has(file) ? read(file).replace(expected.get(file), 'license = "MIT"') : read(file);
-  assert.ok(expected.size === 2);
-  assert.equal(checkCarveOut(tampered).length, 2, "both vendored source packages reject a misleading first-party license declaration");
+  const tampered = (file) => expected.has(file)
+    ? read(file).replace(expected.get(file), expected.get(file) === 'license = "MIT"' ? 'license = "MIT OR Apache-2.0"' : 'license = "MIT"')
+    : read(file);
+  assert.ok(expected.size === 4);
+  assert.equal(checkCarveOut(tampered).length, 4, "each vendored source package rejects a misleading first-party license declaration");
 });
 
 const skill = (files) => skillDocumentErrors({ trackedFiles: Object.keys(files), readFile: (file) => files[file] });

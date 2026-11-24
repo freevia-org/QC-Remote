@@ -132,6 +132,27 @@ test('the explicitly pinned glib vendor path remains a third-party shipped crate
   assert.deepEqual([...shippedCargoPackages(metadata, root).keys()], ['glib@0.18.5']);
 });
 
+test('the pinned GTK macro replacements remain third-party shipped crates', () => {
+  const root = path.resolve('apps/windows/src-tauri/Cargo.toml');
+  const glibMacros = path.resolve('apps/windows/src-tauri/vendor/glib-macros-0.18.5/Cargo.toml');
+  const gtk3Macros = path.resolve('apps/windows/src-tauri/vendor/gtk3-macros-0.18.2/Cargo.toml');
+  const wrongPath = path.resolve('packages/first-party/Cargo.toml');
+  const metadata = {
+    packages: [
+      { id: 'qc-remote', name: 'qc-remote', version: '1.0.13', source: null, manifest_path: root },
+      { id: 'glib-macros', name: 'glib-macros', version: '0.18.5', source: null, license: 'MIT', manifest_path: glibMacros },
+      { id: 'gtk3-macros', name: 'gtk3-macros', version: '0.18.2', source: null, license: 'MIT', manifest_path: gtk3Macros },
+      { id: 'wrong-glib-macros', name: 'glib-macros', version: '0.18.5', source: null, license: 'MIT', manifest_path: wrongPath },
+    ],
+    resolve: { nodes: [{ id: 'qc-remote', deps: [
+      { pkg: 'glib-macros', dep_kinds: [{ kind: 'build' }] },
+      { pkg: 'gtk3-macros', dep_kinds: [{ kind: 'build' }] },
+      { pkg: 'wrong-glib-macros', dep_kinds: [{ kind: 'build' }] },
+    ] }] },
+  };
+  assert.deepEqual([...shippedCargoPackages(metadata, root).keys()].sort(), ['glib-macros@0.18.5', 'gtk3-macros@0.18.2']);
+});
+
 const shippedFixture = () => ({
   cargo: new Map([['syn@3.0.6', { name: 'syn', version: '3.0.6', license: 'MIT OR Apache-2.0' }]]),
   npm: new Map([['react@19.3.0', { name: 'react', version: '19.3.0', license: 'MIT' }]]),

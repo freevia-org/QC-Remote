@@ -1,0 +1,21 @@
+{
+  "package": "glib-macros",
+  "version": "0.18.5",
+  "publishedArchive": "https://crates.io/api/v1/crates/glib-macros/0.18.5/download",
+  "publishedArchiveSha256": "0bb0228f477c0900c880fd78c8759b95c7636dbd7842707f49e132378aa2acdc",
+  "replacementPackage": "proc-macro-error3",
+  "replacementVersion": "3.1.1",
+  "replacementArchiveSha256": "8f0d4471b3436c22106b21913b1dda531558918ae9b7ec55d58aa84b43552233",
+  "patchScope": [
+    "Cargo.toml and Cargo.toml.orig: replace proc-macro-error 1.x with proc-macro-error3 3.1.1 using syn2-error",
+    "src/lib.rs: alias proc_macro_error3 as proc_macro_error for existing imports"
+  ],
+  "formattingNormalizationScope": [
+    "LICENSE: remove the extra blank line at end of file",
+    "src/lib.rs: remove trailing spaces from one rustdoc blank line"
+  ],
+  "packagingMetadataScope": [
+    "Cargo.toml: add package.publish = false",
+    "Cargo.toml.orig: add package.publish = false"
+  ]
+}
