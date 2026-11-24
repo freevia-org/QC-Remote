@@ -10,7 +10,15 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const workflows = path.join(root, '.github', 'workflows');
 const dco = readFileSync(path.join(workflows, 'dco.yml'), 'utf8');
+const codeql = readFileSync(path.join(workflows, 'codeql.yml'), 'utf8');
 const helper = readFileSync(path.join(root, 'scripts', 'verify-dco-dispatch.mjs'), 'utf8');
+
+test('CodeQL stays manual-only with local default and hosted fallback', () => {
+  assert.match(codeql, /^on:\r?\n  workflow_dispatch:\r?\n    inputs:\r?\n      runner_pool:/m);
+  assert.match(codeql, /options:\r?\n          - local\r?\n          - hosted\r?\n        default: local/m);
+  assert.match(codeql, /^    runs-on: \$\{\{ inputs\.runner_pool == 'hosted' && 'ubuntu-24\.04' \|\| 'qc-remote-i5-linux' \}\}$/m);
+  assert.doesNotMatch(codeql, /^  (?:push|pull_request|schedule):/m);
+});
 
 test('DCO runs only by workflow dispatch from protected master', () => {
   assert.match(dco, /^on:\r?\n  workflow_dispatch:/m);
