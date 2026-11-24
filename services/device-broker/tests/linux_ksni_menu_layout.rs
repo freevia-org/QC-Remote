@@ -186,8 +186,10 @@ async fn assert_menu_layout() {
         property_string(&first.properties, "label"),
         "Open QC Remote"
     );
-    assert!(property_bool(&first.properties, "enabled"));
-    assert!(property_bool(&first.properties, "visible"));
+    // KSNI omits properties that match D-Bus menu defaults (enabled=true,
+    // visible=true); the explicit disabled value below exercises decoding.
+    assert!(!first.properties.contains_key("enabled"));
+    assert!(!first.properties.contains_key("visible"));
 
     let submenu = KsniLayout::try_from(
         root.children[1]
