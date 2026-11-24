@@ -13,26 +13,11 @@ const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const MENU_PATH: &str = "/MenuBar";
 const MENU_INTERFACE: &str = "com.canonical.dbusmenu";
 
-type LayoutTuple = (
-    i32,
-    std::collections::HashMap<String, OwnedVariant>,
-    Vec<OwnedVariant>,
-);
-
-fn round_trip_ksni_layout((id, properties, children): LayoutTuple) -> KsniLayout {
-    // The GetLayout body carries its root as a struct, not a D-Bus variant.
-    // Re-encode it in KSNI's Layout type to exercise the production decoder
-    // and its patched variant-property conversion.
-    let layout = KsniLayout {
-        id,
-        properties: properties
-            .into_iter()
-            .map(|(key, value)| (std::borrow::Cow::Owned(key), value))
-            .collect(),
-        children: children.into_iter().map(zbus::Variant::from).collect(),
-    };
-    let encoded: OwnedVariant = layout.into();
-    KsniLayout::try_from(encoded).expect("KSNI layout decodes through its variant property helper")
+fn decode_actual_layout_root(root: zbus::OwnedStructure) -> KsniLayout {
+    // GetLayout returns its root as a struct, not a D-Bus variant. Preserve
+    // that actual wire value and hand it directly to KSNI's production decoder.
+    let raw_root = OwnedVariant::try_from(root.0).expect("layout root has no file descriptors");
+    KsniLayout::try_from(raw_root).expect("KSNI decodes the actual GetLayout root")
 }
 
 #[derive(Clone, Default)]
@@ -159,14 +144,14 @@ async fn assert_menu_layout() {
         let item_name = wait_for_item(&watcher).await?;
         let client = Connection::session().await?;
         let proxy = Proxy::new(&client, item_name, MENU_PATH, MENU_INTERFACE).await?;
-        let (_revision, root): (u32, LayoutTuple) = proxy
+        let (_revision, root): (u32, zbus::OwnedStructure) = proxy
             .call("GetLayout", &(0_i32, -1_i32, Vec::<String>::new()))
             .await?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(root)
     }
     .await;
     tray.shutdown().await;
-    let root = round_trip_ksni_layout(
+    let root = decode_actual_layout_root(
         response.expect("KSNI tray registers and returns its D-Bus menu layout"),
     );
 
