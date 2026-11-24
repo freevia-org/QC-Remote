@@ -116,7 +116,11 @@ fn property_bool(
 
 #[test]
 fn ksni_menu_layout_round_trips_string_keys_and_variant_properties_on_zbus6() {
-    zbus::block_on(assert_menu_layout());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime starts");
+    runtime.block_on(assert_menu_layout());
 }
 
 async fn assert_menu_layout() {
