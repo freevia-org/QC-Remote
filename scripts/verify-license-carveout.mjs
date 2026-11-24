@@ -48,11 +48,15 @@ export const REFERENCE_TERMS_PATH = `LICENSES/${REFERENCE_LICENSE_REF}.txt`;
 // it is not a copy of the repository's first-party LICENSE.
 const THIRD_PARTY_PACKAGE_LICENSES = new Map([
   ["apps/windows/src-tauri/vendor/glib-0.18.5/Cargo.toml", "MIT"],
+  ["apps/windows/src-tauri/vendor/glib-macros-0.18.5/Cargo.toml", "MIT"],
+  ["apps/windows/src-tauri/vendor/gtk3-macros-0.18.2/Cargo.toml", "MIT"],
   ["apps/windows/src-tauri/vendor/ksni-0.3.7/Cargo.toml", "Unlicense"],
   ["apps/windows/src-tauri/vendor/tauri-plugin-single-instance-2.5.5/Cargo.toml", "Apache-2.0 OR MIT"]
 ]);
 const THIRD_PARTY_LICENSE_FILES = new Set([
   "apps/windows/src-tauri/vendor/glib-0.18.5/LICENSE",
+  "apps/windows/src-tauri/vendor/glib-macros-0.18.5/LICENSE",
+  "apps/windows/src-tauri/vendor/gtk3-macros-0.18.2/LICENSE",
   "apps/windows/src-tauri/vendor/ksni-0.3.7/UNLICENSE",
   "apps/windows/src-tauri/vendor/tauri-plugin-single-instance-2.5.5/LICENSE_APACHE-2.0",
   "apps/windows/src-tauri/vendor/tauri-plugin-single-instance-2.5.5/LICENSE_MIT"

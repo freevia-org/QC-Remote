@@ -77,6 +77,8 @@ const ALL_CARGO_MANIFESTS = ['Cargo.toml', 'apps/windows/src-tauri/Cargo.toml'];
 // glib 0.18.5 source with a documented, minimal upstream safety backport.
 const VENDORED_CARGO_PACKAGES = new Map([
   ['glib@0.18.5', 'apps/windows/src-tauri/vendor/glib-0.18.5/Cargo.toml'],
+  ['glib-macros@0.18.5', 'apps/windows/src-tauri/vendor/glib-macros-0.18.5/Cargo.toml'],
+  ['gtk3-macros@0.18.2', 'apps/windows/src-tauri/vendor/gtk3-macros-0.18.2/Cargo.toml'],
 ]);
 
 function isThirdPartyCargoPackage(item) {

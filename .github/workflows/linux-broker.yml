@@ -397,6 +397,10 @@ jobs:
           cache-dependency-path: package-lock.json
         if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_003.outputs.ready == 'true') }}
         timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_003.outputs.minutes || '1') || 360 }}
+      - name: Verify vendored GTK macro migration provenance
+        run: node --test scripts/glib-macro-upgrade-provenance.test.mjs
+        if: ${{ (success()) && (!contains(runner.name, '-i5-') || steps.runner_budget_003.outputs.ready == 'true') }}
+        timeout-minutes: ${{ contains(runner.name, '-i5-') && fromJSON(steps.runner_budget_003.outputs.minutes || '1') || 360 }}
       - name: Check remaining execution budget (4)
         id: runner_budget_004
         if: ${{ contains(runner.name, '-i5-') && (success()) }}
