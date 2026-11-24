@@ -253,6 +253,24 @@ class OwnedProcessCleanupTests(unittest.TestCase):
         self.assertTrue(str(tempdirs[0] / "runtime" / "doc") in run.call_args.args[0])
         self.assertFalse(tempdirs[0].exists(), "parent staging is removed only after D-Bus session exit")
 
+    def test_disconnected_document_portal_uses_verified_lazy_detach(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            mountpoint = Path(temporary) / "runtime" / "doc"
+            mountpoint.mkdir(parents=True)
+            disconnected = subprocess.CompletedProcess(
+                ["fusermount3", "-u"], 1, "", "fusermount3: Transport endpoint is not connected"
+            )
+            detached = subprocess.CompletedProcess(["fusermount3", "-uz"], 0, "", "")
+            with (
+                mock.patch.object(runner.shutil, "which", return_value="/usr/bin/fusermount3"),
+                mock.patch.object(runner.subprocess, "run", side_effect=[disconnected, detached]) as run,
+                mock.patch.object(Path, "is_mount", side_effect=[True, False]),
+            ):
+                runner.unmount_document_portal(Path(temporary))
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0][1], "-u")
+            self.assertEqual(run.call_args_list[1].args[0][1], "-uz")
+
     def test_main_removes_cargo_json_when_selection_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             cargo_json = Path(temporary) / "cargo.jsonl"

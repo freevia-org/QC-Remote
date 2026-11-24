@@ -231,6 +231,20 @@ def unmount_document_portal(root: Path) -> None:
         text=True,
         timeout=10,
     )
+    # The XDG document portal is owned by the D-Bus session above. When that
+    # session exits, its FUSE connection can be gone before the parent tears
+    # down the mount; fusermount then reports ENOTCONN instead of detaching the
+    # dead mount. Detach only for that precise condition, and still verify the
+    # owned mount disappeared from this namespace.
+    detail = (result.stderr or result.stdout).strip()
+    if result.returncode != 0 and "Transport endpoint is not connected" in detail:
+        result = subprocess.run(
+            [fusermount, "-uz", str(mountpoint)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
     if result.returncode != 0 or mountpoint.is_mount():
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(f"could not unmount the owned document portal mount: {detail}")
