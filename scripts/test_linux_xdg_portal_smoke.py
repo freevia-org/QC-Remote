@@ -162,6 +162,59 @@ class OwnedProcessCleanupTests(unittest.TestCase):
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait(timeout=3)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "process-group cleanup is Linux-specific")
+    def test_kills_descendant_when_group_leader_exits_before_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            child_pid_file = Path(temporary) / "child.pid"
+            child_ready_file = Path(temporary) / "child.ready"
+            leader = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import pathlib,signal,subprocess,sys,time; "
+                        "child=subprocess.Popen([sys.executable,'-c',"
+                        "'import pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                        "pathlib.Path(sys.argv[1]).write_text(\"ready\"); time.sleep(60)',sys.argv[2]]); "
+                        "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); "
+                        "signal.signal(signal.SIGTERM, signal.SIG_DFL); time.sleep(60)"
+                    ),
+                    str(child_pid_file),
+                    str(child_ready_file),
+                ],
+                start_new_session=True,
+            )
+            child_pid: int | None = None
+            try:
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and not child_ready_file.exists():
+                    time.sleep(0.01)
+                self.assertTrue(child_ready_file.exists(), "child did not install its signal handler")
+                self.assertTrue(child_pid_file.exists(), "leader did not record its child")
+                child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+                # Let the leader exit first while its child remains in the
+                # same process group and ignores the graceful signal.
+                os.kill(leader.pid, signal.SIGTERM)
+                leader.wait(timeout=3)
+                self.assertTrue(runner.process_group_exists(leader.pid))
+
+                stop_owned_process(leader)
+
+                self.assertFalse(
+                    runner.process_group_exists(leader.pid),
+                    "owned process group must be gone before caller unmounts or removes staging",
+                )
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child_pid, 0)
+            finally:
+                if runner.process_group_exists(leader.pid):
+                    os.killpg(leader.pid, signal.SIGKILL)
+                    runner.wait_for_process_group_exit(leader.pid, timeout=3)
+                if leader.poll() is None:
+                    leader.kill()
+                leader.wait(timeout=3)
+
     def test_failure_stops_and_reaps_owned_monitor_and_probe(self) -> None:
         if not sys.platform.startswith("linux"):
             self.skipTest("the supervised portal process group is Linux-specific")
@@ -200,6 +253,7 @@ class OwnedProcessCleanupTests(unittest.TestCase):
                 mock.patch.object(runner, "wait_for_monitor_ready"),
                 mock.patch.object(runner, "wait_for_stage", side_effect=TimeoutError("injected stage timeout")),
                 mock.patch.object(runner.os, "killpg"),
+                mock.patch.object(runner, "process_group_exists", return_value=False),
                 mock.patch.dict(os.environ, {"DISPLAY": ":99", "XAUTHORITY": "/tmp/xauth"}),
             ):
                 with self.assertRaisesRegex(TimeoutError, "injected stage timeout"):
@@ -233,6 +287,15 @@ class OwnedProcessCleanupTests(unittest.TestCase):
                 return 0
 
         self_outer = self
+        cleanup_order: list[str] = []
+        original_unmount = runner.unmount_document_portal
+
+        def stop_session(session: object) -> None:
+            cleanup_order.append("stop-session")
+
+        def unmount(root: Path) -> None:
+            cleanup_order.append("unmount")
+            original_unmount(root)
         with (
             mock.patch.object(runner.shutil, "which", return_value="/usr/bin/fake"),
             mock.patch.object(runner.subprocess, "Popen", return_value=FakeSession()),
@@ -243,11 +306,14 @@ class OwnedProcessCleanupTests(unittest.TestCase):
             ) as run,
             mock.patch.object(runner.tempfile, "TemporaryDirectory", side_effect=record_temp_directory),
             mock.patch.object(runner, "document_portal_mount_is_present", side_effect=[True, False]),
+            mock.patch.object(runner, "stop_owned_process", side_effect=stop_session),
+            mock.patch.object(runner, "unmount_document_portal", side_effect=unmount),
             mock.patch.object(sys, "platform", "linux"),
         ):
             runner.run_smoke(Path("/tmp/fake-portal-test"))
 
         self.assertEqual(len(tempdirs), 1)
+        self.assertEqual(cleanup_order, ["stop-session", "unmount"])
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0][1], "-u")
         self.assertTrue(str(tempdirs[0] / "runtime" / "doc") in run.call_args.args[0])

@@ -139,34 +139,56 @@ def wait_for_monitor_ready(monitor: subprocess.Popen[str], output: Path, timeout
 def capture_portal_methods(monitor: subprocess.Popen[str], output: Path) -> str:
     if monitor.poll() is not None:
         raise RuntimeError(f"D-Bus monitor exited early with status {monitor.returncode}")
-    try:
-        monitor.send_signal(signal.SIGINT)
-    except ProcessLookupError:
-        pass
-    try:
-        monitor.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        monitor.kill()
-        monitor.wait(timeout=5)
-        raise TimeoutError("D-Bus monitor did not stop")
+    stop_owned_process(monitor, graceful_signal=signal.SIGINT)
     return output.read_text(encoding="utf-8", errors="replace")
 
 
-def stop_owned_process(process: subprocess.Popen[str] | None) -> None:
-    if process is None or process.poll() is not None:
-        return
+def process_group_exists(process_group: int) -> bool:
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        os.killpg(process_group, 0)
     except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=3)
-    except subprocess.TimeoutExpired:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def wait_for_process_group_exit(process_group: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while process_group_exists(process_group):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def stop_owned_process(
+    process: subprocess.Popen[str] | None,
+    *,
+    graceful_signal: int = signal.SIGTERM,
+) -> None:
+    if process is None:
+        return
+
+    # The process-group leader can exit before its children. The session was
+    # started with start_new_session=True, so its PID remains the group ID and
+    # can be checked/signalled independently of Popen.poll().
+    if process_group_exists(process.pid):
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            os.killpg(process.pid, graceful_signal)
         except ProcessLookupError:
             pass
+        if not wait_for_process_group_exit(process.pid, timeout=3):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if not wait_for_process_group_exit(process.pid, timeout=3):
+                raise TimeoutError(f"owned process group {process.pid} did not exit after SIGKILL")
+    try:
         process.wait(timeout=3)
+    except subprocess.TimeoutExpired as error:
+        raise TimeoutError(f"owned process leader {process.pid} was not reaped") from error
 
 
 def require_portal_calls(log: str) -> None:
@@ -355,14 +377,7 @@ def run_session_worker(executable: Path, root: Path) -> None:
                         monitor.send_signal(signal.SIGINT)
                     except ProcessLookupError:
                         pass
-                try:
-                    monitor.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    try:
-                        monitor.kill()
-                    except ProcessLookupError:
-                        pass
-                    monitor.wait(timeout=3)
+                stop_owned_process(monitor, graceful_signal=signal.SIGINT)
 
 
 def run_smoke(executable: Path) -> None:
