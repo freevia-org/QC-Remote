@@ -29,10 +29,7 @@ fn round_trip_ksni_layout((id, properties, children): LayoutTuple) -> KsniLayout
             .into_iter()
             .map(|(key, value)| (std::borrow::Cow::Owned(key), value))
             .collect(),
-        children: children
-            .into_iter()
-            .map(zbus::zvariant::Value::from)
-            .collect(),
+        children: children.into_iter().map(zbus::Variant::from).collect(),
     };
     let encoded: OwnedVariant = layout.into();
     KsniLayout::try_from(encoded).expect("KSNI layout decodes through its variant property helper")
