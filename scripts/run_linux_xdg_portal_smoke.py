@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -31,6 +32,7 @@ DBUS_ACTIVATION_ENVIRONMENT = (
     "DISPLAY",
     "XAUTHORITY",
 )
+_MOUNTINFO_ESCAPE = re.compile(r"\\([0-7]{3})")
 
 
 def select_executable(cargo_json: Path) -> Path:
@@ -137,34 +139,87 @@ def wait_for_monitor_ready(monitor: subprocess.Popen[str], output: Path, timeout
 def capture_portal_methods(monitor: subprocess.Popen[str], output: Path) -> str:
     if monitor.poll() is not None:
         raise RuntimeError(f"D-Bus monitor exited early with status {monitor.returncode}")
-    try:
-        monitor.send_signal(signal.SIGINT)
-    except ProcessLookupError:
-        pass
-    try:
-        monitor.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        monitor.kill()
-        monitor.wait(timeout=5)
-        raise TimeoutError("D-Bus monitor did not stop")
+    stop_owned_process(monitor, graceful_signal=signal.SIGINT)
     return output.read_text(encoding="utf-8", errors="replace")
 
 
-def stop_owned_process(process: subprocess.Popen[str] | None) -> None:
-    if process is None or process.poll() is not None:
-        return
+def process_group_has_live_members(process_group: int) -> bool:
+    """Return whether the group still contains a process that can hold resources."""
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        entries = os.scandir("/proc")
+    except OSError:
+        entries = None
+    if entries is not None:
+        with entries:
+            for entry in entries:
+                if not entry.name.isdecimal():
+                    continue
+                try:
+                    stat = Path(entry.path, "stat").read_text(encoding="ascii")
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    # If a process exists but cannot be inspected, conservatively
+                    # fall back to killpg rather than claiming the group is clear.
+                    return _process_group_exists_via_signal(process_group)
+                try:
+                    fields = stat.rsplit(")", 1)[1].split()
+                    state = fields[0]
+                    group = int(fields[2])
+                except (IndexError, ValueError):
+                    return _process_group_exists_via_signal(process_group)
+                if group == process_group and state not in {"Z", "X"}:
+                    return True
+        return False
+    return _process_group_exists_via_signal(process_group)
+
+
+def _process_group_exists_via_signal(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
     except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=3)
-    except subprocess.TimeoutExpired:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def wait_for_process_group_exit(process_group: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while process_group_has_live_members(process_group):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def stop_owned_process(
+    process: subprocess.Popen[str] | None,
+    *,
+    graceful_signal: int = signal.SIGTERM,
+) -> None:
+    if process is None:
+        return
+
+    # The process-group leader can exit before its children. The session was
+    # started with start_new_session=True, so its PID remains the group ID and
+    # can be checked/signalled independently of Popen.poll().
+    if process_group_has_live_members(process.pid):
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            os.killpg(process.pid, graceful_signal)
         except ProcessLookupError:
             pass
+        if not wait_for_process_group_exit(process.pid, timeout=3):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if not wait_for_process_group_exit(process.pid, timeout=3):
+                raise TimeoutError(f"owned process group {process.pid} did not exit after SIGKILL")
+    try:
         process.wait(timeout=3)
+    except subprocess.TimeoutExpired as error:
+        raise TimeoutError(f"owned process leader {process.pid} was not reaped") from error
 
 
 def require_portal_calls(log: str) -> None:
@@ -217,9 +272,30 @@ def prepare_staging(root: Path) -> dict[str, str]:
     }
 
 
+def _mountinfo_field(value: str) -> str:
+    return _MOUNTINFO_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), value)
+
+
+def _mountinfo_has_mountpoint(line: str, mountpoint: Path) -> bool:
+    fields = line.split()
+    return len(fields) > 4 and _mountinfo_field(fields[4]) == mountpoint.as_posix()
+
+
+def document_portal_mount_is_present(mountpoint: Path) -> bool:
+    """Check the namespace mount table without statting a possibly dead FUSE mount."""
+    try:
+        mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except OSError as error:
+        raise RuntimeError(f"could not inspect Linux mount table: {error}") from error
+    for line in mountinfo.splitlines():
+        if _mountinfo_has_mountpoint(line, mountpoint):
+            return True
+    return False
+
+
 def unmount_document_portal(root: Path) -> None:
     mountpoint = root / "runtime" / "doc"
-    if not mountpoint.is_mount():
+    if not document_portal_mount_is_present(mountpoint):
         return
     fusermount = shutil.which("fusermount3") or shutil.which("fusermount")
     if fusermount is None:
@@ -231,7 +307,24 @@ def unmount_document_portal(root: Path) -> None:
         text=True,
         timeout=10,
     )
-    if result.returncode != 0 or mountpoint.is_mount():
+    # The XDG document portal is owned by the D-Bus session above. When that
+    # session exits, its FUSE connection can be gone before the parent tears
+    # down the mount; fusermount then reports ENOTCONN instead of detaching the
+    # dead mount. Detach only for that precise condition, and still verify the
+    # owned mount disappeared from this namespace.
+    detail = (result.stderr or result.stdout).strip()
+    still_mounted = document_portal_mount_is_present(mountpoint)
+    if not still_mounted:
+        return
+    if result.returncode != 0 and "Transport endpoint is not connected" in detail:
+        result = subprocess.run(
+            [fusermount, "-uz", str(mountpoint)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    if result.returncode != 0 or document_portal_mount_is_present(mountpoint):
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(f"could not unmount the owned document portal mount: {detail}")
 
@@ -315,14 +408,7 @@ def run_session_worker(executable: Path, root: Path) -> None:
                         monitor.send_signal(signal.SIGINT)
                     except ProcessLookupError:
                         pass
-                try:
-                    monitor.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    try:
-                        monitor.kill()
-                    except ProcessLookupError:
-                        pass
-                    monitor.wait(timeout=3)
+                stop_owned_process(monitor, graceful_signal=signal.SIGINT)
 
 
 def run_smoke(executable: Path) -> None:

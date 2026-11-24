@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -162,6 +163,63 @@ class OwnedProcessCleanupTests(unittest.TestCase):
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait(timeout=3)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "process-group cleanup is Linux-specific")
+    def test_kills_descendant_when_group_leader_exits_before_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            child_pid_file = Path(temporary) / "child.pid"
+            child_ready_file = Path(temporary) / "child.ready"
+            leader = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import pathlib,signal,subprocess,sys,time; "
+                        "child=subprocess.Popen([sys.executable,'-c',"
+                        "'import pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                        "pathlib.Path(sys.argv[1]).write_text(\"ready\"); time.sleep(60)',sys.argv[2]]); "
+                        "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); "
+                        "signal.signal(signal.SIGTERM, signal.SIG_DFL); time.sleep(60)"
+                    ),
+                    str(child_pid_file),
+                    str(child_ready_file),
+                ],
+                start_new_session=True,
+            )
+            child_pid: int | None = None
+            try:
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and not (
+                    child_ready_file.exists() and child_pid_file.exists()
+                ):
+                    time.sleep(0.01)
+                self.assertTrue(child_ready_file.exists(), "child did not install its signal handler")
+                self.assertTrue(child_pid_file.exists(), "leader did not record its child")
+                child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+                # Let the leader exit first while its child remains in the
+                # same process group and ignores the graceful signal.
+                os.kill(leader.pid, signal.SIGTERM)
+                leader.wait(timeout=3)
+                self.assertTrue(runner.process_group_has_live_members(leader.pid))
+
+                stop_owned_process(leader)
+
+                self.assertFalse(
+                    runner.process_group_has_live_members(leader.pid),
+                    "owned process group must have no live process before unmount or staging removal",
+                )
+                child_stat = Path(f"/proc/{child_pid}/stat")
+                if child_stat.exists():
+                    child_fields = child_stat.read_text(encoding="ascii").rsplit(")", 1)[1].split()
+                    self.assertIn(child_fields[0], {"Z", "X"}, "descendant must be exited")
+            finally:
+                if runner.process_group_has_live_members(leader.pid):
+                    os.killpg(leader.pid, signal.SIGKILL)
+                    runner.wait_for_process_group_exit(leader.pid, timeout=3)
+                if leader.poll() is None:
+                    leader.kill()
+                leader.wait(timeout=3)
+
     def test_failure_stops_and_reaps_owned_monitor_and_probe(self) -> None:
         if not sys.platform.startswith("linux"):
             self.skipTest("the supervised portal process group is Linux-specific")
@@ -200,6 +258,7 @@ class OwnedProcessCleanupTests(unittest.TestCase):
                 mock.patch.object(runner, "wait_for_monitor_ready"),
                 mock.patch.object(runner, "wait_for_stage", side_effect=TimeoutError("injected stage timeout")),
                 mock.patch.object(runner.os, "killpg"),
+                mock.patch.object(runner, "process_group_has_live_members", return_value=False),
                 mock.patch.dict(os.environ, {"DISPLAY": ":99", "XAUTHORITY": "/tmp/xauth"}),
             ):
                 with self.assertRaisesRegex(TimeoutError, "injected stage timeout"):
@@ -233,6 +292,15 @@ class OwnedProcessCleanupTests(unittest.TestCase):
                 return 0
 
         self_outer = self
+        cleanup_order: list[str] = []
+        original_unmount = runner.unmount_document_portal
+
+        def stop_session(session: object) -> None:
+            cleanup_order.append("stop-session")
+
+        def unmount(root: Path) -> None:
+            cleanup_order.append("unmount")
+            original_unmount(root)
         with (
             mock.patch.object(runner.shutil, "which", return_value="/usr/bin/fake"),
             mock.patch.object(runner.subprocess, "Popen", return_value=FakeSession()),
@@ -242,16 +310,58 @@ class OwnedProcessCleanupTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(["fusermount3", "-u"], 0, "", ""),
             ) as run,
             mock.patch.object(runner.tempfile, "TemporaryDirectory", side_effect=record_temp_directory),
-            mock.patch.object(Path, "is_mount", side_effect=[True, False]),
+            mock.patch.object(runner, "document_portal_mount_is_present", side_effect=[True, False]),
+            mock.patch.object(runner, "stop_owned_process", side_effect=stop_session),
+            mock.patch.object(runner, "unmount_document_portal", side_effect=unmount),
             mock.patch.object(sys, "platform", "linux"),
         ):
             runner.run_smoke(Path("/tmp/fake-portal-test"))
 
         self.assertEqual(len(tempdirs), 1)
+        self.assertEqual(cleanup_order, ["stop-session", "unmount"])
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0][1], "-u")
         self.assertTrue(str(tempdirs[0] / "runtime" / "doc") in run.call_args.args[0])
         self.assertFalse(tempdirs[0].exists(), "parent staging is removed only after D-Bus session exit")
+
+    def test_disconnected_document_portal_uses_verified_lazy_detach(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            mountpoint = Path(temporary) / "runtime" / "doc"
+            mountpoint.mkdir(parents=True)
+            disconnected = subprocess.CompletedProcess(
+                ["fusermount3", "-u"], 1, "", "fusermount3: Transport endpoint is not connected"
+            )
+            detached = subprocess.CompletedProcess(["fusermount3", "-uz"], 0, "", "")
+            with (
+                mock.patch.object(runner.shutil, "which", return_value="/usr/bin/fusermount3"),
+                mock.patch.object(runner.subprocess, "run", side_effect=[disconnected, detached]) as run,
+                mock.patch.object(runner, "document_portal_mount_is_present", side_effect=[True, True, False]),
+            ):
+                runner.unmount_document_portal(Path(temporary))
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0][1], "-u")
+            self.assertEqual(run.call_args_list[1].args[0][1], "-uz")
+
+    def test_already_detached_document_portal_is_accepted_by_mount_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            mountpoint = Path(temporary) / "runtime" / "doc"
+            mountpoint.mkdir(parents=True)
+            disconnected = subprocess.CompletedProcess(
+                ["fusermount3", "-u"], 1, "", "fusermount3: Transport endpoint is not connected"
+            )
+            with (
+                mock.patch.object(runner.shutil, "which", return_value="/usr/bin/fusermount3"),
+                mock.patch.object(runner.subprocess, "run", return_value=disconnected) as run,
+                mock.patch.object(runner, "document_portal_mount_is_present", side_effect=[True, False]),
+            ):
+                runner.unmount_document_portal(Path(temporary))
+            run.assert_called_once()
+
+    def test_mountinfo_matches_exact_escaped_mountpoint(self) -> None:
+        mountpoint = Path("/tmp/qc portal/runtime/doc")
+        line = "42 23 0:42 / /tmp/qc\\040portal/runtime/doc rw,nosuid - fuse.portal portal rw"
+        self.assertTrue(runner._mountinfo_has_mountpoint(line, mountpoint))
+        self.assertFalse(runner._mountinfo_has_mountpoint(line, Path("/tmp/qc portal/runtime/doc-other")))
 
     def test_main_removes_cargo_json_when_selection_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
